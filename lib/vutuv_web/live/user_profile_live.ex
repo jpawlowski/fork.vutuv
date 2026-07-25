@@ -29,6 +29,8 @@ defmodule VutuvWeb.UserProfileLive do
   alias Vutuv.Accounts.User
   alias Vutuv.Activity
   alias Vutuv.CodeStats
+  alias Vutuv.Fediverse
+  alias Vutuv.Fediverse.RemoteFollow
   alias Vutuv.Profiles.Address
   alias Vutuv.Profiles.Education
   alias Vutuv.Profiles.Language
@@ -46,6 +48,7 @@ defmodule VutuvWeb.UserProfileLive do
   alias Vutuv.Tags.Tag
   alias Vutuv.Tags.UserTag
   alias Vutuv.Tags.UserTagEndorsement
+  alias VutuvWeb.Fediverse.Docs
   alias VutuvWeb.Live.InitAssigns
 
   # The controller embeds this LiveView with `live_render/3` (not a `live/3`
@@ -609,6 +612,27 @@ defmodule VutuvWeb.UserProfileLive do
     |> put_social_feed_assigns(user)
     |> put_code_stats_assigns(user)
     |> put_job_search_assigns(user)
+    |> put_fediverse_assigns(user)
+  end
+
+  # The Fediverse card (nil = no card), the one thing on the profile written for
+  # a visitor who is NOT a member: someone on Mastodon and friends needs the
+  # member's address over there, which the page never showed. Pure field reads
+  # plus the federation gate, so it costs no query. `moved_to` is set when the
+  # member redirected their Fediverse followers to another account (issue #986):
+  # the handle here still resolves, but following it would be a dead end, so the
+  # card shows the forwarding address instead of the follow tool.
+  defp put_fediverse_assigns(socket, user) do
+    card =
+      if Fediverse.federated?(user) do
+        %{
+          handle: Docs.handle(user),
+          moved_to: user.moved_to,
+          moved_handle: user.moved_to && RemoteFollow.display_address(user.moved_to)
+        }
+      end
+
+    assign(socket, :fediverse, card)
   end
 
   # The two job-search field visibilities for this viewer (issue #928 base gate

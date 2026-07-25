@@ -13,6 +13,7 @@ defmodule VutuvWeb.AgentDocsDriftTest do
 
   alias VutuvWeb.AgentDocs.ProfileDoc
   alias VutuvWeb.AgentDocs.SectionDocs
+  alias VutuvWeb.Fediverse.Docs
 
   setup do
     user =
@@ -20,6 +21,9 @@ defmodule VutuvWeb.AgentDocsDriftTest do
         username: "drift_tester",
         first_name: "Greta",
         last_name: "Gradient",
+        # Federating, so the profile's Fediverse card renders and its handle is
+        # drift-checked against the agent formats like every other public fact.
+        fediverse_followers?: true,
         headline: "Builds bridges between humans and agents",
         gender: "female",
         birthdate: ~D[1991-04-23],
@@ -214,6 +218,9 @@ defmodule VutuvWeb.AgentDocsDriftTest do
       "Berlin",
       # general info
       "female",
+      # the Fediverse address: the profile card shows it to a visitor arriving
+      # from Mastodon and friends, md/txt as a fact line, JSON/XML structured
+      Docs.handle(user),
       # posts
       "Suspension bridges are underrated."
     ]

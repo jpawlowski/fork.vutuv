@@ -1050,6 +1050,11 @@ defmodule VutuvWeb.Router do
       # The session-aware vCard (all emails for the owner / a follower-back
       # viewer); the anonymous canonical vCard is /:slug.vcf.
       get("/vcard", VCardController, :get)
+      # "Follow from your own server": the profile's Fediverse card posts the
+      # visitor's own address here and we redirect them to their server's
+      # follow dialog. No login (the whole point is that the visitor's account
+      # is elsewhere); refused unless this member federates.
+      post("/fediverse/follow", RemoteFollowController, :create)
       # The owner-only GDPR data export (RequireLogin + AuthUser in the
       # controller): the overview page + the one-JSON-file download.
       get("/export", ExportController, :index)

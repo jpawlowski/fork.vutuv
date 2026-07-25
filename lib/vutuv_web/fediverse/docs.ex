@@ -31,6 +31,17 @@ defmodule VutuvWeb.Fediverse.Docs do
   def key_id(user), do: actor_url(user) <> "#main-key"
   def note_url(user, post_id), do: "#{base()}/#{user.username}/posts/#{post_id}"
 
+  @doc """
+  The member's Fediverse address without the leading `@`
+  (`member@vutuv.de`) — the `acct:` form WebFinger answers under and remote
+  servers resolve. The host is this installation's, so it is right on
+  vutuv.de and on anybody else's vutuv.
+  """
+  def acct(user), do: "#{user.username}@#{VutuvWeb.Endpoint.host()}"
+
+  @doc "The same address the way it is written for humans: `@member@vutuv.de`."
+  def handle(user), do: "@" <> acct(user)
+
   @doc "The Person document WebFinger points at."
   def actor(user, %Actor{} = actor) do
     actor_url = actor_url(user)

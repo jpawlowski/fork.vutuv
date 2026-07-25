@@ -15198,3 +15198,59 @@ msgstr ""
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Book an ad"
 msgstr ""
+
+#: lib/vutuv_web/templates/user/show.html.heex:388
+#, elixir-autogen, elixir-format
+msgid "%{name} moved this Fediverse account. Follow the new address instead:"
+msgstr ""
+
+#: lib/vutuv_web/templates/user/show.html.heex:405
+#, elixir-autogen, elixir-format
+msgid "Are you on Mastodon or another Fediverse app? Follow %{name} from there and new public posts arrive in your timeline. No vutuv account needed."
+msgstr ""
+
+#: lib/vutuv_web/templates/user/show.html.heex:449
+#, elixir-autogen, elixir-format
+msgid "Follow from your own server"
+msgstr ""
+
+#: lib/vutuv_web/templates/user/show.html.heex:461
+#, elixir-autogen, elixir-format
+msgid "@you@example.social"
+msgstr ""
+
+#: lib/vutuv_web/templates/user/show.html.heex:469
+#, elixir-autogen, elixir-format
+msgid "Your address is used once, to send you to your own server's follow dialog. It is never stored here."
+msgstr ""
+
+#: lib/vutuv_web/controllers/remote_follow_controller.ex:40
+#, elixir-autogen, elixir-format
+msgid "This profile is not on the Fediverse."
+msgstr ""
+
+#: lib/vutuv_web/controllers/remote_follow_controller.ex:69
+#, elixir-autogen, elixir-format
+msgid "That is not a Fediverse address. It looks like @you@example.social."
+msgstr ""
+
+#: lib/vutuv_web/controllers/remote_follow_controller.ex:73
+#, elixir-autogen, elixir-format
+msgid "%{server} did not offer a follow dialog. Copy the handle above and paste it into your app's search instead."
+msgstr ""
+
+#: lib/vutuv_web/controllers/remote_follow_controller.ex:80
+#, elixir-autogen, elixir-format
+msgid "%{server} did not answer. Copy the handle above and paste it into your app's search instead."
+msgstr ""
+
+#: lib/vutuv_web/controllers/remote_follow_controller.ex:90
+#, elixir-autogen, elixir-format
+msgid "Your server"
+msgstr ""
+
+#: lib/vutuv_web/agent_docs/markdown.ex:447
+#: lib/vutuv_web/agent_docs/text.ex:444
+#, elixir-autogen, elixir-format
+msgid "moved to %{address}"
+msgstr ""

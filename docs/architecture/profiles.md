@@ -815,6 +815,28 @@ A logged-out visitor sees the default set (Google primary).
 
 The geocoding query keeps the country even when it is hidden on screen
 
+## Fediverse card (issue #1081)
+
+A profile whose member federates gets a **"Fediverse" card** right under the
+header, the one card on the page written for a visitor who is *not* a member:
+someone arriving from Mastodon (or any other ActivityPub app) who wants to
+follow this person from where their own account already lives.
+
+It shows the member's address there, `@member@vutuv.de`, with the shared
+`data-copy` button, and below it a **"Follow from your own server"** field: the
+visitor types their own address and lands on their own server's follow dialog
+with this member filled in. See
+[fediverse.md](fediverse.md#follow-from-your-own-server) for how that resolves.
+
+A member who has moved their Fediverse account away (`moved_to`) gets the
+**forwarding address** instead of the follow tool, since following the old
+handle would only reach a redirect. The card is absent entirely for the
+majority who do not federate, and while `FEDIVERSE_ENABLED` is off.
+
+The handle is public data on a public page, so the agent-format siblings carry
+it too (`ProfileDoc`'s `fediverse` map: handle, actor URL, `moved_to`; a
+`Fediverse:` fact line in md/txt).
+
 ## Inline Mastodon + Bluesky feed
 
 A profile that lists Mastodon or Bluesky accounts gets a **"Social media posts"
