@@ -45,59 +45,9 @@ defmodule VutuvWeb.SettingsControllerTest do
     end
   end
 
-  describe "the settings hub" do
-    # The hub is the one map of everything a member can change about
-    # themselves: profile content, account matters, privacy, notifications,
-    # apps and the delete exit. If it is not on the hub, it does not exist.
-    test "lists every editable area", %{conn: conn} do
-      {conn, user} = create_and_login_user(conn)
-      html = conn |> get(~p"/settings") |> html_response(200)
-
-      # Profile content sections.
-      assert html =~ ~s(href="#{~p"/settings/profile"}")
-      assert html =~ ~s(href="#{~p"/settings/work_experiences"}")
-      assert html =~ ~s(href="#{~p"/settings/educations"}")
-      assert html =~ ~s(href="#{~p"/settings/links"}")
-      assert html =~ ~s(href="#{~p"/settings/social_media_accounts"}")
-      assert html =~ ~s(href="#{~p"/settings/emails"}")
-      assert html =~ ~s(href="#{~p"/settings/phone_numbers"}")
-      assert html =~ ~s(href="#{~p"/settings/addresses"}")
-      assert html =~ ~s(href="#{~p"/settings/tags"}")
-      # Account subpages (split off the old mega-page).
-      assert html =~ ~s(href="#{~p"/settings/security"}")
-      assert html =~ ~s(href="#{~p"/settings/preferences"}")
-      assert html =~ ~s(href="#{~p"/settings/import/linkedin"}")
-      # The export area lives under the profile (issue #841), but the hub
-      # keeps the row so it stays discoverable where people look for it.
-      assert html =~ ~s(href="#{~p"/#{user}/export"}")
-      # The rest.
-      assert html =~ ~s(href="#{~p"/settings/privacy"}")
-      assert html =~ ~s(href="#{~p"/settings/notifications"}")
-      assert html =~ ~s(href="#{~p"/settings/apps"}")
-      assert html =~ ~s(href="#{~p"/settings/delete"}")
-    end
-
-    test "shows a live count for the profile content sections", %{conn: conn} do
-      {conn, user} = create_and_login_user(conn)
-      insert_list(2, :work_experience, user: user)
-      insert(:url, user: user)
-
-      html = conn |> get(~p"/settings") |> html_response(200)
-
-      assert html =~ ~s(<span data-hub-count="work">2</span>)
-      assert html =~ ~s(<span data-hub-count="links">1</span>)
-      assert html =~ ~s(<span data-hub-count="education">0</span>)
-    end
-
-    test "the hub itself carries no destructive control, only the door to it", %{conn: conn} do
-      {conn, _user} = create_and_login_user(conn)
-      html = conn |> get(~p"/settings") |> html_response(200)
-
-      # Deleting starts on its own page, never straight from the hub row.
-      refute html =~ ~s(id="delete-account")
-      assert html =~ ~s(href="#{~p"/settings/delete"}")
-    end
-  end
+  # The hub itself — its grouping, its rows, the search box and the entry
+  # counts — is covered by VutuvWeb.SettingsHubTest, which asserts against
+  # settings_menu/1 directly instead of a hand-kept list of paths.
 
   describe "the profile editor (/edit)" do
     test "links every other profile section, so it is no dead end", %{conn: conn} do
@@ -136,7 +86,8 @@ defmodule VutuvWeb.SettingsControllerTest do
       for {path, title} <- [
             {~p"/settings/profile", "Edit profile"},
             {~p"/settings/social_media_accounts", "Profiles"},
-            {~p"/settings/privacy", "Privacy settings"},
+            {~p"/settings/privacy", "Visibility"},
+            {~p"/settings/username", "Username"},
             {~p"/settings/notifications", "Notification settings"},
             {~p"/settings/apps", "Apps &amp; API"},
             {~p"/settings", "Settings"},
@@ -546,11 +497,10 @@ defmodule VutuvWeb.SettingsControllerTest do
   end
 
   describe "sign-in & security page" do
-    test "surfaces username, email addresses, devices and passkeys", %{conn: conn} do
+    test "surfaces email addresses, devices and passkeys", %{conn: conn} do
       {conn, _user} = create_and_login_user(conn)
       html = conn |> get(~p"/settings/security") |> html_response(200)
 
-      assert html =~ ~s(href="#{~p"/settings/usernames/new"}")
       assert html =~ ~s(href="#{~p"/settings/emails"}")
       # The device list (this test session is a signed-in device).
       assert html =~ "Last active"
@@ -558,37 +508,44 @@ defmodule VutuvWeb.SettingsControllerTest do
       assert html =~ "data-webauthn-register"
     end
 
-    test "shows the read-only permanent profile link for this account (issue #904)", %{conn: conn} do
+    test "hands the username on instead of holding it", %{conn: conn} do
       {conn, user} = create_and_login_user(conn)
       html = conn |> get(~p"/settings/security") |> html_response(200)
 
-      # The username-independent permalink URL, built from the fixed id.
-      assert html =~ url(~p"/system/permalinks/users/#{user.id}")
-      # And a nudge toward the normal profile address for everyday sharing.
-      assert html =~ url(~p"/#{user}")
+      # The handle and the permanent profile link are public identity, not
+      # credentials, so they live on /settings/username under Profile now.
+      # This page keeps a signpost for whoever still looks here first.
+      assert html =~ ~s(href="#{~p"/settings/username"}")
+      refute html =~ ~s(id="permalink-url")
+      refute html =~ url(~p"/system/permalinks/users/#{user.id}")
     end
+  end
 
-    test "offers a copy-to-clipboard button on the permalink URL", %{conn: conn} do
-      {conn, _user} = create_and_login_user(conn)
-      html = conn |> get(~p"/settings/security") |> html_response(200)
+  describe "the permanent profile link (issue #904)" do
+    test "sits on the username page, with a copy button on both addresses", %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+      html = conn |> get(~p"/settings/username") |> html_response(200)
 
-      # The permalink <code> carries the id the copy button targets, and the
-      # button is wired for the [data-copy] app.js enhancement.
+      # The username-independent permalink URL, built from the fixed id, and
+      # the everyday address it is the durable twin of.
+      assert html =~ url(~p"/system/permalinks/users/#{user.id}")
+      assert html =~ url(~p"/#{user}")
+
+      # Each <code> carries the id its copy button targets, and the buttons are
+      # wired for the [data-copy] app.js enhancement.
       assert html =~ ~s(id="permalink-url")
-      assert html =~ "data-copy"
       assert html =~ ~s(data-copy-target="permalink-url")
-      # The everyday profile address gets its own copy button too.
       assert html =~ ~s(id="profile-url")
       assert html =~ ~s(data-copy-target="profile-url")
     end
 
-    test "renders the permanent profile link card below the passkeys card", %{conn: conn} do
+    test "reads after the rename form, as the answer to 'my old links break'", %{conn: conn} do
       {conn, _user} = create_and_login_user(conn)
-      html = conn |> get(~p"/settings/security") |> html_response(200)
+      html = conn |> get(~p"/settings/username") |> html_response(200)
 
-      {passkeys, _} = :binary.match(html, "Passkeys")
+      {rename, _} = :binary.match(html, "Change your username")
       {permalink, _} = :binary.match(html, "Permanent profile link")
-      assert permalink > passkeys
+      assert permalink > rename
     end
   end
 

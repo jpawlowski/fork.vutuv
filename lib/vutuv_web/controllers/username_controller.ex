@@ -56,9 +56,14 @@ defmodule VutuvWeb.UsernameController do
     render(conn, "new.html",
       changeset: changeset,
       quota: Accounts.username_change_quota(user),
-      mention_count: mention_count
+      mention_count: mention_count,
+      page_title: gettext("Username")
     )
   end
+
+  # The page moved from /settings/usernames/new to /settings/username when the
+  # username became its own row under Profile; old bookmarks land there.
+  def legacy_redirect(conn, _params), do: redirect(conn, to: ~p"/settings/username")
 
   # Backs the live "is this name free?" check in the change form.
   def availability(conn, params) do

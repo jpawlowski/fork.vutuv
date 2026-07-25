@@ -5,16 +5,24 @@ defmodule VutuvWeb.SavedSearchSettingsTest do
   alias VutuvWeb.SavedSearchToken
 
   describe "/settings/saved_searches" do
-    test "shows the empty state and no hub row before anything is saved", %{conn: conn} do
+    test "shows the empty state before anything is saved", %{conn: conn} do
       {conn, _user} = create_and_login_user(conn)
 
       html = conn |> get(~p"/settings/saved_searches") |> html_response(200)
       assert html =~ "saved-searches-empty"
-      # The row only joins the settings menu once a search exists.
-      refute html =~ ~s(href="#{~p"/settings/saved_searches"}")
     end
 
-    test "lists a saved search and adds it to the settings menu", %{conn: conn} do
+    test "the hub carries the row even with nothing saved", %{conn: conn} do
+      # It used to join the menu only once a search existed, which made the
+      # settings menu a different shape on every visit and the feature
+      # impossible to discover from the hub.
+      {conn, _user} = create_and_login_user(conn)
+
+      html = conn |> get(~p"/settings") |> html_response(200)
+      assert html =~ ~s(href="#{~p"/settings/saved_searches"}")
+    end
+
+    test "lists a saved search and keeps it on the settings menu", %{conn: conn} do
       {conn, user} = create_and_login_user(conn)
 
       {:ok, search} =

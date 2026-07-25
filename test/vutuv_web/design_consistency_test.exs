@@ -105,7 +105,7 @@ defmodule VutuvWeb.DesignConsistencyTest do
       user: _user
     } do
       for path <- [
-            ~p"/settings/usernames/new",
+            ~p"/settings/username",
             ~p"/settings/social_media_accounts/new",
             ~p"/settings/phone_numbers/new"
           ] do

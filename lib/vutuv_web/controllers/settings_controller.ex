@@ -55,7 +55,8 @@ defmodule VutuvWeb.SettingsController do
 
   # The Accounts counts are keyed by domain name (urls, phone_numbers, ...);
   # the hub rows are keyed by menu key (links, phones, ...). Translate once
-  # here so the template stays a dumb list.
+  # here so the template stays a dumb list. Rows without an entry count (the
+  # account and privacy areas) simply miss from the map and render none.
   defp hub_counts(user) do
     counts = Accounts.profile_section_counts(user)
 
@@ -66,6 +67,7 @@ defmodule VutuvWeb.SettingsController do
       languages: counts.languages,
       links: counts.urls,
       social: counts.social_media_accounts,
+      messengers: counts.messengers,
       emails: counts.emails,
       phones: counts.phone_numbers,
       addresses: counts.addresses,
@@ -136,7 +138,7 @@ defmodule VutuvWeb.SettingsController do
     render(conn, "privacy.html",
       user: user,
       changeset: User.changeset(user),
-      page_title: gettext("Privacy settings")
+      page_title: gettext("Visibility")
     )
   end
 

@@ -1,54 +1,53 @@
 <%!-- The settings hub: the one grouped map of everything a member can change
-about themselves — profile content, account, privacy, notifications, apps and
-the delete exit. The rows come from VutuvWeb.UI.settings_menu/1, the same source
-the desktop sidebar renders, so hub and sidebar can never drift apart. No forms
-and no destructive control live here; every row is a door to the focused page.
+about themselves. The groups come from VutuvWeb.UI.settings_menu/1, the same
+source the desktop sidebar renders, so hub and sidebar can never drift apart.
+No forms and no destructive control live here; every row is a door to the
+focused page.
 
-The hub is framed exactly like its subpages (<.hub_frame>: persistent sidebar +
-"Settings" header), so the desktop layout no longer jumps when you open a
-subpage. On desktop the sidebar IS the navigation, so the content pane stays a
-calm "pick a section" empty state instead of repeating the same list — no
-duplicated menu. On phones there is no sidebar, so the grouped iOS-style list is
-the navigation and shows in the content pane instead. --%>
+One list at every width. It used to be two: a grouped list for phones and, on
+desktop, a "pick a section from the menu on the left" line that left about
+three quarters of the screen empty. The same cards now simply flow into two
+columns from md up, which fills the pane and lets someone who does not know our
+vocabulary read the whole map at a glance.
+
+Above them sits the filter box (app.js, [data-settings-filter]): it matches each
+row's label, its hint line and a list of synonyms (Vutuv's "Sign-in & security"
+holds what most people call their password), hides the groups that empty out,
+and with JS off simply is not there — the map below works either way. --%>
 <.hub_frame user={@user}>
-  <%!-- Desktop (md+): the left sidebar is the section menu, so the content pane
-  points at it rather than duplicating it. --%>
-  <div class="hidden min-h-[24rem] place-items-center md:grid">
-    <div class="flex max-w-md items-center gap-4">
-      <svg
-        class="h-9 w-9 shrink-0 text-slate-400 dark:text-slate-500"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-        stroke-width="1.5"
-        aria-hidden="true"
+  <div data-settings-map class="space-y-6">
+    <div>
+      <label for="settings-filter" class="sr-only">{gettext("Search settings")}</label>
+      <input
+        id="settings-filter"
+        type="search"
+        data-settings-filter
+        autocomplete="off"
+        placeholder={gettext("Search settings")}
+        class={input_class()}
+      />
+      <p
+        data-settings-empty
+        hidden
+        class="mt-3 text-sm text-slate-600 dark:text-slate-400"
       >
-        <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
-      </svg>
-      <p class="text-slate-600 dark:text-slate-400">
-        {gettext("Pick a section from the menu on the left to view or change it.")}
+        {gettext("Nothing here matches. Try another word, or clear the search.")}
       </p>
     </div>
-  </div>
 
-  <%!-- Mobile: no sidebar, so the grouped list is the navigation (unchanged). --%>
-  <div class="space-y-8 md:hidden">
-    <section :for={{group, entries} <- settings_menu(@user)}>
-      <h2 class="mb-2 px-1 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        {group}
-      </h2>
-      <div class="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
-        <ul class="divide-y divide-slate-100 dark:divide-slate-800">
-          <.hub_row
-            :for={{label, path, key} <- entries}
-            navigate={path}
-            label={label}
-            count={@section_counts[key]}
-            count_key={key}
-            danger={key == :delete}
-          />
-        </ul>
-      </div>
-    </section>
+    <%!-- columns, not a grid: the groups are wildly different heights, and a
+    grid would leave a ragged gap under every short one. --%>
+    <div class="gap-6 md:columns-2 [&>*]:mb-6 [&>*]:break-inside-avoid">
+      <section :for={{group, entries} <- settings_menu(@user)} data-settings-group>
+        <h2 class="mb-2 px-1 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          {group}
+        </h2>
+        <div class="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
+          <ul class="divide-y divide-slate-100 dark:divide-slate-800">
+            <.hub_row :for={entry <- entries} entry={entry} count={@section_counts[entry.key]} />
+          </ul>
+        </div>
+      </section>
+    </div>
   </div>
 </.hub_frame>

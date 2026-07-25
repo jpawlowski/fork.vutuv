@@ -968,6 +968,60 @@ function setupCopyButtons() {
 }
 onReady(setupCopyButtons)
 
+// Filter box on the settings hub ([data-settings-filter], see
+// settings/index.html.heex). The hub lists ~28 rows across five groups; even
+// well grouped, a member who does not know our vocabulary has to read all of
+// them. Typing narrows the map to matching rows and hides the groups that empty
+// out.
+//
+// Each row carries a prebuilt lowercase haystack in data-search
+// (VutuvWeb.UI.settings_search_text/1: label + hint + a list of synonyms), so
+// "Passwort", "Handle" or "abmelden" find the right row even though no label
+// says those words, and the matching stays translated with the page.
+//
+// Rows and groups are hidden with the plain `hidden` ATTRIBUTE, never a class:
+// neither element carries a Tailwind display utility, so nothing can out-cascade
+// it the way `.inline-block` beat `.hidden` in issue #880. Every token must
+// match (AND), so "mail benachricht" narrows rather than widens.
+function wireSettingsFilter(input) {
+  if (!once(input, "settingsFilter")) return
+  const scope = input.closest("[data-settings-map]") || document
+  const rows = [...scope.querySelectorAll("[data-settings-row]")]
+  const groups = [...scope.querySelectorAll("[data-settings-group]")]
+  const empty = scope.querySelector("[data-settings-empty]")
+
+  const apply = () => {
+    const terms = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean)
+    let hits = 0
+
+    rows.forEach((row) => {
+      const haystack = row.dataset.search || ""
+      const show = terms.every((term) => haystack.includes(term))
+      row.hidden = !show
+      if (show) hits++
+    })
+
+    // A group whose rows all went away is just a stray heading.
+    groups.forEach((group) => {
+      group.hidden = ![...group.querySelectorAll("[data-settings-row]")].some(
+        (row) => !row.hidden
+      )
+    })
+
+    if (empty) empty.hidden = hits > 0
+  }
+
+  input.addEventListener("input", apply)
+  // A browser restoring a typed value on back-navigation must not leave the
+  // full list showing under a non-empty box.
+  apply()
+}
+
+function setupSettingsFilter() {
+  document.querySelectorAll("[data-settings-filter]").forEach(wireSettingsFilter)
+}
+onReady(setupSettingsFilter)
+
 // Live character counter for a length-capped text field (the profile Tagline,
 // see user/edit.html.heex). A [data-char-counter] wrapper with data-max holds a
 // [data-char-count-input] field and a [data-char-count-readout] showing
