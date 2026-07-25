@@ -1,0 +1,21 @@
+<%= email_greeting(@user) %>,
+
+bitte bestätigen Sie Ihren neuen Benutzernamen @<%= @new_username %> mit dem
+folgenden PIN:
+
+  <%= @pin %>
+
+Geben Sie ihn auf vutuv ein, um die Änderung abzuschließen. Der PIN verfällt
+nach 30 Minuten.
+
+Ihre bisherige Profiladresse funktioniert nach der Änderung nicht mehr.
+Erwähnungen Ihres alten Benutzernamens in Beiträgen werden auf den neuen
+umgeschrieben.
+
+Falls Sie Ihren Benutzernamen nicht ändern wollten, geben Sie diesen PIN
+bitte nicht ein. Möglicherweise nutzt jemand anderes Ihren Zugang. Unter
+<%= @url %>settings/security können Sie Ihre Anmeldung absichern.
+
+<%= render "_signature_de.text" %>
+
+<%= render "_footer.text" %>

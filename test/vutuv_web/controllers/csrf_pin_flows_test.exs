@@ -109,6 +109,24 @@ defmodule VutuvWeb.CsrfPinFlowsTest do
     end
   end
 
+  describe "username change" do
+    test "completes the two-step username confirmation with CSRF enforced", %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+
+      conn = post(conn, ~p"/settings/username", user: %{"username" => "csrf_renamed"})
+      assert html_response(conn, 200) =~ "_csrf_token"
+      pin = sent_pin()
+
+      conn =
+        submit_with_csrf(conn, ~p"/settings/username/confirm", %{
+          "username_confirmation" => %{"code" => pin}
+        })
+
+      assert redirected_to(conn) == ~p"/csrf_renamed"
+      assert Repo.get(User, user.id).username == "csrf_renamed"
+    end
+  end
+
   describe "account deletion" do
     test "completes the two-step account deletion with CSRF enforced", %{conn: conn} do
       {conn, user} = create_and_login_user(conn)

@@ -76,11 +76,24 @@ defmodule VutuvWeb.UsernameControllerTest do
   end
 
   describe "create (changing the username)" do
+    # Since issue #1086 the rename is a two-step flow: `create` validates and
+    # remembers the handle, and a confirmation (PIN, authenticator code or
+    # passkey) commits it. The confirmation itself is covered in depth by
+    # `VutuvWeb.UsernameConfirmationTest`; here it is just the second half of
+    # the flow these older tests were written against.
+    defp complete_rename(conn, handle) do
+      conn = post(conn, "/settings/username", user: %{"username" => handle})
+
+      submit_with_csrf(conn, "/settings/username/confirm", %{
+        "username_confirmation" => %{"code" => sent_pin()}
+      })
+    end
+
     test "renames the account; the old URL is freed and 404s", %{conn: conn} do
       {conn, user} = create_and_login_user(conn)
       old_handle = user.username
 
-      conn = post(conn, "/settings/username", user: %{"username" => "Brand_New"})
+      conn = complete_rename(conn, "Brand_New")
 
       assert redirected_to(conn) == "/brand_new"
       assert Repo.get(User, user.id).username == "brand_new"
@@ -182,6 +195,11 @@ defmodule VutuvWeb.UsernameControllerTest do
       insert(:post, body: "hey @#{user.username}")
 
       conn = post(conn, "/settings/username", user: %{"username" => "brandnewname"})
+
+      conn =
+        submit_with_csrf(conn, "/settings/username/confirm", %{
+          "username_confirmation" => %{"code" => sent_pin()}
+        })
 
       assert redirected_to(conn) == "/brandnewname"
       assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "updated"

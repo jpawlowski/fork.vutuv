@@ -888,6 +888,46 @@ defmodule Vutuv.Accounts do
     end
   end
 
+  @doc """
+  The logged-in twin of `check_login_code/2`: the code a member typed to
+  re-confirm a sensitive change they are already signed in for (the username
+  rename, issue #1086). Identity comes from the session, so it takes the
+  `%User{}` and the PIN `type` rather than an email address.
+
+  Checked first as the emailed PIN for that `(user, type)` pair, then — for
+  members who set one up — as an authenticator-app or one-time-list code, so
+  one field accepts whatever the member has, exactly like the login PIN field.
+  Members who use an alternate code need no PIN mailed at all.
+
+  Returns `{:ok, user}` or the PIN check's own `{:error, message}` /
+  `{:already_used, message}` / `{:expired, message}` / `:lockout`. An alternate
+  code only ever *adds* a success path: every failure reads exactly as the PIN
+  failure did, so the attempt counters and the lockout are unchanged. It
+  deliberately drops the PIN's `payload` — the pending change is carried by the
+  caller (the session), not by whichever factor proved identity, so all three
+  factors converge on one commit path.
+  """
+  def check_confirmation_code(%User{} = user, code, type) when is_binary(code) do
+    case check_pin(user, code, type) do
+      {:ok, user} -> {:ok, user}
+      {:ok, _payload, user} -> {:ok, user}
+      fallback -> redeem_alternate_confirmation(user, code, type, fallback)
+    end
+  end
+
+  defp redeem_alternate_confirmation(user, code, type, fallback) do
+    case LoginCodes.redeem_login_code(user, code) do
+      :ok ->
+        # The alternate code proved identity, so an emailed PIN for the same
+        # change still sitting in the member's inbox must not stay live.
+        consume_outstanding_pin(user, type)
+        {:ok, user}
+
+      :error ->
+        fallback
+    end
+  end
+
   defp redeem_alternate_code(email, code, fallback) do
     with %User{} = user <- user_by_email(email),
          :ok <- LoginCodes.redeem_login_code(user, code) do
@@ -902,8 +942,10 @@ defmodule Vutuv.Accounts do
     end
   end
 
-  defp consume_outstanding_login_pin(user) do
-    case login_pin(user, "login") do
+  defp consume_outstanding_login_pin(user), do: consume_outstanding_pin(user, "login")
+
+  defp consume_outstanding_pin(user, type) do
+    case login_pin(user, type) do
       %LoginPin{consumed_at: nil} = pin -> mark_consumed(pin)
       _ -> :ok
     end
@@ -1753,12 +1795,7 @@ defmodule Vutuv.Accounts do
   """
   def update_username(%User{} = user, attrs) do
     old_handle = user.username
-
-    changeset =
-      user
-      |> User.username_changeset(attrs)
-      |> validate_username_was_changed()
-      |> validate_username_quota(user)
+    changeset = username_change_changeset(user, attrs)
 
     Ecto.Multi.new()
     |> Ecto.Multi.update(:user, changeset)
@@ -1836,6 +1873,61 @@ defmodule Vutuv.Accounts do
     Vutuv.Avatar.reslug(user)
     Vutuv.Cover.reslug(user)
     :ok
+  end
+
+  @doc """
+  Dry-runs a rename: applies every rule `update_username/2` applies (grammar and
+  length, reserved words, already used in a post, "that is already your
+  username" and the 4-per-90-days quota) plus a pre-flight availability check,
+  and writes nothing. Returns `{:ok, handle}` for the normalized handle that
+  would be claimed, or `{:error, changeset}` carrying exactly the errors the
+  rename form renders today.
+
+  It exists because a rename is now confirmed in a second step (issue #1086):
+  the form has to reject a bad handle *before* we mail a PIN or ask for a
+  passkey, so nobody hunts down a code only to be told the name was invalid.
+  The commit re-runs all of it inside the transaction, and the `handles` unique
+  index stays the authority, so a handle that is claimed by someone else in the
+  gap between the two steps still cannot slip through.
+  """
+  def validate_username_change(%User{} = user, attrs) do
+    changeset =
+      user
+      |> username_change_changeset(attrs)
+      |> validate_username_available()
+
+    case changeset do
+      %Ecto.Changeset{valid?: true} = changeset ->
+        {:ok, Ecto.Changeset.get_change(changeset, :username)}
+
+      changeset ->
+        {:error, Map.put(changeset, :action, :update)}
+    end
+  end
+
+  defp username_change_changeset(user, attrs) do
+    user
+    |> User.username_changeset(attrs)
+    |> validate_username_was_changed()
+    |> validate_username_quota(user)
+  end
+
+  # Availability is a `unique_constraint` on the changeset, so it only speaks at
+  # write time — which is fine for the commit but useless for the dry run above.
+  # Both indexes the commit could trip are therefore asked up front: the users
+  # table, and the shared member+organization `handles` registry (which is also
+  # what makes an organization's handle unclaimable). Checking both rather than
+  # the registry alone means a row that ever drifts between the two still cannot
+  # produce a dry run that says yes and a commit that says no.
+  defp validate_username_available(changeset) do
+    handle = Ecto.Changeset.get_change(changeset, :username)
+
+    if changeset.valid? and is_binary(handle) and
+         (username_taken?(handle) or not Handles.available?(handle)) do
+      Ecto.Changeset.add_error(changeset, :username, "has already been taken")
+    else
+      changeset
+    end
   end
 
   # Re-submitting the current handle would be a no-op rename that still burns
@@ -1919,6 +2011,20 @@ defmodule Vutuv.Accounts do
   """
   def first_email_value(%User{id: id}) do
     Repo.one(from(e in Email.ordered(), where: e.user_id == ^id, limit: 1, select: e.value))
+  end
+
+  @doc """
+  Every address the member owns, in their own display order (`first_email_value/1`
+  returns the head of this list).
+
+  Every address here was proved by a PIN when it was added, so any of them may
+  receive a confirmation PIN — which is what the username-rename confirmation
+  lets the member choose between (issue #1086). It is also the allow-list that
+  choice is checked against: without it, "which address should we mail?" would
+  be an open relay for mailing a valid PIN to an attacker's own address.
+  """
+  def list_email_values(%User{id: id}) do
+    Repo.all(from(e in Email.ordered(), where: e.user_id == ^id, select: e.value))
   end
 
   @doc """

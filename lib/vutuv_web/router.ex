@@ -918,6 +918,18 @@ defmodule VutuvWeb.Router do
     # public identity, and nobody looks for it among their passkeys.
     get("/username", UsernameController, :new)
     post("/username", UsernameController, :create)
+    # Step 2 of the rename (issue #1086): a rename is a public-identity change,
+    # so it is re-confirmed with a passkey, an authenticator/list code, or a PIN
+    # emailed to one of the member's own addresses. `create` only validates and
+    # remembers the new handle; nothing is renamed until :verify.
+    get("/username/confirm", UsernameController, :confirm)
+    post("/username/confirm", UsernameController, :verify)
+    post("/username/pin", UsernameController, :send_pin)
+    # The WebAuthn ceremony, answering JSON to assets/js/webauthn.js. Verifying
+    # only stamps the session; the JS then submits the confirmation form above,
+    # so the rename keeps one CSRF-protected commit path.
+    post("/username/passkey/challenge", UsernameController, :passkey_challenge)
+    post("/username/passkey", UsernameController, :passkey_verify)
     # The live availability check behind the form's as-you-type verdict.
     get("/usernames/availability", UsernameController, :availability)
     # The pre-#1083 URLs, kept for bookmarks and old links.

@@ -81,6 +81,18 @@ defmodule VutuvWeb.RateLimit do
   end
 
   @doc """
+  Throttles the "email me a PIN" button on the username-change confirmation
+  (issue #1086) on the same slow budget as a login resend: 5 per hour, per IP
+  and per member. Each press re-mints the PIN and resets its 3-strikes attempt
+  counter, so an unbounded budget would turn that lockout into an open door —
+  and it mails a member's own address, so it must not become a way to flood an
+  inbox either.
+  """
+  def check_username_pin(conn, user) do
+    check(conn, :username_change_pin, user.id, limit: @resend_limit, window_ms: @resend_window_ms)
+  end
+
+  @doc """
   Throttles a member's LinkedIn imports (10 per hour, per IP and per member id),
   so a single account cannot hammer the upload/parse/apply path. The budget is
   overridable via `config :vutuv, :linkedin_import_rate_limit, {limit, window_ms}`.

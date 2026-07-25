@@ -49,12 +49,26 @@ defmodule Vutuv.UploadsGitignoreTest do
 
   test "every upload tree is gitignored" do
     for tree <- @upload_trees do
-      probe = tree <> "/probe/file.bin"
+      probe = ignore_probe(tree)
       {out, status} = System.cmd("git", ["check-ignore", probe], cd: File.cwd!())
 
       assert status == 0 and String.trim(out) == probe,
              "#{tree}/ is not gitignored — add `/#{tree}` to .gitignore " <>
                "(uploads land here in dev/test and would be committed by `git add -A`)."
+    end
+  end
+
+  # Normally probe a path *inside* the tree, which is what an upload writes. But
+  # when smoke-testing from a git worktree the CLAUDE.md recipe has you symlink
+  # these trees to the main checkout's — and `git check-ignore` will not descend
+  # through a symlink, so the inside-probe reports nothing and the failure reads
+  # as "add it to .gitignore" for a rule that is already there (hit while
+  # smoke-testing the username confirmation). For a symlink the link itself is
+  # the thing `git add -A` would pick up, so that is what we check.
+  defp ignore_probe(tree) do
+    case File.lstat(tree) do
+      {:ok, %File.Stat{type: :symlink}} -> tree
+      _ -> tree <> "/probe/file.bin"
     end
   end
 end

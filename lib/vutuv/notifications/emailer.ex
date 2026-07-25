@@ -214,6 +214,20 @@ defmodule Vutuv.Notifications.Emailer do
   end
 
   @doc """
+  The PIN that confirms a username change (issue #1086). It names the handle
+  being claimed, so the member can tell at a glance what the PIN authorizes —
+  and so a PIN that arrives unasked reads as an alarm, not as noise.
+
+  `email` is the address the member picked on the confirmation page, which is
+  always one of their own (`Vutuv.Accounts.list_email_values/1`).
+  """
+  def username_change_email(pin, email, user, new_username) do
+    gen_email(pin, email, user, "username_change_email", %{new_username: new_username}, fn ->
+      gettext("Confirm your new username")
+    end)
+  end
+
+  @doc """
   Sent to the owner of an existing account when someone tries to register
   again with their address. The sign-up form deliberately returns the
   identical screen for known and unknown addresses, so it never reveals
@@ -923,7 +937,13 @@ defmodule Vutuv.Notifications.Emailer do
   # from the bounce suppression in deliver/1 (the way back into a once-
   # bounced account must stay open).
   defp gen_email(pin, email, user, template_base, subject_fun) do
-    build_email(user, email, template_base, %{pin: pin}, subject_fun)
+    gen_email(pin, email, user, template_base, %{}, subject_fun)
+  end
+
+  # As above, for a PIN mail whose body names what the PIN authorizes (the new
+  # handle in the username-change mail) and so needs assigns beyond the PIN.
+  defp gen_email(pin, email, user, template_base, extra_assigns, subject_fun) do
+    build_email(user, email, template_base, Map.put(extra_assigns, :pin, pin), subject_fun)
     |> put_private(:user_initiated, true)
   end
 

@@ -1,0 +1,18 @@
+<.email_layout preheader="Confirm your new username" locale={@locale}>
+  <.email_p>{email_greeting(@user)},</.email_p>
+  <.email_p>
+    Please use the following PIN to confirm your new username @{@new_username}:
+  </.email_p>
+  <.email_pin pin={@pin} />
+  <.email_p>
+    Enter it on vutuv to finish the change. The PIN expires after 30 minutes.
+  </.email_p>
+  <.email_p>
+    Your current profile address stops working once the change goes through, and mentions of your old handle in posts are rewritten to the new one.
+  </.email_p>
+  <.email_p>
+    If you did not ask to change your username, do not enter this PIN. Someone else may be using your account:
+    <.email_link href={"#{@url}settings/security"}>secure how you sign in</.email_link>.
+  </.email_p>
+  <.email_signature locale={@locale} />
+</.email_layout>
