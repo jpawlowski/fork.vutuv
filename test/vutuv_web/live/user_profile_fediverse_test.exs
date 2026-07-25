@@ -9,6 +9,7 @@ defmodule VutuvWeb.UserProfileFediverseTest do
 
   import Phoenix.LiveViewTest
 
+  alias Vutuv.Social
   alias VutuvWeb.Fediverse.Docs
 
   @card "#profile-fediverse"
@@ -17,6 +18,11 @@ defmodule VutuvWeb.UserProfileFediverseTest do
 
   defp federating_member(attrs \\ []) do
     insert_activated_user(Keyword.merge([fediverse_followers?: true], attrs))
+  end
+
+  defp position(html, id) do
+    {at, _len} = :binary.match(html, ~s|id="#{id}"|)
+    at
   end
 
   defp stub_remote(fun) do
@@ -82,6 +88,23 @@ defmodule VutuvWeb.UserProfileFediverseTest do
       # Following here would land on a redirect, so the tool is not offered.
       refute has_element?(view, @form)
       refute has_element?(view, @handle)
+    end
+
+    test "closes the page, below the member's own cards", %{conn: conn} do
+      user = federating_member()
+      {:ok, _follow} = Social.follow(insert_activated_user(), user.id)
+
+      {:ok, view, html} = live(conn, ~p"/#{user}")
+
+      # The follower/following pair is the last block of the main content
+      # column, and the rail follows it in the DOM: a card between the two is
+      # the foot of the column on a desktop.
+      assert position(html, "profile-fediverse") > position(html, "profile-followers")
+      assert position(html, "profile-fediverse") < position(html, "profile-other-formats")
+
+      # On a phone every card is one flex child of a single column, so the
+      # order utility is what puts it below the rail's cards there.
+      assert has_element?(view, "#profile-fediverse.order-3")
     end
 
     test "the form posts to the route that exists", %{conn: conn} do
