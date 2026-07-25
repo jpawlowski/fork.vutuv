@@ -144,6 +144,14 @@ subpage now (/settings/fediverse/move), linked from the footer below. --%>
             total: delimited_count(@follower_count)
           )}
         </p>
+        <%!-- The list is kept honest without the member doing anything: a
+              follower whose account no longer exists is dropped by the
+              periodic re-check (Vutuv.Fediverse.FollowerPruner). --%>
+        <p class="mt-2 text-xs text-slate-600 dark:text-slate-400">
+          {gettext(
+            "Accounts that no longer exist on their own server drop off this list by themselves."
+          )}
+        </p>
       <% end %>
     </.card>
 

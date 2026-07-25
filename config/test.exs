@@ -26,6 +26,10 @@ config :vutuv, :prune_search_history, false
 # outside. Vutuv.Webhooks.Deliverer.nudge/0 casts into the void then.
 config :vutuv, :webhook_deliverer, false
 config :vutuv, :fediverse_deliverer, false
+# The hourly remote-follower re-check would likewise touch the sandbox from
+# outside; tests call Vutuv.Fediverse.prune_due_followers/1 directly with a
+# stubbed HTTP layer.
+config :vutuv, :fediverse_follower_pruning, false
 # Post link-screenshots drain via a polling GenServer that would touch the
 # sandbox from outside; tests call Vutuv.Posts.Screenshots.deliver_due/1 directly
 # with a stubbed capture. ScreenshotWorker.nudge/0 casts into the void then.

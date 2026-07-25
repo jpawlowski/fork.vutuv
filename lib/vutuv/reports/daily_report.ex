@@ -2,16 +2,17 @@ defmodule Vutuv.Reports.DailyReport do
   @moduledoc """
   A single day's tally for the operator: confirmed-by-PIN new registrations,
   how many posts, reposts, likes and bookmarks were created, how many new
-  Fediverse followers were gained, the day's email-deliverability events
-  (hard bounces, address deactivations, account freezes and thaws) and the
-  accounts an admin removed as spam from a moderation case, on one German
-  calendar day (`Vutuv.BerlinTime`).
+  Fediverse followers were gained and how many were dropped again because the
+  remote account is gone, the day's email-deliverability events (hard bounces,
+  address deactivations, account freezes and thaws) and the accounts an admin
+  removed as spam from a moderation case, on one German calendar day
+  (`Vutuv.BerlinTime`).
 
   Every metric also carries a capped `details` sample (`detail_limit/0` rows,
   oldest first) so the report can name *who* and *what*, not just how many:
   the new members, the created posts, the reposters/likers/bookmarkers, the
-  new Fediverse followers, the bounced/deactivated/frozen/thawed addresses and
-  the removed spam accounts. `Vutuv.Reports.daily/1` fills the sample;
+  new and the pruned Fediverse followers, the bounced/deactivated/frozen/thawed
+  addresses and the removed spam accounts. `Vutuv.Reports.daily/1` fills the sample;
   `VutuvWeb.ReportDetails.sections/1` turns it into linked lines for the email
   and the admin page.
 
@@ -34,6 +35,7 @@ defmodule Vutuv.Reports.DailyReport do
     likes: 0,
     bookmarks: 0,
     fediverse_followers: 0,
+    fediverse_prunes: 0,
     bounces: 0,
     deactivations: 0,
     freezes: 0,
@@ -52,6 +54,7 @@ defmodule Vutuv.Reports.DailyReport do
           likes: non_neg_integer(),
           bookmarks: non_neg_integer(),
           fediverse_followers: non_neg_integer(),
+          fediverse_prunes: non_neg_integer(),
           bounces: non_neg_integer(),
           deactivations: non_neg_integer(),
           freezes: non_neg_integer(),
@@ -74,6 +77,7 @@ defmodule Vutuv.Reports.DailyReport do
     {:likes, "Like", "Likes"},
     {:bookmarks, "Lesezeichen", "Lesezeichen"},
     {:fediverse_followers, "neuer Fediverse-Follower", "neue Fediverse-Follower"},
+    {:fediverse_prunes, "entfernter Fediverse-Follower", "entfernte Fediverse-Follower"},
     {:bounces, "Bounce", "Bounces"},
     {:deactivations, "deaktivierte Adresse", "deaktivierte Adressen"},
     {:freezes, "eingefrorenes Konto", "eingefrorene Konten"},

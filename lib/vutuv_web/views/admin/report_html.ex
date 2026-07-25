@@ -13,6 +13,7 @@ defmodule VutuvWeb.Admin.ReportHTML do
     :likes,
     :bookmarks,
     :fediverse_followers,
+    :fediverse_prunes,
     :bounces,
     :deactivations,
     :freezes,
@@ -36,6 +37,10 @@ defmodule VutuvWeb.Admin.ReportHTML do
   def metric_label(:likes), do: gettext("Likes")
   def metric_label(:bookmarks), do: gettext("Bookmarks")
   def metric_label(:fediverse_followers), do: gettext("New Fediverse followers")
+
+  def metric_label(:fediverse_prunes),
+    do: gettext("Removed Fediverse followers (account deleted)")
+
   def metric_label(:bounces), do: gettext("Bounces")
   def metric_label(:deactivations), do: gettext("Deactivated addresses")
   def metric_label(:freezes), do: gettext("Frozen accounts")

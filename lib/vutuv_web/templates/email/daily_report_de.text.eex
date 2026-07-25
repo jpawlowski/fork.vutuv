@@ -7,6 +7,7 @@ Reposts:                                    <%= @report.reposts %>
 Likes:                                      <%= @report.likes %>
 Lesezeichen:                                <%= @report.bookmarks %>
 Neue Fediverse-Follower:                    <%= @report.fediverse_followers %>
+Entfernte Fediverse-Follower (gelöscht):    <%= @report.fediverse_prunes %>
 
 Zustellbarkeit (E-Mail)
 -----------------------

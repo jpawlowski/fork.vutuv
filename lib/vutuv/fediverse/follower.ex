@@ -7,6 +7,11 @@ defmodule Vutuv.Fediverse.Follower do
   actor's own `Update` re-syncs them and its `Delete` removes them, so a
   renamed remote stops showing under its old handle and a deleted one stops
   counting as a follower.
+
+  Not every account announces its own departure, so `last_checked_at` carries
+  the slow re-check that catches the silent ones
+  (`Vutuv.Fediverse.FollowerPruner`): when the actor document was last
+  re-fetched, `nil` for a row that has never been checked.
   """
 
   use VutuvWeb, :model
@@ -27,6 +32,7 @@ defmodule Vutuv.Fediverse.Follower do
     field(:shared_inbox_uri, :string)
     field(:handle, :string)
     field(:name, :string)
+    field(:last_checked_at, :naive_datetime)
 
     belongs_to(:user, Vutuv.Accounts.User)
 

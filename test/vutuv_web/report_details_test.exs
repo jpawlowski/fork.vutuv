@@ -54,6 +54,21 @@ defmodule VutuvWeb.ReportDetailsTest do
              ]
     end
 
+    test "a pruned Fediverse follower names the server, not the person who left" do
+      user = insert(:user, username: "dora")
+
+      Repo.insert!(
+        struct(
+          Vutuv.Fediverse.FollowerPrune,
+          [user_id: user.id, host: "social.example", status: 410] ++ at(@on_day)
+        )
+      )
+
+      assert section(Reports.daily(@date), :fediverse_prunes).entries == [
+               %{primary: "social.example", secondary: "HTTP 410 · @dora", path: "/dora"}
+             ]
+    end
+
     test "a bounce names the address and its status, with no link" do
       insert(:email_bounce,
         email_value: "dead@example.com",

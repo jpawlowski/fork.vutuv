@@ -6397,6 +6397,11 @@ msgstr ""
 msgid "New Fediverse followers"
 msgstr ""
 
+#: lib/vutuv_web/views/admin/report_html.ex:41
+#, elixir-autogen, elixir-format
+msgid "Removed Fediverse followers (account deleted)"
+msgstr ""
+
 #: lib/vutuv_web/templates/admin/report/index.html.heex:89
 #, elixir-autogen, elixir-format
 msgid "… and %{count} more"
@@ -9932,6 +9937,11 @@ msgstr ""
 #: lib/vutuv_web/templates/settings/fediverse.html.heex:142
 #, elixir-autogen, elixir-format
 msgid "Showing the most recent %{shown} of %{total}."
+msgstr ""
+
+#: lib/vutuv_web/templates/settings/fediverse.html.heex:151
+#, elixir-autogen, elixir-format
+msgid "Accounts that no longer exist on their own server drop off this list by themselves."
 msgstr ""
 
 #: lib/vutuv_web/templates/admin/admin/index.html.heex:296
