@@ -27,7 +27,13 @@ the `live_session`.
 The **add-tag form** (`/settings/tags/new`, `VutuvWeb.TagNewLive`) is the first
 live `/settings` page: it previews the parsed tags while the member types and
 saves over the socket (see
-[settings-and-account.md](settings-and-account.md)).
+[settings-and-account.md](settings-and-account.md)). The **Fediverse follower
+browser** (`/settings/fediverse/followers`,
+`VutuvWeb.FediverseFollowersLive`) is the other kind of live settings page: it
+changes nothing, it *finds* something — search-as-you-type, a server filter,
+sortable columns and paging over a follower list that can run to five figures,
+with the whole view in the URL via `push_patch` (see
+[fediverse.md](fediverse.md)).
 
 **Every state-changing control fires a LiveView event, so the page never
 reloads**: the follow pill, the ⋯-menu mute/bookmark/like/block (and unblock),

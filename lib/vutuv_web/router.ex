@@ -458,6 +458,12 @@ defmodule VutuvWeb.Router do
       # expectation. A LiveView so rows add/remove with no reload; it
       # broadcasts on the owner's Activity topic so an open profile updates too.
       live("/job_search_exclusions", JobSearchExclusionsLive, :index)
+
+      # The member's own remote-follower table: search, server filter, sortable
+      # columns and numbered paging over a list that can run to five figures.
+      # Before /settings/fediverse (the dead settings page) in the router, so
+      # this longer path is matched first.
+      live("/fediverse/followers", FediverseFollowersLive, :index)
     end
   end
 

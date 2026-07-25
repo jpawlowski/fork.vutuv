@@ -43,12 +43,14 @@ defmodule Vutuv.Fediverse do
   alias Vutuv.Fediverse.Note
   alias Vutuv.Fediverse.NoteEvent
   alias Vutuv.Fediverse.Reaction
+  alias Vutuv.Pages
   alias Vutuv.Posts
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostDenial
   alias Vutuv.RateLimiter
   alias Vutuv.RemoteHtml
   alias Vutuv.Repo
+  alias Vutuv.SearchText
   alias Vutuv.SocialFeed.Http
   alias Vutuv.UUIDv7
   alias VutuvWeb.Fediverse.Docs
@@ -116,6 +118,32 @@ defmodule Vutuv.Fediverse do
   def get_actor(%User{id: user_id}), do: Repo.get_by(Actor, user_id: user_id)
 
   ## Remote followers
+
+  # The host of an actor / inbox URI, as SQL: lowercased, scheme and path and
+  # port stripped, so it can be compared with a `fediverse_blocked_instances`
+  # row. Kept as one macro because the follower browser's server column, three
+  # deletes and the admin volume list all need the same expression. NOTE: an
+  # Ecto `fragment/1` string may not contain a literal `?` (it is the parameter
+  # marker), which is why the pattern uses no non-capturing groups.
+  defmacrop uri_host(uri) do
+    quote do
+      fragment("lower(substring(? from '^[a-z]+://([^/:#]+)'))", unquote(uri))
+    end
+  end
+
+  # What the follower browser's Account column shows, as SQL — the display
+  # name, else the handle, else the actor URI — so sorting that column matches
+  # reading it. Never null, so it needs no nulls-last dance.
+  defmacrop account_label(follower) do
+    quote do
+      fragment(
+        "lower(coalesce(nullif(?, ''), ?, ?))",
+        unquote(follower).name,
+        unquote(follower).handle,
+        unquote(follower).actor_uri
+      )
+    end
+  end
 
   @doc """
   Records a remote follower (idempotent per remote actor). A repeat Follow
@@ -217,6 +245,166 @@ defmodule Vutuv.Fediverse do
       )
     )
   end
+
+  ## The member's follower browser (/settings/fediverse/followers)
+
+  # A flat list stops working long before a popular account's follower count
+  # does, so the owner's full list is a searched, filtered, sorted, paginated
+  # table (`VutuvWeb.FediverseFollowersLive`) built on the three functions
+  # below. Everything is scoped to the member's own rows first, so the work is
+  # bounded by their following, not by the installation's.
+  @followers_per_page 50
+
+  # The sortable columns, by the `?sort=` value a header button sets. None of
+  # them is a plain column: "account" sorts by what the row actually shows
+  # (display name, else handle, else the actor URI), "server" by the host
+  # inside the actor URI.
+  @follower_sort_columns ~w(account server followed)
+
+  # How many servers the filter dropdown offers. Beyond that the free-text
+  # search is the way in - a select with 400 entries is not a filter.
+  @follower_host_choices 30
+
+  @doc "The follower-browser page size, shared by the query and the pager."
+  def followers_per_page, do: @followers_per_page
+
+  @doc "The sortable follower-browser columns (the `?sort=` values)."
+  def follower_sort_columns, do: @follower_sort_columns
+
+  @doc """
+  Normalizes raw request params into a validated filter map for the follower
+  browser: `q` (free-text search, trimmed), `server` (an exact host, lowercased),
+  `sort` (a known column, default "followed") and `dir` ("asc"/"desc", default
+  per column - newest first for the date, A-Z for the text columns). Anything
+  invalid falls back to a safe default, so the params can never reach the query.
+  """
+  def follower_filters(params) when is_map(params) do
+    sort = validated_follower_sort(params["sort"])
+
+    %{
+      q: Pages.blank_to_nil(params["q"]),
+      server: params["server"] |> Pages.blank_to_nil() |> normalize_follower_server(),
+      sort: sort,
+      dir: validated_follower_dir(params["dir"]) || follower_default_dir(sort)
+    }
+  end
+
+  @doc """
+  The direction a column sorts in when it is picked for the first time: the
+  date newest-first (what a follower list is read for), the text columns A-Z.
+  """
+  def follower_default_dir("followed"), do: "desc"
+  def follower_default_dir(_text_column), do: "asc"
+
+  @doc "How many of the member's remote followers match `filters` (for the pager)."
+  def count_followers(%User{id: user_id}, filters \\ %{}) do
+    user_id |> followers_base(filters) |> Repo.aggregate(:count)
+  end
+
+  @doc """
+  One page of the member's follower browser: filtered, searched, sorted and
+  paginated. `opts` may carry `:total` (skip the recount) and `:per_page`
+  (default `followers_per_page/0`).
+  """
+  def list_followers_page(%User{id: user_id}, filters, params \\ %{}, opts \\ []) do
+    per_page = Keyword.get(opts, :per_page, @followers_per_page)
+    base = followers_base(user_id, filters)
+    total = Keyword.get(opts, :total) || Repo.aggregate(base, :count)
+
+    base
+    |> order_followers(filters)
+    |> Pages.paginate(params, total, per_page)
+    |> Repo.all()
+  end
+
+  @doc """
+  The servers this member's remote followers live on, biggest first - the
+  follower browser's server filter, and the answer to "where are they coming
+  from". Capped at `limit` hosts.
+  """
+  def follower_hosts(%User{id: user_id}, limit \\ @follower_host_choices) do
+    Repo.all(
+      from(f in Follower,
+        where: f.user_id == ^user_id,
+        group_by: uri_host(f.actor_uri),
+        order_by: [desc: count(f.id), asc: uri_host(f.actor_uri)],
+        limit: ^limit,
+        select: %{host: uri_host(f.actor_uri), followers: count(f.id)}
+      )
+    )
+  end
+
+  defp validated_follower_sort(sort) when sort in @follower_sort_columns, do: sort
+  defp validated_follower_sort(_other), do: "followed"
+
+  defp validated_follower_dir(dir) when dir in ~w(asc desc), do: dir
+  defp validated_follower_dir(_other), do: nil
+
+  defp normalize_follower_server(nil), do: nil
+  defp normalize_follower_server(host), do: String.downcase(host)
+
+  defp followers_base(user_id, filters) do
+    from(f in Follower, where: f.user_id == ^user_id)
+    |> filter_follower_server(Map.get(filters, :server))
+    |> search_followers(Map.get(filters, :q))
+  end
+
+  defp filter_follower_server(query, nil), do: query
+
+  defp filter_follower_server(query, host),
+    do: where(query, [f], uri_host(f.actor_uri) == ^host)
+
+  defp search_followers(query, nil), do: query
+
+  defp search_followers(query, term) do
+    # A pasted "@user@host" is two facts, not one substring - matched against
+    # the handle and the actor URI separately, so the full handle a member
+    # copies out of a Mastodon profile finds the row it names.
+    case term |> String.trim_leading("@") |> String.split("@", parts: 2) do
+      [name, host] when host != "" ->
+        where(
+          query,
+          [f],
+          ilike(f.handle, ^contains(name)) and ilike(f.actor_uri, ^contains(host))
+        )
+
+      _one_part ->
+        like = contains(term)
+
+        where(
+          query,
+          [f],
+          ilike(f.name, ^like) or ilike(f.handle, ^like) or ilike(f.actor_uri, ^like)
+        )
+    end
+  end
+
+  defp contains(term), do: "%" <> SearchText.escape_like(String.trim_leading(term, "@")) <> "%"
+
+  # The row's own id (UUID v7, so arrival order) is the last key of every sort,
+  # so offset pagination stays stable across pages when the visible values tie
+  # (two followers from the same server, two accounts with no display name).
+  defp order_followers(query, filters) do
+    dir = direction(Map.get(filters, :dir))
+
+    case Map.get(filters, :sort) do
+      "account" ->
+        order_by(query, [f], [{^dir, account_label(f)}, desc: f.id])
+
+      "server" ->
+        order_by(query, [f], [{^dir, uri_host(f.actor_uri)}, desc: f.id])
+
+      _followed ->
+        # The column the table shows, so the order can never contradict the
+        # dates you are reading. `inserted_at` only has second resolution, so
+        # the id (UUID v7, arrival order) breaks ties *in the same direction* -
+        # a total order, and a burst of follows still pages deterministically.
+        order_by(query, [f], [{^dir, f.inserted_at}, {^dir, f.id}])
+    end
+  end
+
+  defp direction("asc"), do: :asc
+  defp direction(_desc), do: :desc
 
   @doc """
   Installation-wide federation figures for the admin dashboard (issue #843):
@@ -428,18 +616,6 @@ defmodule Vutuv.Fediverse do
   @inbound_host_limit 600
   @inbound_actor_limit 60
   @inbound_window_ms :timer.hours(1)
-
-  # The host of an actor / inbox URI, as SQL: lowercased, scheme and path and
-  # port stripped, so it can be compared with a `fediverse_blocked_instances`
-  # row. Kept as one macro because three deletes and the admin volume list all
-  # need the same expression. NOTE: an Ecto `fragment/1` string may not contain
-  # a literal `?` (it is the parameter marker), which is why the pattern uses
-  # no non-capturing groups.
-  defmacrop uri_host(uri) do
-    quote do
-      fragment("lower(substring(? from '^[a-z]+://([^/:#]+)'))", unquote(uri))
-    end
-  end
 
   @doc "Every blocked remote server, newest first, with who blocked it."
   def list_blocked_instances do

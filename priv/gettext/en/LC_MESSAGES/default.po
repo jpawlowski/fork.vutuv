@@ -15763,4 +15763,52 @@ msgstr ""
 #: lib/vutuv_web/live/notification_live/index.ex:1048
 #, elixir-autogen, elixir-format, fuzzy
 msgid "replied to your post from another network."
+#: lib/vutuv_web/templates/settings/fediverse.html.heex:150
+#, elixir-autogen, elixir-format
+msgid "All followers"
+msgstr ""
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:240
+#, elixir-autogen, elixir-format
+msgid "All servers"
+msgstr ""
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:144
+#, elixir-autogen, elixir-format
+msgid "Following since"
+msgstr ""
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:359
+#, elixir-autogen, elixir-format
+msgid "How this list keeps itself honest"
+msgstr ""
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:227
+#, elixir-autogen, elixir-format
+msgid "name, handle or server"
+msgstr ""
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:277
+#, elixir-autogen, elixir-format
+msgid "No follower matches that. Try a shorter search, or clear the filters."
+msgstr ""
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:322
+#, elixir-autogen, elixir-format
+msgid "Show only followers from this server"
+msgstr ""
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:341
+#, elixir-autogen, elixir-format
+msgid "Showing %{first}-%{last} of %{total}."
+msgstr ""
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:192
+#, elixir-autogen, elixir-format
+msgid "Everyone on another network who follows your vutuv posts. Only you see this list: the followers collection your profile publishes carries the number, never the names."
+msgstr ""
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:361
+#, elixir-autogen, elixir-format
+msgid "Accounts that no longer exist on their own server drop off this list by themselves. Names and handles are the ones their server last told us, so a renamed account updates here on its own too."
 msgstr ""
