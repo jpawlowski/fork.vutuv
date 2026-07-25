@@ -201,6 +201,89 @@ defmodule VutuvWeb.FediverseControllerTest do
     end
   end
 
+  # A member who took part and then switched it off is *gone*, not merely
+  # absent: the remote servers read a 410 on an actor they know as "this account
+  # was deleted" and drop their copies of its posts, which is the closest the
+  # protocol comes to honouring "forget me". So 410 is reserved for that one
+  # case, and every other reason we withhold an actor keeps answering 404 — a
+  # temporary suspension must never tell the network to delete the account.
+  describe "410 Gone after a member opts out" do
+    defp departed_user do
+      user = federated_user()
+      {:ok, user} = Vutuv.Accounts.update_user(user, %{"fediverse_followers?" => "false"})
+      user
+    end
+
+    test "the actor, its collections and WebFinger all answer 410", %{conn: conn} do
+      user = departed_user()
+
+      for path <- [
+            "/#{user.username}/actor",
+            "/#{user.username}/actor/followers",
+            "/#{user.username}/actor/outbox",
+            "/.well-known/webfinger?resource=acct:#{user.username}@#{host()}"
+          ] do
+        assert conn |> recycle() |> get(path) |> Map.fetch!(:status) == 410
+      end
+    end
+
+    test "the profile URL answers an AP Accept with 410 too", %{conn: conn} do
+      user = departed_user()
+
+      conn =
+        conn
+        |> put_req_header("accept", "application/activity+json")
+        |> get("/#{user.username}")
+
+      assert conn.status == 410
+    end
+
+    test "a delivery to the inbox is answered 410, so the remote drops the follow",
+         %{conn: conn} do
+      {priv, pub} = Keys.generate()
+      stub_remote_actor(pub)
+      user = departed_user()
+
+      conn = signed_post(conn, user, follow_activity(user), priv)
+
+      assert conn.status == 410
+      assert Fediverse.follower_count(user) == 0
+    end
+
+    test "a member who never took part stays a 404 — nothing to forget", %{conn: conn} do
+      plain = insert(:activated_user)
+
+      assert conn |> get("/#{plain.username}/actor") |> Map.fetch!(:status) == 404
+
+      assert conn
+             |> recycle()
+             |> get("/.well-known/webfinger?resource=acct:#{plain.username}@#{host()}")
+             |> Map.fetch!(:status) == 404
+    end
+
+    test "a temporarily hidden member stays a 404, never a 410", %{conn: conn} do
+      for attrs <- [
+            %{suspended_until: ~N[2099-01-01 00:00:00]},
+            %{frozen_at: ~N[2026-07-01 00:00:00]},
+            %{deactivated_at: ~N[2026-07-01 00:00:00]}
+          ] do
+        user = insert(:activated_user, Map.put(attrs, :fediverse_followers?, true))
+        {:ok, _actor} = Fediverse.ensure_actor(user)
+
+        assert conn |> recycle() |> get("/#{user.username}/actor") |> Map.fetch!(:status) == 404
+      end
+    end
+
+    test "the installation switch being off is a 404, not the operator deleting members",
+         %{conn: conn} do
+      user = departed_user()
+      Application.put_env(:vutuv, :fediverse_enabled, false)
+      on_exit(fn -> Application.delete_env(:vutuv, :fediverse_enabled) end)
+
+      assert conn |> get("/#{user.username}/actor") |> Map.fetch!(:status) == 404
+    end
+  end
+
   describe "POST /:slug/actor/inbox — Follow" do
     test "a signed Follow stores the follower and queues the Accept", %{conn: conn} do
       {priv, pub} = Keys.generate()

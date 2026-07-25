@@ -140,6 +140,44 @@ defmodule Vutuv.Fediverse do
   end
 
   @doc """
+  Drops every remote follower stored for a member — what switching the opt-in
+  off means, the same way `drop_reactions/1` answers the reactions switch.
+
+  Two reasons it is a deletion rather than a pause. The rows are stored data
+  about people who never signed up here, so "off" has to mean off; and once the
+  actor answers `410 Gone` (see `departed?/1`) the remote servers drop the
+  follow at their end anyway, so keeping the rows would only inflate the
+  member's count with relationships that no longer exist anywhere else.
+  """
+  def drop_followers(%User{id: user_id}) do
+    {count, _} = Repo.delete_all(from(f in Follower, where: f.user_id == ^user_id))
+    count
+  end
+
+  @doc """
+  Whether this member's ActivityPub actor is **gone** rather than merely
+  absent: they took part once (the keypair from their opt-in is still here) and
+  have since switched the opt-in off.
+
+  This is the difference between `410 Gone` and `404 Not Found` on the actor
+  endpoints, and it matters more than the status code suggests: Mastodon & co.
+  read a `410` on an actor they know as "this account was deleted" and purge the
+  account **and its copies of that account's posts**, while a `404` is treated
+  as a hiccup and the copies stay. So `410` is the closest thing the protocol
+  offers to "please forget me", and it is reserved for the one case where the
+  member actually asked for it.
+
+  Deliberately **not** gone: a member who never federated (nothing to forget), a
+  member the installation switch turned off (an operator decision must not
+  erase members' remote presence), and every *temporary* state — frozen,
+  suspended, deactivated, unconfirmed. Those keep answering `404`, because a
+  three-day suspension must never tell the network to delete the account.
+  """
+  def departed?(%User{} = user) do
+    enabled?() and not user.fediverse_followers? and get_actor(user) != nil
+  end
+
+  @doc """
   A member's remote followers, newest first, for their own settings page (the
   public followers collection stays count-only, so this owner-only view is the
   only place the list is shown). Capped — a member with a huge following sees

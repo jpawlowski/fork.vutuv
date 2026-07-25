@@ -294,6 +294,56 @@ defmodule VutuvWeb.SettingsHTML do
     """
   end
 
+  @doc """
+  What the member has to have read before the Fediverse take-part switch flips,
+  in either direction. Rendered in both places the question is asked — the modal
+  on the settings page and the JS-less confirmation page — from this one source,
+  so the two can never end up saying different things.
+
+  The point of the words is the part vutuv cannot do: a delivered post is beyond
+  our reach for good, and leaving is a request to the other servers, not a
+  guarantee.
+  """
+  attr(:switching_on, :boolean, required: true)
+  attr(:title_id, :string, default: nil)
+
+  def fediverse_consent_notice(assigns) do
+    ~H"""
+    <h2 id={@title_id} class="text-lg font-bold text-slate-900 dark:text-white">
+      <%= if @switching_on do %>
+        {gettext("Once a post has left vutuv, it is out of our hands")}
+      <% else %>
+        {gettext("Switching off does not delete what is already out there")}
+      <% end %>
+    </h2>
+    <div class="mt-3 space-y-2 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+      <%= if @switching_on do %>
+        <p>
+          {gettext(
+            "Your public posts are copied to other servers. Once a copy is there we cannot delete it, we cannot change it, and we cannot see where it travels next. Editing or deleting a post on vutuv is only a request to those servers, and not every server honours it."
+          )}
+        </p>
+        <p>
+          {gettext(
+            "Switching this off again later stops new posts from going out. It cannot bring back what has already been delivered."
+          )}
+        </p>
+      <% else %>
+        <p>
+          {gettext(
+            "No new posts go out, and your followers from other networks are removed here. The next time those servers look you up they learn that this account is gone, and most of them then delete their copies of your posts."
+          )}
+        </p>
+        <p>
+          {gettext(
+            "Most of them, not all: we cannot check whether they do it, and anything that was re-shared, archived or indexed elsewhere stays out of reach. If you take part again later, people there have to follow you anew."
+          )}
+        </p>
+      <% end %>
+    </div>
+    """
+  end
+
   # A short, localized "last active" reading: just now / N minutes / N hours / N
   # days ago, falling back to an absolute date for anything older than a week.
   @doc false

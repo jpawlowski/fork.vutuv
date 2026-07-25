@@ -242,6 +242,44 @@ own redirect following would skip that second check), short timeouts, no
 retries, and a body ceiling that halts the stream rather than buffering. Every
 failure lands back on the profile with a plain-language flash naming the server,
 and the handle is right there to copy, so there is always a way through.
+## Leaving: 410 Gone, and saying so first
+
+Switching the opt-in off used to make every actor endpoint answer `404`, which
+remote servers shrug off — they kept the account and its copies of the member's
+posts indefinitely. Now `Vutuv.Fediverse.departed?/1` (took part once, the
+keypair is still here, opt-in now off) makes the actor, its collections, its
+inbox, WebFinger and the AP-negotiated profile URL answer **`410 Gone`**
+(`VutuvWeb.FediverseController.refuse/2`, shared with `UserController`). Mastodon
+& co. read a `410` on an actor they know as "this account was deleted" and purge
+the account **and its copies of that account's posts**: the closest the protocol
+comes to honouring "forget me", and the passive twin of the pruner above (which
+reads exactly that answer from the other side).
+
+Which is why `410` is **only** the member's own departure. Everything else keeps
+answering `404`: a member who never federated (nothing to forget), the
+installation switch being off (an operator decision must not erase members'
+remote presence), and every *temporary* hiding — frozen, suspended, deactivated,
+unconfirmed. A three-day suspension must never tell the network to delete the
+account.
+
+Because leaving now really does ask other servers to forget the member,
+switching off also **drops their follower rows** (`drop_followers/1`, the
+symmetry `drop_reactions/1` already had for the reaction counts): those servers
+drop the follow at their end, so a kept row would only be a relationship that
+exists nowhere else.
+
+And because neither direction can be taken back, the switch **asks first**. The
+words live in one place, `VutuvWeb.SettingsHTML.fediverse_consent_notice/1`, and
+are shown twice: as a modal on `/settings/fediverse` (the `fediverseConsent`
+enhancement in `app.js` intercepts the submit, and its confirm button sets the
+`fediverse_ack` field) and, for a browser without JavaScript, as the full-page
+`fediverse_confirm.html.heex`, which replays the submitted fields plus the
+acknowledgement. `SettingsController.update_fediverse/2` requires that
+acknowledgement whenever the submit actually flips the switch, so it can never
+flip unacknowledged; a save that only touches the other settings on the page
+passes straight through. What the words say is what vutuv cannot do: a delivered
+post is beyond reach for good, and leaving is a request to those servers, not a
+guarantee.
 
 ## Deliberate v1 limits
 

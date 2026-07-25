@@ -15,7 +15,9 @@ defmodule VutuvWeb.FediverseController do
   servers authenticate with HTTP signatures instead, verified against the
   key of the actor named in the signature's `keyId` (fetched SSRF-guarded).
   Everything 404s for members without the opt-in and while the installation
-  switch (`:fediverse_enabled`) is off.
+  switch (`:fediverse_enabled`) is off — except for a member who took part and
+  then switched it off, whose actor answers `410 Gone` so remote servers delete
+  their copies (see `refuse/2`).
   """
 
   use VutuvWeb, :controller
@@ -37,11 +39,14 @@ defmodule VutuvWeb.FediverseController do
 
   def webfinger(conn, params) do
     with true <- Fediverse.enabled?(),
-         %User{} = user <- resolve_resource(params["resource"]),
-         true <- Fediverse.federated?(user) do
-      conn
-      |> put_resp_content_type("application/jrd+json")
-      |> send_resp(200, Jason.encode!(jrd(user)))
+         %User{} = user <- resolve_resource(params["resource"]) do
+      if Fediverse.federated?(user) do
+        conn
+        |> put_resp_content_type("application/jrd+json")
+        |> send_resp(200, Jason.encode!(jrd(user)))
+      else
+        refuse(conn, user)
+      end
     else
       _ -> send_resp(conn, 404, "")
     end
@@ -270,12 +275,32 @@ defmodule VutuvWeb.FediverseController do
 
   defp with_federated_user(conn, slug, fun) do
     with true <- Fediverse.enabled?(),
-         %User{} = user <- Accounts.get_user_by_username(slug),
-         true <- Fediverse.federated?(user) do
-      fun.(user)
+         %User{} = user <- Accounts.get_user_by_username(slug) do
+      if Fediverse.federated?(user), do: fun.(user), else: refuse(conn, user)
     else
       _ -> send_resp(conn, 404, "")
     end
+  end
+
+  @doc """
+  The refusal for an actor we will not serve: `410 Gone` once the member has
+  switched their opt-in off (`Vutuv.Fediverse.departed?/1`), `404` otherwise.
+
+  The distinction is the whole point rather than protocol pedantry: a remote
+  server that meets a `410` on an actor it knows deletes that account **and the
+  copies it kept of their posts**, which is the closest the protocol comes to
+  honouring "forget me"; a `404` it shrugs off and keeps everything. So the
+  `410` is reserved for the member's own decision to leave, and every temporary
+  reason we hide an actor (frozen, suspended, deactivated, or the installation
+  switch being off) keeps answering `404`.
+
+  Public because the profile URL answers the same two ways under an ActivityPub
+  `Accept` (`VutuvWeb.UserController`).
+  """
+  def refuse(conn, user) do
+    if Fediverse.departed?(user),
+      do: send_resp(conn, 410, ""),
+      else: send_resp(conn, 404, "")
   end
 
   defp send_activity_json(conn, doc) do

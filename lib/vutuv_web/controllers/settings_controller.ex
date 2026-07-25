@@ -242,7 +242,30 @@ defmodule VutuvWeb.SettingsController do
     |> Ecto.Changeset.put_change(:also_known_as_input, Enum.join(user.also_known_as, "\n"))
   end
 
-  def update_fediverse(conn, %{"user" => params}) do
+  def update_fediverse(conn, %{"user" => params} = all) do
+    user = conn.assigns[:user]
+
+    # Taking part, and stopping again, both have consequences nobody can take
+    # back: a delivered post is beyond our reach for good, and leaving asks the
+    # other servers to forget an account that some of them may then not show
+    # again. So the switch never flips on a stray click — the member has to say
+    # they understood. With JS that is the modal on the page, which posts
+    # `fediverse_ack`; without it, this renders the same words as a full page
+    # with a confirm button. A save that leaves the switch alone (the reaction
+    # counts, say) needs no acknowledgement.
+    if switching_federation?(user, params) and all["fediverse_ack"] != "1" do
+      render(conn, "fediverse_confirm.html",
+        user: user,
+        params: params,
+        switching_on: truthy?(params["fediverse_followers?"]),
+        page_title: gettext("Fediverse")
+      )
+    else
+      save_fediverse(conn, params)
+    end
+  end
+
+  defp save_fediverse(conn, params) do
     save(
       conn,
       params,
@@ -256,9 +279,26 @@ defmodule VutuvWeb.SettingsController do
         # (issue #1068): what is already stored about people on other networks
         # goes with it, since that is the whole reason storing it is defensible.
         unless saved.fediverse_reactions?, do: Vutuv.Fediverse.drop_reactions(saved)
+
+        # Same rule for the followers themselves: leaving deletes the rows about
+        # people on other networks. The actor answers 410 from now on, so those
+        # servers drop the follow at their end too — a kept row would only be a
+        # relationship that no longer exists anywhere.
+        unless saved.fediverse_followers?, do: Vutuv.Fediverse.drop_followers(saved)
       end
     )
   end
+
+  # Whether this submit actually flips the take-part switch (in either
+  # direction), which is what needs acknowledging.
+  defp switching_federation?(user, params) do
+    case params["fediverse_followers?"] do
+      nil -> false
+      value -> truthy?(value) != user.fediverse_followers?
+    end
+  end
+
+  defp truthy?(value), do: value in [true, "true", "1", "on"]
 
   # Redirect the member's Fediverse followers to another account (issue #986,
   # half 2): broadcast a Move. The vutuv profile is untouched — only outbound

@@ -1,0 +1,42 @@
+<%!-- The take-part switch never flips on a stray click: the member has to say
+they understood what nobody can undo afterwards. With JavaScript that happens in
+the modal on the settings page, which posts `fediverse_ack` straight away; this
+page is what a browser without it gets, and it asks with the same words
+(fediverse_consent_notice/1) and re-submits the very fields that were sent.
+
+Deliberately its own page rather than an inline banner: the whole screen is the
+question, so the answer is a decision rather than a scroll-past. --%>
+<.settings_shell user={@user} active={:fediverse} title={gettext("Fediverse")}>
+  <div class="space-y-6">
+    <.card>
+      <.fediverse_consent_notice switching_on={@switching_on} />
+
+      <.form for={%{}} action={~p"/settings/fediverse"} method="put" class="mt-6">
+        <%!-- Replay exactly what was submitted, plus the acknowledgement. The
+              changeset casts only what it permits, so echoing the form's own
+              fields cannot smuggle anything else in. --%>
+        <input :for={{key, value} <- @params} type="hidden" name={"user[#{key}]"} value={value} />
+        <input type="hidden" name="fediverse_ack" value="1" />
+
+        <div class="flex flex-wrap items-center justify-end gap-3">
+          <.link
+            navigate={~p"/settings/fediverse"}
+            class="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+          >
+            {gettext("Cancel")}
+          </.link>
+          <button
+            type="submit"
+            class="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+          >
+            <%= if @switching_on do %>
+              {gettext("I understand, take part")}
+            <% else %>
+              {gettext("I understand, switch off")}
+            <% end %>
+          </button>
+        </div>
+      </.form>
+    </.card>
+  </div>
+</.settings_shell>

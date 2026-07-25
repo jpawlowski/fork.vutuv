@@ -83,7 +83,11 @@ defmodule VutuvWeb.FediverseGroundworkTest do
       {conn, user} = create_and_login_user(conn)
       assert Vutuv.Fediverse.get_actor(user) == nil
 
-      conn = put(conn, ~p"/settings/fediverse", %{"user" => %{"fediverse_followers?" => "true"}})
+      conn =
+        put(conn, ~p"/settings/fediverse", %{
+          "user" => %{"fediverse_followers?" => "true"},
+          "fediverse_ack" => "1"
+        })
 
       assert redirected_to(conn) == ~p"/settings/fediverse"
       assert Vutuv.Accounts.get_user(user.id).fediverse_followers?
@@ -95,7 +99,13 @@ defmodule VutuvWeb.FediverseGroundworkTest do
 
     test "lists who follows the member from the Fediverse", %{conn: conn} do
       {conn, user} = create_and_login_user(conn)
-      conn = put(conn, ~p"/settings/fediverse", %{"user" => %{"fediverse_followers?" => "true"}})
+
+      conn =
+        put(conn, ~p"/settings/fediverse", %{
+          "user" => %{"fediverse_followers?" => "true"},
+          "fediverse_ack" => "1"
+        })
+
       user = Vutuv.Accounts.get_user(user.id)
 
       {:ok, _} =
