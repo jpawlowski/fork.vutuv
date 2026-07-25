@@ -40,4 +40,29 @@ defmodule Vutuv.Notifications.EmailHtmlDriftTest do
            "These emails have a #{@html_dir}/*.html.heex but no #{@text_dir}/*.text.eex: " <>
              Enum.join(missing, ", ")
   end
+
+  test "every text template is compiled into a VutuvWeb.EmailText function" do
+    # `EmailText` builds one function per template from a compile-time wildcard,
+    # and each matched file becomes an `@external_resource` — so *editing* a
+    # template recompiles it but *adding* one would not, since the new file is
+    # not yet tracked and nothing else in that module changed. Where the build
+    # directory survives (an incremental local build, and CI, which caches
+    # `_build`), the new template silently never compiles.
+    #
+    # That shipped a red CI on a green local `mix precommit` (issue #1086: the
+    # username-change PIN mail raised `function
+    # VutuvWeb.EmailText.username_change_email_en/1 is undefined`). `EmailText`
+    # now defines `__mix_recompile__?/0` so Mix rebuilds it whenever the *set*
+    # of templates changes; this asserts the outcome rather than the mechanism.
+    missing =
+      for base <- text_bases(),
+          not function_exported?(VutuvWeb.EmailText, String.to_atom(base), 1),
+          do: base
+
+    assert missing == [],
+           "These templates exist but have no VutuvWeb.EmailText function: " <>
+             Enum.join(missing, ", ") <>
+             ". Run `mix compile --force` — and if that fixes it, the module's " <>
+             "__mix_recompile__?/0 is not doing its job."
+  end
 end
