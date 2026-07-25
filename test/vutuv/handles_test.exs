@@ -135,6 +135,14 @@ defmodule Vutuv.HandlesTest do
       # The rename rolled back: the member keeps the old handle in both places.
       assert Repo.reload(member).username == "someone"
       assert Repo.get_by(Handle, user_id: member.id).value == "someone"
+
+      # And the dry run behind the confirmation step (issue #1086) says so up
+      # front, so the member is not asked for a PIN or a passkey for a rename
+      # that the registry was always going to refuse.
+      assert {:error, dry_run} =
+               Accounts.validate_username_change(member, %{"username" => "acme"})
+
+      assert "has already been taken" in errors_on(dry_run).username
     end
 
     test "two organizations cannot hold the same handle" do

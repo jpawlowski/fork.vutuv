@@ -183,6 +183,51 @@ Changes are limited to 4 per rolling 90 days (counted via the `username_changes`
 ledger) and the form spells the quota out, including the next possible date once
 it is used up; it also previews how many posts the rename will update.
 
+### Renaming is re-confirmed (issue #1086)
+
+A rename is a public-identity change that frees the old handle for anyone to
+claim, so — like adding an email address and deleting the account, its
+neighbours on the settings menu — it asks the member to prove it is them.
+Before this, a live session was the only thing between a borrowed laptop and
+all of it.
+
+It is a **two-step flow**. `UsernameController.create` runs
+`Accounts.validate_username_change/2`, a dry run of every rename rule (grammar,
+availability against **both** `users.username` and the `handles` registry,
+reserved words, used-in-a-post, "already your username", quota) that writes
+nothing, then remembers the handle in the **session** and renders
+`/settings/username/confirm`. Nothing is renamed until step 2, and
+`update_username/2` re-runs all of it inside its transaction, so a handle that
+goes stale in between still cannot slip through.
+
+Step 2 takes whichever factor the member has, all converging on one commit path:
+
+| Factor | How |
+| --- | --- |
+| Passkey | `POST /settings/username/passkey/challenge` + `/passkey` (JSON, driven by `assets/js/webauthn.js`). Verifying only **stamps the session** (10 minutes, one use); the JS then submits the ordinary confirmation form, so the rename keeps its single CSRF-protected exit. The assertion's owner is checked against the signed-in member — otherwise any member's passkey would confirm any other member's rename. |
+| Authenticator app / one-time list code | Typed into the same field as the PIN, via `Accounts.check_confirmation_code/3` (the logged-in twin of `check_login_code/2`). |
+| Emailed PIN | `Emailer.username_change_email/4`, a `"username"`-type `LoginPin` whose payload is the pending handle. The mail **names the handle** it authorizes and says what to do if it was not requested. |
+
+The pending handle survives a trip back to the form: `new/2` deliberately does
+**not** clear it, because a GET must be safe and `/settings/username` is reached
+by accident constantly (sidebar row, breadcrumb, Back button, link prefetch).
+Clearing there made any of those silently destroy a confirmation in progress, so
+the member's correct PIN answered "this confirmation expired" with nothing on
+screen to explain why. It ages out after 30 minutes instead, alongside the PIN.
+
+**Which address gets the PIN** is the member's choice when they have several
+(`Accounts.list_email_values/1` fills the picker **and** is the allow-list the
+submitted address is checked against — without that check the picker would be a
+relay for mailing a valid PIN to an attacker's inbox). A member with one address
+and no enrolled factor is asked nothing: the PIN is sent as step 1 completes, so
+their flow is the familiar "type the number from your inbox". A member who *has*
+a passkey or an authenticator app is **not** mailed unasked — an unrequested PIN
+should read as an alarm, not as noise. Sends are throttled by
+`RateLimit.check_username_pin/2` (5/hour), attempts by `:username_change_confirm`.
+
+Not yet covered: the member has no durable record of *when* their username
+changed and by which factor. That is issue #1087's account-activity log.
+
 ## Import from LinkedIn
 
 On its own settings page (`/settings/import/linkedin`, owner-only) a member

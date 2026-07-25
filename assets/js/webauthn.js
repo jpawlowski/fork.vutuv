@@ -125,13 +125,47 @@ async function loginWithPasskey(button) {
   }
 }
 
+// Re-confirm a sensitive change you are already signed in for — today the
+// username rename (issue #1084). Unlike the login ceremony this does NOT act on
+// success: the server only stamps the session, and we then submit the page's
+// ordinary confirmation form, so the change keeps one CSRF-protected path
+// through the controller instead of a second, JSON-only way in.
+async function confirmWithPasskey(button) {
+  const scope = button.closest("#passkey-confirm") || document
+  button.disabled = true
+  hideError(scope)
+
+  try {
+    const options = await postJSON(button.dataset.challengeUrl, {})
+    if (options.error) return showError(scope, options.error)
+
+    options.challenge = b64urlToBuf(options.challenge)
+
+    const assertion = await navigator.credentials.get({ publicKey: options })
+    const result = await postJSON(button.dataset.verifyUrl, {
+      rawId: bufToB64url(assertion.rawId),
+      authenticatorData: bufToB64url(assertion.response.authenticatorData),
+      signature: bufToB64url(assertion.response.signature),
+      clientDataJSON: bufToB64url(assertion.response.clientDataJSON),
+    })
+
+    if (result.ok) document.getElementById(button.dataset.submitForm).submit()
+    else showError(scope, result.error || button.dataset.errorGeneric)
+  } catch (err) {
+    showError(scope, ceremonyError(button, err))
+  } finally {
+    button.disabled = false
+  }
+}
+
 function setupPasskeys() {
   const supported = !!window.PublicKeyCredential
 
   // Reveal the ceremony controls only on a supporting browser; otherwise show
-  // the "not supported" note (settings) and leave the email-PIN form alone.
+  // the "not supported" note (settings, username confirmation) and leave the
+  // email-PIN form alone.
   document
-    .querySelectorAll("#passkey-enroll, #passkey-signin")
+    .querySelectorAll("#passkey-enroll, #passkey-signin, #passkey-confirm")
     .forEach((el) => (el.hidden = !supported))
   document
     .querySelectorAll("[data-webauthn-unsupported]")
@@ -145,6 +179,11 @@ function setupPasskeys() {
   document
     .querySelectorAll("[data-webauthn-login]")
     .forEach((btn) => once(btn, "wa") && btn.addEventListener("click", () => loginWithPasskey(btn)))
+  document
+    .querySelectorAll("[data-webauthn-confirm]")
+    .forEach(
+      (btn) => once(btn, "wa") && btn.addEventListener("click", () => confirmWithPasskey(btn)),
+    )
 }
 
 onReady(setupPasskeys)

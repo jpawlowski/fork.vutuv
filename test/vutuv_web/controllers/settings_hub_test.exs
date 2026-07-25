@@ -198,7 +198,15 @@ defmodule VutuvWeb.SettingsHubTest do
     end
 
     test "renaming through the form works", %{conn: conn, user: user} do
+      # Two steps since issue #1086: the form remembers the handle, a PIN (or a
+      # passkey / authenticator code) commits it.
       conn = post(conn, ~p"/settings/username", user: %{"username" => "neuer_name"})
+      assert html_response(conn, 200) =~ "@neuer_name"
+
+      conn =
+        submit_with_csrf(conn, ~p"/settings/username/confirm", %{
+          "username_confirmation" => %{"code" => sent_pin()}
+        })
 
       assert redirected_to(conn) == "/neuer_name"
       assert Repo.get(Vutuv.Accounts.User, user.id).username == "neuer_name"

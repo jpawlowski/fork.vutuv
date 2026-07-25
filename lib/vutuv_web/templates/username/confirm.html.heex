@@ -1,0 +1,147 @@
+<%!-- Step 2 of a rename (issue #1086): prove it is you.
+
+One page, one job. The top card states plainly what is about to happen; the
+bottom card holds every way this member can confirm it, strongest first. A
+member with only an email address and only one of those never sees a choice at
+all - the PIN is already in their inbox by the time this renders, so the page
+reads as "type the number we sent you". --%>
+<.settings_shell
+  user={@user}
+  active={:username}
+  title={gettext("Confirm your new username")}
+  crumbs={[
+    {gettext("Settings"), ~p"/settings"},
+    {gettext("Username"), ~p"/settings/username"},
+    gettext("Confirm")
+  ]}
+>
+  <div class="space-y-6">
+    <.card>
+      <.section_title>{gettext("What will change")}</.section_title>
+      <p class="mt-3 flex flex-wrap items-center gap-2 text-sm">
+        <span class="rounded-lg bg-slate-100 px-2 py-1 font-mono text-slate-600 line-through dark:bg-slate-800 dark:text-slate-400">
+          @{@user.username}
+        </span>
+        <span aria-hidden="true" class="text-slate-400">&rarr;</span>
+        <span
+          id="pending-username"
+          class="rounded-lg bg-brand-50 px-2 py-1 font-mono font-semibold text-brand-700 dark:bg-brand-900/40 dark:text-brand-100"
+        >
+          @{@new_username}
+        </span>
+      </p>
+      <p class="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+        {gettext(
+          "Your current profile address stops working, and anyone can claim the handle you leave behind. Mentions of your old handle in posts are rewritten to the new one."
+        )}
+      </p>
+      <p class="mt-3 text-sm">
+        <.link
+          navigate={~p"/settings/username"}
+          class="font-semibold text-brand-600 hover:text-brand-700"
+        >
+          {gettext("Pick a different username")}
+        </.link>
+      </p>
+    </.card>
+
+    <.card>
+      <.section_title>{gettext("Confirm it is you")}</.section_title>
+      <p class="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+        {gettext(
+          "Your username is your public identity here, so we ask you to confirm the change once."
+        )}
+      </p>
+
+      <%!-- The passkey path, for members who enrolled one. Hidden until app.js
+      confirms the browser supports WebAuthn; the ceremony only stamps the
+      session, then submits the plain form below it. --%>
+      <div :if={@options.passkey?} id="passkey-confirm" hidden class="mt-4">
+        <button
+          type="button"
+          data-webauthn-confirm
+          data-challenge-url={~p"/settings/username/passkey/challenge"}
+          data-verify-url={~p"/settings/username/passkey"}
+          data-submit-form="username-passkey-form"
+          data-error-generic={gettext("That passkey could not be verified. Please try again.")}
+          class="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+        >
+          {gettext("Confirm with your passkey")}
+        </button>
+        <p data-webauthn-error hidden class="mt-2 text-sm text-red-600 dark:text-red-400"></p>
+
+        <.form
+          :let={_f}
+          for={%{}}
+          as={:username_confirmation}
+          action={~p"/settings/username/confirm"}
+          method="post"
+          id="username-passkey-form"
+          class="hidden"
+        >
+          <button type="submit" tabindex="-1" aria-hidden="true">
+            {gettext("Confirm")}
+          </button>
+        </.form>
+      </div>
+
+      <p
+        :if={@options.passkey?}
+        data-webauthn-unsupported
+        hidden
+        class="mt-4 text-sm text-slate-600 dark:text-slate-400"
+      >
+        {gettext("This browser does not support passkeys. Use a code below instead.")}
+      </p>
+
+      <%!-- The email-PIN sender sits ABOVE the code field exactly when the member
+      has nothing to type yet (no PIN in flight, no authenticator app): there,
+      getting a code is the first step, and burying that button under the submit
+      leaves them staring at an empty field. In every other state they already
+      have a code, so it drops below as the quiet "send it again". --%>
+      <.pin_sender
+        :if={pin_sender_first?(@options, @pin_email)}
+        options={@options}
+        pin_email={@pin_email}
+        class="mt-4"
+      />
+
+      <%!-- The code field. One field for every kind of code the member has, the
+      same way the login PIN field accepts an authenticator code (issue #912),
+      so nobody has to work out which box their code belongs in. --%>
+      <.form
+        :let={f}
+        for={%{}}
+        as={:username_confirmation}
+        action={~p"/settings/username/confirm"}
+        method="post"
+        id="username-confirm-form"
+        class="editform mt-6"
+      >
+        <div class="editform__field">
+          <%= label(f, :code, code_field_label(@options)) %>
+          <%= text_input(f, :code,
+            autofocus: true,
+            autocomplete: "one-time-code",
+            inputmode: (@options.list_codes? && "text") || "numeric",
+            spellcheck: "false",
+            autocapitalize: "none",
+            placeholder: gettext("Enter your code")
+          ) %>
+          <p class="editform__hint">{code_field_hint(@options, @pin_email)}</p>
+        </div>
+        <div class="editform__actions">
+          <%= link(gettext("Cancel"), to: ~p"/settings/username", class: "button button--cancel") %>
+          <%= submit(gettext("Change my username"), class: "button") %>
+        </div>
+      </.form>
+
+      <.pin_sender
+        :if={!pin_sender_first?(@options, @pin_email)}
+        options={@options}
+        pin_email={@pin_email}
+        class="mt-6 border-t border-slate-200 pt-4 dark:border-slate-800"
+      />
+    </.card>
+  </div>
+</.settings_shell>

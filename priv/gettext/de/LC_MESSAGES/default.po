@@ -16562,3 +16562,107 @@ msgstr "Alle, die Ihren vutuv-Beiträgen aus einem anderen Netzwerk folgen. Dies
 #, elixir-autogen, elixir-format
 msgid "Accounts that no longer exist on their own server drop off this list by themselves. Names and handles are the ones their server last told us, so a renamed account updates here on its own too."
 msgstr "Konten, die es auf ihrem eigenen Server nicht mehr gibt, verschwinden von selbst aus dieser Liste. Namen und Handles sind die, die uns der jeweilige Server zuletzt gemeldet hat: Ein umbenanntes Konto aktualisiert sich hier also ebenfalls von allein."
+
+#, elixir-autogen, elixir-format
+msgid "PIN sent to %{email}."
+msgstr "PIN an %{email} gesendet."
+
+#, elixir-autogen, elixir-format
+msgid "Please choose one of your own email addresses."
+msgstr "Bitte wählen Sie eine Ihrer eigenen E-Mail-Adressen."
+
+#, elixir-autogen, elixir-format
+msgid "Please confirm the change before we rename your account."
+msgstr "Bitte bestätigen Sie die Änderung, bevor wir Ihr Konto umbenennen."
+
+#, elixir-autogen, elixir-format
+msgid "This confirmation expired. Please start again."
+msgstr "Diese Bestätigung ist abgelaufen. Bitte beginnen Sie von vorn."
+
+#, elixir-autogen, elixir-format
+msgid "Confirm your new username"
+msgstr "Bestätigen Sie Ihren neuen Benutzernamen"
+
+#, elixir-autogen, elixir-format
+msgid "Code from your authenticator app"
+msgstr "Code aus Ihrer Authenticator-App"
+
+#, elixir-autogen, elixir-format
+msgid "Code from your list"
+msgstr "Code von Ihrer Kennwortliste"
+
+#, elixir-autogen, elixir-format
+msgid "We sent a PIN to %{email}. Any of your other codes works here too."
+msgstr "Wir haben einen PIN an %{email} geschickt. Ihre anderen Codes funktionieren hier ebenfalls."
+
+#, elixir-autogen, elixir-format
+msgid "Your authenticator app or one-time code list, or a PIN we email you."
+msgstr "Ihre Authenticator-App, Ihre Kennwortliste oder ein PIN, den wir Ihnen per E-Mail schicken."
+
+#, elixir-autogen, elixir-format
+msgid "Enter the PIN we emailed you."
+msgstr "Geben Sie den PIN ein, den wir Ihnen per E-Mail geschickt haben."
+
+#, elixir-autogen, elixir-format
+msgid "What will change"
+msgstr "Was sich ändert"
+
+#, elixir-autogen, elixir-format
+msgid "Your current profile address stops working, and anyone can claim the handle you leave behind. Mentions of your old handle in posts are rewritten to the new one."
+msgstr "Ihre bisherige Profiladresse funktioniert dann nicht mehr, und jeder kann den frei gewordenen Benutzernamen übernehmen. Erwähnungen Ihres alten Benutzernamens in Beiträgen werden auf den neuen umgeschrieben."
+
+#, elixir-autogen, elixir-format
+msgid "Pick a different username"
+msgstr "Anderen Benutzernamen wählen"
+
+#, elixir-autogen, elixir-format
+msgid "Confirm it is you"
+msgstr "Bestätigen Sie, dass Sie es sind"
+
+#, elixir-autogen, elixir-format
+msgid "Your username is your public identity here, so we ask you to confirm the change once."
+msgstr "Ihr Benutzername ist Ihre öffentliche Identität hier. Deshalb bitten wir Sie, die Änderung einmal zu bestätigen."
+
+#, elixir-autogen, elixir-format
+msgid "That passkey could not be verified. Please try again."
+msgstr "Dieser Passkey konnte nicht überprüft werden. Bitte versuchen Sie es erneut."
+
+#, elixir-autogen, elixir-format
+msgid "Confirm with your passkey"
+msgstr "Mit Passkey bestätigen"
+
+#, elixir-autogen, elixir-format
+msgid "This browser does not support passkeys. Use a code below instead."
+msgstr "Dieser Browser unterstützt keine Passkeys. Nutzen Sie stattdessen einen Code unten."
+
+#, elixir-autogen, elixir-format
+msgid "Enter your code"
+msgstr "Geben Sie Ihren Code ein"
+
+#, elixir-autogen, elixir-format
+msgid "Change my username"
+msgstr "Benutzernamen jetzt ändern"
+
+#, elixir-autogen, elixir-format
+msgid "Send the PIN to"
+msgstr "PIN senden an"
+
+#, elixir-autogen, elixir-format
+msgid "Send a new PIN"
+msgstr "Neuen PIN senden"
+
+#, elixir-autogen, elixir-format
+msgid "Email me a PIN"
+msgstr "PIN per E-Mail schicken"
+
+#, elixir-autogen, elixir-format
+msgid "The PIN goes to %{email}."
+msgstr "Der PIN geht an %{email}."
+
+#, elixir-autogen, elixir-format
+msgid "We sent a PIN to %{email}."
+msgstr "Wir haben einen PIN an %{email} geschickt."
+
+#, elixir-autogen, elixir-format
+msgid "Ask for a PIN first, then enter it here."
+msgstr "Fordern Sie zuerst einen PIN an und geben Sie ihn hier ein."

@@ -209,6 +209,52 @@ defmodule Vutuv.Accounts.SlugTest do
     end
   end
 
+  describe "validate_username_change/2 (the dry run behind the confirmation step)" do
+    # Issue #1086 confirms a rename before committing it, so the form has to
+    # answer "would this go through?" without writing anything — otherwise a
+    # member would chase down a PIN only to be told the name was never valid.
+    test "accepts a claimable handle and returns it normalized, writing nothing" do
+      user = insert_activated_user()
+
+      assert {:ok, "fresh_handle"} =
+               Accounts.validate_username_change(user, %{"username" => "Fresh_Handle"})
+
+      assert Repo.get(User, user.id).username == user.username
+      assert Repo.aggregate(UsernameChange, :count) == 0
+    end
+
+    test "rejects exactly what the commit rejects" do
+      insert(:user, username: "wanted_handle")
+      user = insert_activated_user()
+
+      for {attempt, message} <- [
+            {"not valid!", "may only contain letters, numbers, and underscores"},
+            {"wanted_handle", "has already been taken"},
+            {user.username, "is already your username"},
+            {"login", "is reserved"}
+          ] do
+        assert {:error, changeset} =
+                 Accounts.validate_username_change(user, %{"username" => attempt})
+
+        assert Enum.any?(errors_on(changeset).username, &(&1 =~ message)),
+               "expected #{inspect(attempt)} to be rejected with #{inspect(message)}"
+      end
+    end
+
+    test "an exhausted quota is refused before anything is confirmed" do
+      user = insert_activated_user()
+      for n <- 1..4, do: {:ok, _} = Accounts.update_username(user, %{"username" => "dry_#{n}"})
+
+      assert {:error, changeset} =
+               Accounts.validate_username_change(
+                 Repo.get(User, user.id),
+                 %{"username" => "one_too_many"}
+               )
+
+      assert "can only be changed 4 times within 90 days" in errors_on(changeset).username
+    end
+  end
+
   describe "the change quota (4 per rolling 90 days)" do
     test "a fresh account has the full quota" do
       user = insert_activated_user()
