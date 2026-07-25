@@ -69,8 +69,30 @@ every endpoint 404s and nothing is delivered.
   protocol — a server that already purged the account answers our actor fetch
   with 410, so the signature cannot be verified and the activity is rejected;
   it lands during the window where the account is suspended but still served.
-  Deliveries to a gone inbox are dropped by the queue on 404/410 but do not
-  yet prune the follower row (see the v1 limits).
+  Deliveries to a gone inbox are dropped by the queue on 404/410; the follower
+  row behind them is dropped by the pruner below.
+- **Pruning followers who left silently** (issue #1072,
+  `Vutuv.Fediverse.FollowerPruner` + `prune_due_followers/1`): an `Undo(Follow)`
+  or the remote's own `Delete` removes a follower at once, but a server that
+  simply stops answering for one account tells us nothing — deliveries go to its
+  *shared* inbox, which keeps working for everybody else there, so pruning on a
+  failed delivery would wrongly drop that whole server. Instead each follower row
+  is re-fetched on a slow rotation with the SSRF-guarded, size-capped, signed
+  `fetch_remote_actor/2` and removed **only** on `404` or `410` (what the common
+  implementations answer for a deleted account). A timeout, a connection error, a
+  `5xx`, a `429` or a redirect leaves the row alone and only stamps
+  `fediverse_followers.last_checked_at` — the server is having a bad day, not a
+  person leaving. Bounded three ways so a big server is never hammered: one row
+  is re-checked at most every `prune_recheck_days/0` (30), a run takes at most
+  `prune_batch/0` (50) rows and at most 10 of them from any one host, and the run
+  is hourly. Each removal appends one row to `fediverse_follower_prunes`
+  (`Vutuv.Fediverse.FollowerPrune`) carrying the member, the **host** and the
+  status — deliberately *not* the remote actor URI, since not holding an
+  identifier of somebody who deleted their account is the entire point. The
+  nightly Tagesbericht counts them (`Vutuv.Reports`, "Entfernte
+  Fediverse-Follower"), so a mass-prune is visible the next morning rather than
+  silent. Gated by `:fediverse_follower_pruning` (off in tests) on top of
+  `:fediverse_enabled`.
 - **Reactions from other networks** (issue #1068, the one inbound thing that is
   stored): a `Like` or `Announce` naming a member's public Note becomes one row
   in `fediverse_reactions` (`Vutuv.Fediverse.Reaction`) — `post_id`,
@@ -199,10 +221,10 @@ Actor bullet above). The design choice worth remembering: a move-out is a
 Fediverse actor, so moving your Fediverse followers away only pauses outbound
 post federation and publishes the redirect; the profile, CV and everything else
 stay. Deleting an account remains its own separate action. The followers
-collection is count-only (privacy). A follower row whose inbox answers 404/410
-is not pruned either: deliveries go to the sharedInbox where the remote
-declares one, so a per-actor gone signal rarely reaches us and pruning on a
-shared inbox would drop every follower on that server (issue #1072).
+collection is count-only (privacy). Followers who leave without saying so are
+found now (issue #1072) — the hourly re-check above prunes a row only on a
+`404`/`410` from the actor document itself, never on a failed delivery to a
+shared inbox.
 
 ## Non-goal: reading other networks inside vutuv
 

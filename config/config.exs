@@ -127,6 +127,13 @@ config :vutuv, :ads_enabled, false
 # either way (users.fediverse_followers?).
 config :vutuv, :fediverse_enabled, true
 
+# Whether the hourly GenServer that re-checks remote followers runs (off in
+# tests, where it would touch the SQL sandbox from outside; tests call
+# Vutuv.Fediverse.prune_due_followers/1 directly). It drops a follower row
+# whose remote account answers 404/410 — the accounts that vanished without
+# an Undo or a Delete. A no-op anyway while :fediverse_enabled is off.
+config :vutuv, :fediverse_follower_pruning, true
+
 # The site-wide AI-crawler stance (see VutuvWeb.ContentPolicy): :permissive
 # welcomes search, live AI input AND model training; :block_training keeps
 # retrieval but declares ai-train=no and blocks the training crawlers in

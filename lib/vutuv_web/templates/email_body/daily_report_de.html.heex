@@ -7,6 +7,9 @@
     <.email_row label="Likes">{@report.likes}</.email_row>
     <.email_row label="Lesezeichen">{@report.bookmarks}</.email_row>
     <.email_row label="Neue Fediverse-Follower">{@report.fediverse_followers}</.email_row>
+    <.email_row label="Entfernte Fediverse-Follower (Konto gelöscht)">
+      {@report.fediverse_prunes}
+    </.email_row>
   </.email_panel>
   <.email_p><strong>Zustellbarkeit (E-Mail)</strong></.email_p>
   <.email_panel>

@@ -106,6 +106,24 @@ defmodule Vutuv.ReportsTest do
       assert Reports.daily(@date).fediverse_followers == 2
     end
 
+    test "counts the remote followers pruned that Berlin day" do
+      user = insert(:user)
+
+      for naive <- [@on_day, @on_day, @other_day] do
+        Repo.insert!(
+          struct(
+            Vutuv.Fediverse.FollowerPrune,
+            [user_id: user.id, host: "social.example", status: 410] ++ at(naive)
+          )
+        )
+      end
+
+      report = Reports.daily(@date)
+
+      assert report.fediverse_prunes == 2
+      assert [%{host: "social.example"} | _] = report.details.fediverse_prunes
+    end
+
     test "the day range is half-open: the start instant counts, the end instant does not" do
       author = insert(:user)
       # day_start = 2026-01-14 23:00 UTC (inclusive), day_end = 2026-01-15 23:00 (exclusive).

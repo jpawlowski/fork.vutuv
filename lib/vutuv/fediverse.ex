@@ -12,7 +12,9 @@ defmodule Vutuv.Fediverse do
       lazily on opt-in; `VutuvWeb.Fediverse.Docs` renders the documents.
     * followers — remote actors following a member
       (`Vutuv.Fediverse.Follower`), written by the inbox on Follow/Undo and
-      kept in step with the remote's own Update/Delete.
+      kept in step with the remote's own Update/Delete; the ones who leave
+      without saying so are found by the slow re-check
+      (`Vutuv.Fediverse.FollowerPruner`).
     * deliveries — a DB-backed outbound queue (`Vutuv.Fediverse.Delivery`)
       drained by `Vutuv.Fediverse.Deliverer` with signed POSTs
       (`Vutuv.Fediverse.HttpSignature`), mirroring the webhooks queue.
@@ -34,6 +36,7 @@ defmodule Vutuv.Fediverse do
   alias Vutuv.Fediverse.Deliverer
   alias Vutuv.Fediverse.Delivery
   alias Vutuv.Fediverse.Follower
+  alias Vutuv.Fediverse.FollowerPrune
   alias Vutuv.Fediverse.HttpSignature
   alias Vutuv.Fediverse.Keys
   alias Vutuv.Fediverse.Reaction
@@ -211,6 +214,141 @@ defmodule Vutuv.Fediverse do
       )
     )
   end
+
+  ## Pruning followers whose account is gone (issue #1072)
+
+  # Not every departure is announced. An `Undo(Follow)` or the remote actor's
+  # own `Delete` removes a follower at once, but a server that simply stops
+  # answering for one account tells us nothing — deliveries go to its shared
+  # inbox, which keeps working for everybody else on that server. So each
+  # follower row is re-fetched on a slow rotation and dropped only on the two
+  # answers that mean the account itself is gone.
+  #
+  # Slow and bounded on purpose: one row is re-checked at most every
+  # @prune_recheck_days, a run takes at most @prune_batch rows and at most
+  # @prune_per_host of them from any one server, and the run is hourly
+  # (`Vutuv.Fediverse.FollowerPruner`). A big server therefore sees a handful
+  # of plain GETs an hour, never a sweep of its whole roster.
+  @prune_recheck_days 30
+  @prune_batch 50
+  @prune_per_host 10
+
+  # 404 (no such actor) and 410 (Gone — what the common server implementations
+  # answer for a deleted account) are the only answers that prune. A timeout, a
+  # connection error, a 5xx, a 429 rate limit or a redirect all mean the server
+  # is having a bad day, not that a person left, so the row stays.
+  @gone_statuses [404, 410]
+
+  @doc "How long (days) before one follower row is re-checked again."
+  def prune_recheck_days, do: @prune_recheck_days
+
+  @doc "How many follower rows one pruning run checks at most."
+  def prune_batch, do: @prune_batch
+
+  @doc """
+  Re-checks the follower rows that are due and drops the ones whose remote
+  account is gone, recording each removal in the prune ledger
+  (`Vutuv.Fediverse.FollowerPrune`) for the nightly Tagesbericht. Returns how
+  many rows were pruned. A no-op — and no outbound request at all — when the
+  installation-wide switch is off.
+
+  Called by `Vutuv.Fediverse.FollowerPruner`; tests call it directly.
+  """
+  def prune_due_followers(now \\ NaiveDateTime.utc_now()) do
+    now = NaiveDateTime.truncate(now, :second)
+
+    if enabled?(), do: do_prune_due_followers(now), else: 0
+  end
+
+  defp do_prune_due_followers(now) do
+    due = followers_due_for_prune(now)
+    actors = actors_by_user_id(due)
+
+    # Each check is one blocking HTTPS round trip (no DB connection held during
+    # it), so run a few at a time instead of summing every remote's latency.
+    due
+    |> Task.async_stream(&check_follower(&1, actors[&1.user_id], now),
+      max_concurrency: 5,
+      timeout: 30_000,
+      on_timeout: :kill_task
+    )
+    |> Enum.count(&(&1 == {:ok, :pruned}))
+  end
+
+  @doc """
+  The follower rows due for a re-check: never checked, or last checked longer
+  than `prune_recheck_days/0` ago. Oldest first, capped at `prune_batch/0` rows
+  and at `@prune_per_host` rows per remote server.
+  """
+  def followers_due_for_prune(now \\ NaiveDateTime.utc_now()) do
+    cutoff =
+      NaiveDateTime.add(NaiveDateTime.truncate(now, :second), -@prune_recheck_days * 86_400)
+
+    from(f in Follower,
+      where: is_nil(f.last_checked_at) or f.last_checked_at < ^cutoff,
+      order_by: [asc_nulls_first: f.last_checked_at, asc: f.id],
+      # Read a wider window than one batch: a server with thousands of stale
+      # rows would otherwise fill the batch by itself and the per-host cap
+      # would leave the run half empty, starving everybody else.
+      limit: ^(@prune_batch * 4),
+      preload: [:user]
+    )
+    |> Repo.all()
+    |> spread_across_hosts()
+  end
+
+  defp spread_across_hosts(followers) do
+    followers
+    |> Enum.reduce({[], %{}}, fn follower, {kept, per_host} ->
+      host = BlockedInstance.normalize_host(follower.actor_uri) || follower.actor_uri
+      taken = Map.get(per_host, host, 0)
+
+      if taken < @prune_per_host,
+        do: {[follower | kept], Map.put(per_host, host, taken + 1)},
+        else: {kept, per_host}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+    |> Enum.take(@prune_batch)
+  end
+
+  defp check_follower(%Follower{} = follower, actor, now) do
+    case fetch_remote_actor(follower.actor_uri, signer_for(follower.user, actor)) do
+      {:error, {:http, status}} when status in @gone_statuses ->
+        prune_follower(follower, status)
+
+      _ ->
+        touch_follower(follower, now)
+    end
+  end
+
+  defp prune_follower(%Follower{} = follower, status) do
+    Repo.delete(follower)
+
+    # The host is always parseable here (an unparseable actor URI never gets as
+    # far as an HTTP status), but fall back rather than lose the ledger row: a
+    # deletion the report cannot see is exactly what this is meant to prevent.
+    %FollowerPrune{user_id: follower.user_id}
+    |> FollowerPrune.changeset(%{
+      host: BlockedInstance.normalize_host(follower.actor_uri) || "unknown",
+      status: status
+    })
+    |> Repo.insert()
+
+    :pruned
+  end
+
+  # Everything that is not a "gone" answer only moves the clock, so the next run
+  # picks up other rows instead of hammering the same unhappy server.
+  defp touch_follower(%Follower{} = follower, now) do
+    follower |> Ecto.Changeset.change(last_checked_at: now) |> Repo.update()
+    :kept
+  end
+
+  defp signer_for(%User{} = user, %Actor{} = actor),
+    do: {Docs.key_id(user), actor.private_key_pem}
+
+  defp signer_for(_user, _actor), do: nil
 
   ## Blocked instances and inbound caps (issue #1067)
 
@@ -560,12 +698,7 @@ defmodule Vutuv.Fediverse do
 
   # The member's own key, to sign the target-actor fetch (authorized-fetch
   # instances reject anonymous GETs). federated?/1 guaranteed the actor exists.
-  defp signer(user) do
-    case get_actor(user) do
-      nil -> nil
-      actor -> {Docs.key_id(user), actor.private_key_pem}
-    end
-  end
+  defp signer(user), do: signer_for(user, get_actor(user))
 
   ## Federating posts (called from Vutuv.Posts after commit)
 
@@ -771,8 +904,10 @@ defmodule Vutuv.Fediverse do
     length(due)
   end
 
-  defp actors_by_user_id(deliveries) do
-    user_ids = deliveries |> Enum.map(& &1.user_id) |> Enum.uniq()
+  # The signing actor for each member behind a list of rows carrying `user_id`
+  # (deliveries, follower re-checks), in one query instead of one per row.
+  defp actors_by_user_id(rows) do
+    user_ids = rows |> Enum.map(& &1.user_id) |> Enum.uniq()
 
     from(a in Actor, where: a.user_id in ^user_ids)
     |> Repo.all()

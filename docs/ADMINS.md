@@ -477,6 +477,20 @@ is not a vetted party. Your levers live at **`/admin` → Fediverse**
   biggest first, and the dashboard card names the busiest one. That is the list
   a block decision is made from.
 
+**Followers who leave without saying so.** Somebody on another server who
+unfollows, or who deletes their account and whose server announces it, disappears
+from a member's follower list at once. Not every departure is announced, so once
+an hour vutuv re-asks a small handful of remote servers whether a follower's
+account still exists, and drops the row when the server answers "no such account"
+(HTTP 404) or "gone" (410). Nothing else drops a follower: a server that is slow,
+down, overloaded or rate-limiting you is having a bad day, not losing a person.
+Each row is re-asked at most once a month and no more than ten accounts per
+server per run, so even a huge server sees a few plain requests an hour. The
+nightly report counts the removals ("Entfernte Fediverse-Follower"), which is
+where you would notice a whole server dropping out at once. This keeps your
+members' follower counts honest and stops the installation from holding the
+address of somebody who deleted their account.
+
 **What is stored from other servers.** Exactly one thing: a bare counter row per
 remote person per post per kind (favourite / re-share), holding only that
 person's account address, the kind and the time. No name, no picture, no text.

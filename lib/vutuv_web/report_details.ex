@@ -37,6 +37,7 @@ defmodule VutuvWeb.ReportDetails do
     {:likes, "Likes"},
     {:bookmarks, "Lesezeichen"},
     {:fediverse_followers, "Neue Fediverse-Follower"},
+    {:fediverse_prunes, "Entfernte Fediverse-Follower (Konto gelöscht)"},
     {:bounces, "Bounces"},
     {:deactivations, "Deaktivierte Adressen"},
     {:freezes, "Eingefrorene Konten"},
@@ -103,6 +104,17 @@ defmodule VutuvWeb.ReportDetails do
       primary: follower_display(follower),
       secondary: "@" <> follower.user.username,
       path: "/" <> follower.user.username
+    }
+  end
+
+  # A pruned follower is deliberately nameless — only the server it lived on
+  # survives the deletion (see Vutuv.Fediverse.FollowerPrune), so the line reads
+  # "mastodon.example (HTTP 410)" against the member who lost the follower.
+  defp entry(:fediverse_prunes, prune) do
+    %{
+      primary: prune.host,
+      secondary: "HTTP #{prune.status} · @#{prune.user.username}",
+      path: "/" <> prune.user.username
     }
   end
 

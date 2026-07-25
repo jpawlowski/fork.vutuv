@@ -6679,6 +6679,11 @@ msgstr "Deaktivierte Adressen"
 msgid "New Fediverse followers"
 msgstr "Neue Fediverse-Follower"
 
+#: lib/vutuv_web/views/admin/report_html.ex:41
+#, elixir-autogen, elixir-format
+msgid "Removed Fediverse followers (account deleted)"
+msgstr "Entfernte Fediverse-Follower (Konto gelöscht)"
+
 #: lib/vutuv_web/templates/admin/report/index.html.heex:89
 #, elixir-autogen, elixir-format
 msgid "… and %{count} more"
@@ -10463,6 +10468,13 @@ msgstr "Die ausgehende Föderation läuft störungsfrei."
 #, elixir-autogen, elixir-format
 msgid "Showing the most recent %{shown} of %{total}."
 msgstr "Die neuesten %{shown} von %{total} werden angezeigt."
+
+#: lib/vutuv_web/templates/settings/fediverse.html.heex:151
+#, elixir-autogen, elixir-format
+msgid "Accounts that no longer exist on their own server drop off this list by themselves."
+msgstr ""
+"Konten, die es auf ihrem eigenen Server nicht mehr gibt, verschwinden von "
+"selbst aus dieser Liste."
 
 #: lib/vutuv_web/templates/admin/admin/index.html.heex:296
 #, elixir-autogen, elixir-format

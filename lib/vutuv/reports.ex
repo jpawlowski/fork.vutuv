@@ -4,7 +4,8 @@ defmodule Vutuv.Reports do
 
   `daily/1` tallies a single German calendar day (`Vutuv.BerlinTime`):
   confirmed-by-PIN new registrations, the number of posts, reposts, likes and
-  bookmarks created that day, and the new Fediverse followers gained. The admin
+  bookmarks created that day, the new Fediverse followers gained, and the
+  remote followers dropped again because their account is gone. The admin
   reports page
   (`VutuvWeb.Admin.ReportController`) renders any past day on demand;
   `Vutuv.Reports.DailyReporter` mails the previous day's report just after
@@ -17,6 +18,7 @@ defmodule Vutuv.Reports do
   alias Vutuv.BerlinTime
   alias Vutuv.Deliverability
   alias Vutuv.Fediverse.Follower
+  alias Vutuv.Fediverse.FollowerPrune
   alias Vutuv.Notifications.Emailer
   alias Vutuv.Posts.{Post, PostBookmark, PostLike, PostRepost}
   alias Vutuv.Repo
@@ -45,6 +47,7 @@ defmodule Vutuv.Reports do
       likes: count_between(PostLike, day_start, day_end),
       bookmarks: count_between(PostBookmark, day_start, day_end),
       fediverse_followers: count_between(Follower, day_start, day_end),
+      fediverse_prunes: count_between(FollowerPrune, day_start, day_end),
       bounces: deliverability.bounces,
       deactivations: deliverability.deactivations,
       freezes: deliverability.freezes,
@@ -57,6 +60,7 @@ defmodule Vutuv.Reports do
         likes: sample(PostLike, [:user, :post], day_start, day_end, limit),
         bookmarks: sample(PostBookmark, [:user, :post], day_start, day_end, limit),
         fediverse_followers: sample(Follower, [:user], day_start, day_end, limit),
+        fediverse_prunes: sample(FollowerPrune, [:user], day_start, day_end, limit),
         bounces: deliverability_details.bounces,
         deactivations: deliverability_details.deactivations,
         freezes: deliverability_details.freezes,
