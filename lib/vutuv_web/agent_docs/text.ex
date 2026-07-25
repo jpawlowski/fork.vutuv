@@ -423,6 +423,7 @@ defmodule VutuvWeb.AgentDocs.Text do
         "#{gettext("Preferred workplace")}: #{User.desired_workplace_line(doc.desired_workplace_types)}",
       doc.desired_salary && User.desired_salary_agent_line(doc.desired_salary),
       "#{gettext("Member since")}: #{doc.member_since}",
+      fediverse_fact(doc[:fediverse]),
       count_facts(doc.counts),
       doc.gender && "#{gettext("Gender")}: #{User.gender_gettext(doc.gender)}",
       doc.birthdate && "#{gettext("Birthday")}: #{doc.birthdate}",
@@ -433,6 +434,18 @@ defmodule VutuvWeb.AgentDocs.Text do
     |> Enum.filter(& &1)
     |> Enum.join("\n")
   end
+
+  # The member's Fediverse address, the same fact the profile's Fediverse card
+  # shows; absent for the vast majority who do not federate. A moved account
+  # names where it went, so a reader follows the new address, not the redirect.
+  defp fediverse_fact(nil), do: nil
+
+  defp fediverse_fact(%{moved_to: moved_to} = fediverse) when is_binary(moved_to) do
+    "#{gettext("Fediverse")}: #{fediverse.handle} " <>
+      "(#{gettext("moved to %{address}", address: moved_to)})"
+  end
+
+  defp fediverse_fact(fediverse), do: "#{gettext("Fediverse")}: #{fediverse.handle}"
 
   # The follower / following / connection counts, each shown only when non-zero.
   defp count_facts(counts) do

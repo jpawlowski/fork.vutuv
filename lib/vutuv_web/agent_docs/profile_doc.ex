@@ -13,6 +13,7 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
   alias Vutuv.Accounts
   alias Vutuv.Accounts.User
   alias Vutuv.CodeStats
+  alias Vutuv.Fediverse
   alias Vutuv.Profiles.Address
   alias Vutuv.Profiles.Education
   alias Vutuv.Profiles.Language
@@ -26,6 +27,7 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
   alias Vutuv.Tags.UserTag
   alias VutuvWeb.AgentDocs
   alias VutuvWeb.AgentDocs.SectionDocs
+  alias VutuvWeb.Fediverse.Docs
   alias VutuvWeb.UserHelpers
 
   @doc """
@@ -153,6 +155,11 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
       # :fetch_code_stats flag is off or the member opted out — consistent
       # with the page.
       code_stats: Enum.map(CodeStats.visible_accounts(user), &code_stats_entry/1),
+      # The member's Fediverse address, mirroring the profile's Fediverse card:
+      # present only while they federate (and the installation switch is on),
+      # nil otherwise. An agent handing a human "where else can I follow this
+      # person" needs exactly the handle; the actor URL is the machine sibling.
+      fediverse: fediverse_entry(user),
       posts: Enum.map(posts, &post_entry/1)
     })
     |> Map.merge(birthday_fields(user))
@@ -211,6 +218,19 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
       title: UserHelpers.current_title(job),
       organization: UserHelpers.current_organization(job)
     }
+  end
+
+  # `moved_to` is the forwarding address a member set when they moved their
+  # Fediverse account elsewhere (issue #986): the handle still resolves, but it
+  # answers with a redirect, so the page and the docs both name the new home.
+  defp fediverse_entry(user) do
+    if Fediverse.federated?(user) do
+      %{
+        handle: Docs.handle(user),
+        actor_url: Docs.actor_url(user),
+        moved_to: user.moved_to
+      }
+    end
   end
 
   # The page hides "other" (the unspecified default); the docs do the same.

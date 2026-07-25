@@ -89,7 +89,7 @@ subpage now (/settings/fediverse/move), linked from the footer below. --%>
         <code
           id="fediverse-handle"
           class="min-w-0 flex-1 select-all break-all text-sm text-slate-800 dark:text-slate-100"
-        >@{@user.username}@{@fediverse_host}</code>
+        >{VutuvWeb.Fediverse.Docs.handle(@user)}</code>
         <button
           type="button"
           data-copy

@@ -183,6 +183,15 @@ every endpoint 404s and nothing is delivered.
   will never move accounts — and where the two directions, 300px apart, read as
   the same thing. Every move action redirects back to that page, so the state
   change lands on screen.
+- **The profile** (issue #1081) is where everyone else finds out. A federating
+  member's `/:slug` carries a **Fediverse card**: the handle `@member@vutuv.de`
+  with a copy button, and the "Follow from your own server" field described
+  below. It is the one card written for a visitor who is not a member, and it
+  renders for nobody else (no opt-in, no card; installation switch off, no
+  card). A member who moved their account away
+  (`moved_to`) sees the forwarding address in its place, since the old handle
+  now only answers with a redirect. `ProfileDoc` carries the same facts into
+  the agent formats.
 - **The member** sees who follows them on `/settings/fediverse` (not just the
   count). The inbox captures each remote actor's `preferredUsername` and
   display name onto the `Follower` row (`handle`/`name`, cosmetic and
@@ -201,6 +210,38 @@ every endpoint 404s and nothing is delivered.
   server has stored here, biggest first, which is what a block decision is made
   from. The nightly Tagesbericht (`Vutuv.Reports`) counts new remote followers
   per Berlin day.
+
+## Follow from your own server
+
+Handing out a handle only gets a visitor halfway: they still have to switch
+apps, paste it into a search box and wait. The Fediverse's answer is the
+**remote-follow (OStatus subscribe) template**, which every server publishes in
+its own WebFinger document. So the profile card asks the visitor for *their*
+address, `Vutuv.Fediverse.RemoteFollow` looks up *their* server's follow dialog
+and `VutuvWeb.RemoteFollowController` (`POST /:slug/fediverse/follow`) redirects
+them into it with the member's `acct:` URI filled in. The follow is then
+confirmed where the visitor's account actually lives; no credential ever reaches
+vutuv and the typed address is used for one lookup and forgotten.
+
+    GET https://their.server/.well-known/webfinger?resource=acct:them@their.server
+    -> links: [{"rel": "http://ostatus.org/spec/1.0#subscribe",
+                "template": "https://their.server/authorize_interaction?uri={uri}"}]
+
+It is a plain HTML form post, not a `phx-click`: the person it is for arrives
+from another network and is the last visitor whose JavaScript we should assume
+anything about. (The profile is a LiveView, which loads the session's CSRF state,
+so the token the form stamps is valid from a live render too.)
+
+This is also the **only outbound fetch an anonymous visitor can trigger**, so it
+is fenced like the inbox path it borrows its shape from: the installation switch
+plus the member actually federating (a crafted POST to a non-federating member is
+refused), a rate limit per IP (`VutuvWeb.RateLimit`, 20/h), https only, the host
+vetted against `Vutuv.Ssrf` before the request **and again** after the single
+redirect hop that is allowed (the common apex-to-server WebFinger setup — Req's
+own redirect following would skip that second check), short timeouts, no
+retries, and a body ceiling that halts the stream rather than buffering. Every
+failure lands back on the profile with a plain-language flash naming the server,
+and the handle is right there to copy, so there is always a way through.
 
 ## Deliberate v1 limits
 
