@@ -323,6 +323,25 @@ defmodule VutuvWeb.UITest do
       assert html =~ "…"
     end
 
+    test "both ends stay reachable from the middle of a long list" do
+      # 10,000 rows -> 40 pages; from page 20 the window is 15..25, so without
+      # the end jumps neither page 1 nor page 40 could be reached in one click.
+      html = render_component(&UI.pager/1, params: %{"page" => "20"}, total: 10_000)
+
+      assert html =~ ~s(page=1")
+      assert html =~ ~s(page=40")
+      assert html =~ "…"
+    end
+
+    test "no ellipsis where the window already touches the end" do
+      # 600 rows -> 12 pages; from page 6 the window is 1..11, so only the
+      # last page is missing and there is nothing to elide before it.
+      html = render_component(&UI.pager/1, params: %{"page" => "6"}, total: 3000)
+
+      assert html =~ ~s(page=12")
+      refute html =~ "…"
+    end
+
     test "a garbage page param falls back to page 1" do
       html = render_component(&UI.pager/1, params: %{"page" => "banana"}, total: 600)
 

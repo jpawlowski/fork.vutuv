@@ -2560,7 +2560,12 @@ defmodule VutuvWeb.UI do
       aria-label={gettext("Pagination")}
       class="mt-6 flex items-center justify-center gap-1 text-sm font-semibold"
     >
-      <span :if={List.first(@window) > 1} class="px-1 text-slate-600 dark:text-slate-400">…</span>
+      <%!-- The two ends are always reachable. On a list long enough to have
+      hundreds of pages (a member's Fediverse followers), a window of eleven
+      numbers with a dead "…" beside it strands you in the middle with no way
+      back to the first page or forward to the last. --%>
+      <.pager_link :if={List.first(@window) > 1} num={1} path={@path} query={@query} />
+      <span :if={List.first(@window) > 2} class="px-1 text-slate-600 dark:text-slate-400">…</span>
       <%= for num <- @window do %>
         <%= if num == @current do %>
           <span
@@ -2570,17 +2575,36 @@ defmodule VutuvWeb.UI do
             {num}
           </span>
         <% else %>
-          <.link
-            href={if(is_nil(@path), do: page_query(@query, num))}
-            patch={if(@path, do: @path <> page_query(@query, num))}
-            class="flex h-9 min-w-9 items-center justify-center rounded-lg px-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
-            {num}
-          </.link>
+          <.pager_link num={num} path={@path} query={@query} />
         <% end %>
       <% end %>
-      <span :if={List.last(@window) < @total_pages} class="px-1 text-slate-600 dark:text-slate-400">…</span>
+      <span
+        :if={List.last(@window) < @total_pages - 1}
+        class="px-1 text-slate-600 dark:text-slate-400"
+      >
+        …
+      </span>
+      <.pager_link
+        :if={List.last(@window) < @total_pages}
+        num={@total_pages}
+        path={@path}
+        query={@query}
+      />
     </nav>
+    """
+  end
+
+  # One page link, in the pager's two modes: a plain href on a classic page, a
+  # `patch` when the host is a LiveView that reloads from `handle_params`.
+  defp pager_link(assigns) do
+    ~H"""
+    <.link
+      href={if(is_nil(@path), do: page_query(@query, @num))}
+      patch={if(@path, do: @path <> page_query(@query, @num))}
+      class="flex h-9 min-w-9 items-center justify-center rounded-lg px-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+    >
+      {@num}
+    </.link>
     """
   end
 

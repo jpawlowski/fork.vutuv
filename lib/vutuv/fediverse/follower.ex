@@ -62,6 +62,18 @@ defmodule Vutuv.Fediverse.Follower do
     "@#{follower.handle || derive_username(uri)}@#{uri.host}"
   end
 
+  @doc """
+  The remote server this follower lives on, as the follower browser's Server
+  column shows it and as its filter matches it (lowercased host of the actor
+  URI, the Elixir twin of the `uri_host` SQL macro in `Vutuv.Fediverse`).
+  """
+  def host(%__MODULE__{actor_uri: actor_uri}) do
+    case URI.parse(actor_uri).host do
+      nil -> ""
+      host -> String.downcase(host)
+    end
+  end
+
   defp derive_username(%URI{path: path}) do
     (path || "")
     |> String.split("/", trim: true)

@@ -16508,10 +16508,57 @@ msgstr "Was"
 #, elixir-autogen, elixir-format
 msgid "You have reported a lot today. Please try again tomorrow."
 msgstr "Sie haben heute schon viel gemeldet. Bitte versuchen Sie es morgen wieder."
-"Sie haben das heutige Einladungslimit erreicht. Bitte versuchen Sie es "
-"morgen erneut."
 
 #: lib/vutuv_web/live/notification_live/index.ex:1048
 #, elixir-autogen, elixir-format
 msgid "replied to your post from another network."
 msgstr "hat aus einem anderen Netzwerk auf Ihren Beitrag geantwortet."
+#: lib/vutuv_web/templates/settings/fediverse.html.heex:150
+#, elixir-autogen, elixir-format
+msgid "All followers"
+msgstr "Alle Follower"
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:240
+#, elixir-autogen, elixir-format
+msgid "All servers"
+msgstr "Alle Server"
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:144
+#, elixir-autogen, elixir-format
+msgid "Following since"
+msgstr "Folgt seit"
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:359
+#, elixir-autogen, elixir-format
+msgid "How this list keeps itself honest"
+msgstr "Wie diese Liste aktuell bleibt"
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:227
+#, elixir-autogen, elixir-format
+msgid "name, handle or server"
+msgstr "Name, Handle oder Server"
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:277
+#, elixir-autogen, elixir-format
+msgid "No follower matches that. Try a shorter search, or clear the filters."
+msgstr "Dazu passt kein Follower. Versuchen Sie eine kürzere Suche, oder setzen Sie die Filter zurück."
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:322
+#, elixir-autogen, elixir-format
+msgid "Show only followers from this server"
+msgstr "Nur Follower von diesem Server zeigen"
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:341
+#, elixir-autogen, elixir-format
+msgid "Showing %{first}-%{last} of %{total}."
+msgstr "Angezeigt: %{first}-%{last} von %{total}."
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:192
+#, elixir-autogen, elixir-format
+msgid "Everyone on another network who follows your vutuv posts. Only you see this list: the followers collection your profile publishes carries the number, never the names."
+msgstr "Alle, die Ihren vutuv-Beiträgen aus einem anderen Netzwerk folgen. Diese Liste sehen nur Sie: Die Follower-Sammlung, die Ihr Profil veröffentlicht, nennt nur die Anzahl, nie die Namen."
+
+#: lib/vutuv_web/live/fediverse_followers_live.ex:361
+#, elixir-autogen, elixir-format
+msgid "Accounts that no longer exist on their own server drop off this list by themselves. Names and handles are the ones their server last told us, so a renamed account updates here on its own too."
+msgstr "Konten, die es auf ihrem eigenen Server nicht mehr gibt, verschwinden von selbst aus dieser Liste. Namen und Handles sind die, die uns der jeweilige Server zuletzt gemeldet hat: Ein umbenanntes Konto aktualisiert sich hier also ebenfalls von allein."

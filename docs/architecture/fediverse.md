@@ -263,14 +263,28 @@ every endpoint 404s and nothing is delivered.
   (`moved_to`) sees the forwarding address in its place, since the old handle
   now only answers with a redirect. `ProfileDoc` carries the same facts into
   the agent formats.
-- **The member** sees who follows them on `/settings/fediverse` (not just the
-  count). The inbox captures each remote actor's `preferredUsername` and
-  display name onto the `Follower` row (`handle`/`name`, cosmetic and
-  truncated); `Fediverse.list_followers/2` returns the most recent, rendered
-  as `@user@host` (`Follower.display_handle/1`, host from the actor URI)
-  linking to the actor. This is **owner-only** — the public followers
-  collection stays count-only, so the list lives in the private settings area,
-  never under `/:slug`.
+- **The member** sees who follows them (not just the count). The inbox captures
+  each remote actor's `preferredUsername` and display name onto the `Follower`
+  row (`handle`/`name`, cosmetic and truncated), rendered as `@user@host`
+  (`Follower.display_handle/1`, host from the actor URI) linking to the actor.
+  `/settings/fediverse` shows the five newest as a taste; the whole list is its
+  own page, **`/settings/fediverse/followers`**
+  (`VutuvWeb.FediverseFollowersLive`), because a flat list reads fine at four
+  followers and not at all at ten thousand. That page is a table with
+  search-as-you-type (display name, handle, server, or a whole `@user@server`
+  handle pasted out of a Mastodon profile — matched as two facts, not one
+  substring), a server filter that every row's server name also sets in one
+  click, three sortable columns (Account / Server / **Following since**, the
+  `inserted_at` the flat list never showed) and numbered paging. Filter, sort
+  and page live in the URL (`push_patch`), so a view is shareable and the back
+  button restores it. The query work is `Fediverse.follower_filters/1` +
+  `count_followers/2` + `list_followers_page/4` + `follower_hosts/2`, all scoped
+  to the member's own rows first; every sort tiebreaks on the row id (UUID v7,
+  so arrival order at sub-second resolution, where `inserted_at` only has
+  seconds), so offset paging is stable. This is **owner-only** — the public
+  followers collection stays
+  count-only, so the list lives in the private settings area, never under
+  `/:slug`.
 - **The operator** sees federation health on `/admin`: `Fediverse.stats/0`
   reports federating members (the SQL mirror of `federated?/1`), total remote
   followers, delivery-queue depth, how many rows are stuck (carry a
