@@ -1169,6 +1169,98 @@ function setupBirthdayRemove() {
 }
 onReady(setupBirthdayRemove)
 
+// The Fediverse take-part switch (see settings/fediverse.html.heex) asks before
+// it flips, in either direction: taking part means posts leave vutuv for good,
+// and leaving asks the other servers to forget an account they may then not show
+// again. Both are unreversible, so the submit is intercepted and the matching
+// dialog opened; its confirm button fills the `fediverse_ack` field and submits
+// for real. With JS off nothing here runs and the plain submit lands on the
+// server-side confirmation page, which asks the same question — the switch can
+// never flip unacknowledged.
+function setupFediverseConsent() {
+  const form = document.getElementById("fediverse-form")
+  if (!form || !once(form, "fediverseConsent")) return
+
+  const checkbox = form.querySelector("[data-fediverse-switch]")
+  const ack = form.querySelector("[data-fediverse-ack]")
+  const modals = {
+    true: document.getElementById("fediverse-consent-on"),
+    false: document.getElementById("fediverse-consent-off"),
+  }
+  if (!checkbox || !ack) return
+
+  let openModal = null
+  let lastFocused = null
+
+  const close = () => {
+    openModal?.classList.add("hidden")
+    openModal = null
+    if (lastFocused && typeof lastFocused.focus === "function") lastFocused.focus()
+    lastFocused = null
+  }
+
+  const open = (modal) => {
+    lastFocused = document.activeElement
+    openModal = modal
+    modal.classList.remove("hidden")
+    modal.querySelector("[data-fediverse-consent-confirm]")?.focus()
+  }
+
+  form.addEventListener("submit", (e) => {
+    // Only the switch itself needs acknowledging; saving the other settings on
+    // this page must not raise a dialog about a change nobody made.
+    if (ack.value === "1" || checkbox.checked === checkbox.defaultChecked) return
+
+    const modal = modals[String(checkbox.checked)]
+    if (!modal) return
+
+    e.preventDefault()
+    open(modal)
+  })
+
+  Object.values(modals).forEach((modal) => {
+    if (!modal) return
+
+    modal.addEventListener("click", (e) => {
+      if (e.target.closest("[data-fediverse-consent-confirm]")) {
+        ack.value = "1"
+        close()
+        form.requestSubmit ? form.requestSubmit() : form.submit()
+        return
+      }
+
+      if (
+        e.target.closest("[data-fediverse-consent-cancel]") ||
+        e.target.hasAttribute("data-fediverse-consent-backdrop")
+      ) {
+        close()
+      }
+    })
+
+    // Esc closes; Tab cycles inside the dialog so focus can't slip behind it.
+    modal.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault()
+        close()
+        return
+      }
+      if (e.key !== "Tab") return
+      const buttons = modal.querySelectorAll("button")
+      if (buttons.length === 0) return
+      const first = buttons[0]
+      const last = buttons[buttons.length - 1]
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    })
+  })
+}
+onReady(setupFediverseConsent)
+
 // The ad banner (layout strip between navigation and content, see
 // VutuvWeb.Plug.AdBanner) disappears on its own after two minutes: fade out,
 // then drop the node. Its ✕ removes it immediately AND keeps ads away for

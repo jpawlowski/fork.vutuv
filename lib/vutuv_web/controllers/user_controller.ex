@@ -31,7 +31,9 @@ defmodule VutuvWeb.UserController do
 
     # An ActivityPub Accept on the profile URL gets the actor document (what
     # Mastodon fetches when someone pastes the profile URL into its search) —
-    # or a 404 for members who don't federate, which AP clients read as
+    # or, for members who don't federate, the same refusal the actor endpoint
+    # gives: 410 once a member has switched their opt-in off (so remote servers
+    # delete their copies), 404 otherwise. Either reads to an AP client as
     # "nothing here" instead of choking on HTML.
     cond do
       FediverseController.ap_request?(conn) and Fediverse.federated?(user) ->
@@ -42,7 +44,7 @@ defmodule VutuvWeb.UserController do
         |> send_resp(200, Jason.encode!(Docs.actor(user, actor)))
 
       FediverseController.ap_request?(conn) ->
-        send_resp(conn, 404, "")
+        FediverseController.refuse(conn, user)
 
       true ->
         # The profile is the one page that also serves :vcf; the doc embeds the

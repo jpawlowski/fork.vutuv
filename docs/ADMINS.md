@@ -491,6 +491,19 @@ where you would notice a whole server dropping out at once. This keeps your
 members' follower counts honest and stops the installation from holding the
 address of somebody who deleted their account.
 
+**When a member leaves.** Switching the feature off on `/settings/fediverse` does
+more than stop sending: from then on the member's Fediverse address answers "gone"
+(HTTP 410) instead of "not found", which the common servers read as a deleted
+account and take as the cue to delete their copies of that member's posts. Their
+remote followers are dropped here at the same time. It stays a request, not a
+guarantee, and it applies **only** to a member's own decision to leave: a frozen,
+suspended or deactivated account, and an installation you switch off centrally,
+keep answering the harmless "not found", so nobody's remote presence is erased
+over a temporary measure. Both directions of the switch ask the member to confirm
+first, in plain words, because neither can be undone: what has already been
+delivered is out of reach, and a member who leaves and comes back may not be
+shown again by every server right away.
+
 **What is stored from other servers.** Exactly one thing: a bare counter row per
 remote person per post per kind (favourite / re-share), holding only that
 person's account address, the kind and the time. No name, no picture, no text.

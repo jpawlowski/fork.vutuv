@@ -38,6 +38,42 @@ defmodule Vutuv.FediverseTest do
     end
   end
 
+  describe "departed?/1" do
+    test "only a member who took part and then switched it off counts as gone" do
+      departed = federated_user()
+      {:ok, _actor} = Fediverse.ensure_actor(departed)
+      {:ok, departed} = Vutuv.Accounts.update_user(departed, %{"fediverse_followers?" => "false"})
+
+      assert Fediverse.departed?(departed)
+
+      # Never took part: there is nothing for a remote server to forget.
+      refute Fediverse.departed?(insert(:activated_user))
+
+      # Still taking part.
+      still_in = federated_user()
+      {:ok, _actor} = Fediverse.ensure_actor(still_in)
+      refute Fediverse.departed?(still_in)
+    end
+
+    test "a temporary state is not a departure, and neither is the operator's switch" do
+      # Hidden for now (a suspension), but still opted in: telling the network
+      # this account is gone would delete it over a three-day timeout.
+      suspended = federated_user(suspended_until: ~N[2099-01-01 00:00:00])
+      {:ok, _actor} = Fediverse.ensure_actor(suspended)
+      refute Fediverse.federated?(suspended)
+      refute Fediverse.departed?(suspended)
+
+      departed = federated_user()
+      {:ok, _actor} = Fediverse.ensure_actor(departed)
+      {:ok, departed} = Vutuv.Accounts.update_user(departed, %{"fediverse_followers?" => "false"})
+
+      Application.put_env(:vutuv, :fediverse_enabled, false)
+      on_exit(fn -> Application.delete_env(:vutuv, :fediverse_enabled) end)
+
+      refute Fediverse.departed?(departed)
+    end
+  end
+
   describe "ensure_actor/1" do
     test "creates the keypair once and returns the same actor after" do
       user = federated_user()
@@ -72,6 +108,23 @@ defmodule Vutuv.FediverseTest do
 
       Fediverse.remove_follower(user, "https://social.example/users/alice")
       assert Fediverse.follower_count(user) == 0
+    end
+
+    test "drop_followers/1 deletes every row of that member and nobody else's" do
+      user = federated_user()
+      other = federated_user()
+
+      for member <- [user, other] do
+        {:ok, _} =
+          Fediverse.add_follower(member, %{
+            actor_uri: "https://social.example/users/#{member.username}",
+            inbox_uri: "https://social.example/inbox"
+          })
+      end
+
+      assert Fediverse.drop_followers(user) == 1
+      assert Fediverse.follower_count(user) == 0
+      assert Fediverse.follower_count(other) == 1
     end
 
     test "delivery_inboxes prefers the shared inbox and dedupes by it" do

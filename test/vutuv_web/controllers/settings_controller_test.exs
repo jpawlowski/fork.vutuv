@@ -313,6 +313,83 @@ defmodule VutuvWeb.SettingsControllerTest do
     end
   end
 
+  # Both directions of the take-part switch are unreversible in ways nobody can
+  # fix afterwards, so neither flips until the member says they understood.
+  describe "fediverse: the take-part switch asks first (#1072)" do
+    setup %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+      %{conn: conn, user: user}
+    end
+
+    test "the page carries the acknowledgement field and both dialogs", %{conn: conn} do
+      html = conn |> get(~p"/settings/fediverse") |> html_response(200)
+
+      assert html =~ ~s(data-fediverse-ack)
+      assert html =~ ~s(id="fediverse-consent-on")
+      assert html =~ ~s(id="fediverse-consent-off")
+      assert html =~ "out of our hands"
+    end
+
+    test "switching on without the acknowledgement asks instead of saving", %{
+      conn: conn,
+      user: user
+    } do
+      conn = put(conn, ~p"/settings/fediverse", user: %{"fediverse_followers?" => "true"})
+
+      html = html_response(conn, 200)
+      assert html =~ "out of our hands"
+      assert html =~ "I understand, take part"
+      refute Repo.get(User, user.id).fediverse_followers?
+    end
+
+    test "the acknowledged submit saves and mints the actor", %{conn: conn, user: user} do
+      conn =
+        put(conn, ~p"/settings/fediverse",
+          user: %{"fediverse_followers?" => "true"},
+          fediverse_ack: "1"
+        )
+
+      assert redirected_to(conn) == ~p"/settings/fediverse"
+      saved = Repo.get(User, user.id)
+      assert saved.fediverse_followers?
+      assert Vutuv.Fediverse.get_actor(saved)
+    end
+
+    test "switching off asks with the words for leaving, then drops the remote followers",
+         %{conn: conn, user: user} do
+      {:ok, user} = Accounts.update_user(user, %{"fediverse_followers?" => "true"})
+      {:ok, _actor} = Vutuv.Fediverse.ensure_actor(user)
+
+      {:ok, _} =
+        Vutuv.Fediverse.add_follower(user, %{
+          actor_uri: "https://social.example/users/alice",
+          inbox_uri: "https://social.example/inbox"
+        })
+
+      asked =
+        put(conn, ~p"/settings/fediverse", user: %{"fediverse_followers?" => "false"})
+
+      html = html_response(asked, 200)
+      assert html =~ "does not delete what is already out there"
+      assert html =~ "I understand, switch off"
+      assert Repo.get(User, user.id).fediverse_followers?
+      assert Vutuv.Fediverse.follower_count(user) == 1
+
+      confirmed =
+        put(recycle(conn), ~p"/settings/fediverse",
+          user: %{"fediverse_followers?" => "false"},
+          fediverse_ack: "1"
+        )
+
+      assert redirected_to(confirmed) == ~p"/settings/fediverse"
+      refute Repo.get(User, user.id).fediverse_followers?
+
+      # The actor answers 410 from now on, so those servers drop the follow at
+      # their end too — a kept row would be a relationship that exists nowhere.
+      assert Vutuv.Fediverse.follower_count(user) == 0
+    end
+  end
+
   describe "fediverse: alsoKnownAs account migration (#986)" do
     setup %{conn: conn} do
       {conn, user} = create_and_login_user(conn)
