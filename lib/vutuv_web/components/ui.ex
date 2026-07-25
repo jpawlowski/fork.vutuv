@@ -3159,118 +3159,234 @@ defmodule VutuvWeb.UI do
 
   @doc """
   The grouped settings menu: the **one map** of everything a member can change
-  about themselves, shared by the settings hub (`/:slug/settings`, tappable
-  rows) and the desktop sidebar (`<.settings_sidebar>`). Three groups: the
-  profile-content sections, the account areas, and the rest (privacy,
-  notifications, apps, delete). Returns `{group_label, [{label, path, key}]}`;
-  `key` names the page for the active state and the hub's per-section counts.
-  If a new editable area is added to the app, it joins this menu — if it is
-  not on the hub, it does not exist.
+  about themselves, shared by the settings hub (`/settings`) and the desktop
+  sidebar (`<.settings_sidebar>`). If a new editable area is added to the app,
+  it joins this menu — if it is not on the hub, it does not exist.
 
-  Takes the member because the Export row leaves the user-agnostic /settings
-  world: the export area (GDPR download + the issue #841 CV) lives under the
-  profile at `/:slug/export`.
+  Returns `{group_label, [row]}`, where each row is a map:
+
+    * `:key` — names the page for the sidebar's active state and the hub's
+      per-section entry counts. Unique across the whole menu.
+    * `:label` / `:path` — what the row reads and where it goes.
+    * `:hint` — the one line under the label saying what is inside, so
+      "Sign-in & security" no longer has to be guessed at from its name.
+    * `:terms` — extra words the hub's search box matches on, for everything a
+      member might call this that the label does not say ("Passwort",
+      "Handle", "abmelden"). Never rendered as text.
+    * `:danger` — the one red row (delete account).
+
+  **The grouping is the point.** It used to be three groups of 12/5/8 whose
+  last one was called "More" and held Privacy and Notifications — two of the
+  three things members actually come here for — behind seventeen other rows.
+  Each group now names its own subject, holds at most eight rows, and the two
+  areas people hunt for stand on their own. Rows that used to appear only once
+  a member had used the feature (followed tags, saved searches) are always
+  listed: a menu that changes shape between visits cannot be learned, and a
+  hidden row is unfindable by definition.
+
+  Takes the member because two rows are member-specific: the Username row
+  shows the handle itself, and the Export row leaves the user-agnostic
+  /settings world (the GDPR download + the issue #841 CV live under the
+  profile at `/:slug/export`).
   """
   def settings_menu(user) do
     [
       {gettext("Profile"),
        [
-         {gettext("Basics & photos"), ~p"/settings/profile", :basics},
-         {gettext("Experience"), ~p"/settings/work_experiences", :work},
-         {gettext("Education"), ~p"/settings/educations", :education},
-         {gettext("Certificates & licenses"), ~p"/settings/qualifications", :qualifications},
-         {gettext("Languages"), ~p"/settings/languages", :languages},
-         {gettext("Links"), ~p"/settings/links", :links},
-         {gettext("Profiles"), ~p"/settings/social_media_accounts", :social},
-         {gettext("Messengers"), ~p"/settings/messengers", :messengers},
-         {gettext("Email addresses"), ~p"/settings/emails", :emails},
-         {gettext("Phone numbers"), ~p"/settings/phone_numbers", :phones},
-         {gettext("Addresses"), ~p"/settings/addresses", :addresses},
-         {gettext("Tags"), ~p"/settings/tags", :tags}
+         row(:basics, gettext("Basics & photos"), ~p"/settings/profile",
+           hint: gettext("Name, photo, cover picture, tagline"),
+           terms: gettext("avatar portrait picture image birthday gender about me")
+         ),
+         row(:username, gettext("Username"), ~p"/settings/username",
+           hint: "@" <> to_string(user.username),
+           terms: gettext("handle nickname rename slug profile address url mention")
+         ),
+         row(:work, gettext("Experience"), ~p"/settings/work_experiences",
+           hint: gettext("The jobs and roles on your CV"),
+           terms: gettext("cv resume career employer position title company")
+         ),
+         row(:education, gettext("Education"), ~p"/settings/educations",
+           hint: gettext("Schools, universities, degrees"),
+           terms: gettext("cv resume study studies school university degree")
+         ),
+         row(:qualifications, gettext("Certificates & licenses"), ~p"/settings/qualifications",
+           hint: gettext("Credentials, with proof documents"),
+           terms: gettext("certificate licence diploma credential award proof document")
+         ),
+         row(:languages, gettext("Language skills"), ~p"/settings/languages",
+           hint: gettext("The languages you speak"),
+           terms: gettext("language speak spoken fluent native mother tongue")
+         ),
+         row(:tags, gettext("Tags"), ~p"/settings/tags",
+           hint: gettext("The topics you are known for"),
+           terms: gettext("skill topic keyword expertise endorsement")
+         ),
+         row(:organizations, gettext("Organizations"), ~p"/settings/organizations",
+           hint: gettext("Company pages you run"),
+           terms: gettext("company employer firm business organisation page")
+         )
+       ]},
+      {gettext("Contact details"),
+       [
+         row(:emails, gettext("Email addresses"), ~p"/settings/emails",
+           hint: gettext("Where we reach you, and which address is public"),
+           terms: gettext("mail e-mail address primary")
+         ),
+         row(:phones, gettext("Phone numbers"), ~p"/settings/phone_numbers",
+           hint: gettext("Landline, mobile, fax"),
+           terms: gettext("telephone mobile cell fax number")
+         ),
+         row(:addresses, gettext("Addresses"), ~p"/settings/addresses",
+           hint: gettext("Postal addresses on your profile"),
+           terms: gettext("street city postcode zip country post map")
+         ),
+         row(:links, gettext("Websites & links"), ~p"/settings/links",
+           hint: gettext("Your homepage and other links"),
+           terms: gettext("url website homepage blog link verify rel=me")
+         ),
+         row(:social, gettext("Social media profiles"), ~p"/settings/social_media_accounts",
+           hint: gettext("Mastodon, Bluesky, GitHub and the rest"),
+           terms:
+             gettext(
+               "mastodon bluesky github gitlab codeberg linkedin x twitter instagram social"
+             )
+         ),
+         row(:messengers, gettext("Messengers"), ~p"/settings/messengers",
+           hint: gettext("Signal, Threema, Matrix and the rest"),
+           terms: gettext("signal threema matrix xmpp telegram whatsapp chat messenger")
+         )
+       ]},
+      {gettext("Notifications & feed"),
+       [
+         row(:notifications, gettext("Notifications"), ~p"/settings/notifications",
+           hint: gettext("Which emails we send, and what the bell tells you"),
+           terms: gettext("email mail unsubscribe newsletter bell alert quiet fewer")
+         ),
+         row(:filters, gettext("Muted words & tags"), ~p"/settings/filters",
+           hint: gettext("Keep posts out of your feed"),
+           terms: gettext("mute block hide filter keyword word tag feed")
+         ),
+         row(:followed_tags, gettext("Tags you follow"), ~p"/settings/followed_tags",
+           hint: gettext("Topics whose posts reach your feed"),
+           terms: gettext("tag topic subscribe follow feed")
+         ),
+         row(:saved_searches, gettext("Saved searches"), ~p"/settings/saved_searches",
+           hint: gettext("Job and people searches that email you new matches"),
+           terms: gettext("job alert search agent watchlist")
+         )
+       ]},
+      {gettext("Privacy"),
+       [
+         row(:privacy, gettext("Visibility"), ~p"/settings/privacy",
+           hint: gettext("Search engines, AI, online status"),
+           terms: gettext("privacy google search engine ai llm crawler noindex online dot public")
+         ),
+         row(:blocks, gettext("Blocked members"), ~p"/blocks",
+           hint: gettext("People who cannot interact with you"),
+           terms: gettext("block ban mute report abuse harassment stalker")
+         ),
+         row(:fediverse, gettext("Fediverse"), ~p"/settings/fediverse",
+           hint: gettext("Followers from Mastodon and other networks"),
+           terms: gettext("mastodon activitypub federation follower move migrate")
+         )
        ]},
       {gettext("Account"),
        [
-         {gettext("Sign-in & security"), ~p"/settings/security", :security},
-         {gettext("Organizations"), ~p"/settings/organizations", :organizations},
-         {gettext("Language & display"), ~p"/settings/preferences", :preferences},
-         {gettext("Import"), ~p"/settings/import/linkedin", :import},
-         {gettext("Export"), ~p"/#{user}/export", :export}
-       ]},
-      {gettext("More"),
-       [
-         {gettext("Privacy"), ~p"/settings/privacy", :privacy},
-         {gettext("Fediverse"), ~p"/settings/fediverse", :fediverse},
-         {gettext("Notifications"), ~p"/settings/notifications", :notifications},
-         {gettext("Muted words & tags"), ~p"/settings/filters", :filters}
-       ] ++
-         followed_tags_rows(user) ++
-         saved_search_rows(user) ++
-         [
-           {gettext("Apps"), ~p"/settings/apps", :apps},
-           {gettext("Delete account"), ~p"/settings/delete", :delete}
-         ]}
+         row(:security, gettext("Sign-in & security"), ~p"/settings/security",
+           hint: gettext("Passkeys, signed-in devices, login codes"),
+           terms: gettext("password login sign in log out session device passkey totp 2fa pin")
+         ),
+         row(:preferences, gettext("Language & display"), ~p"/settings/preferences",
+           hint: gettext("Interface language, maps, how posts are shortened"),
+           terms: gettext("german english locale translation map font length hyphenation")
+         ),
+         row(:import, gettext("Import"), ~p"/settings/import/linkedin",
+           hint: gettext("Take your data over from LinkedIn"),
+           terms: gettext("linkedin upload zip migrate transfer")
+         ),
+         row(:export, gettext("Export"), ~p"/#{user}/export",
+           hint: gettext("Download everything we store about you"),
+           terms: gettext("download gdpr dsgvo data backup json cv")
+         ),
+         row(:apps, gettext("Apps & API"), ~p"/settings/apps",
+           hint: gettext("Connected apps and access tokens"),
+           terms: gettext("api token oauth developer connected third party")
+         ),
+         row(:delete, gettext("Delete account"), ~p"/settings/delete",
+           hint: gettext("Remove your account and everything on it"),
+           terms: gettext("delete remove close quit cancel leave erase"),
+           danger: true
+         )
+       ]}
     ]
   end
 
-  # "Tags you follow" joins the hub only once the member follows at least one tag
-  # (issue #872), mirroring saved_search_rows/1: a member who never followed a
-  # tag sees nothing extra.
-  defp followed_tags_rows(%Vutuv.Accounts.User{} = user) do
-    if Vutuv.Tags.followed_tag_ids(user) == [] do
-      []
-    else
-      [{gettext("Tags you follow"), ~p"/settings/followed_tags", :followed_tags}]
-    end
+  defp row(key, label, path, opts) do
+    %{
+      key: key,
+      label: label,
+      path: path,
+      hint: Keyword.fetch!(opts, :hint),
+      terms: Keyword.fetch!(opts, :terms),
+      danger: Keyword.get(opts, :danger, false)
+    }
   end
 
-  defp followed_tags_rows(_user), do: []
-
-  # The saved-searches row joins the hub only once the member has saved a search
-  # (the block is invisible until then, issue #935); a member who never uses the
-  # feature sees nothing extra.
-  defp saved_search_rows(%{} = user) do
-    if Vutuv.SavedSearches.any_for_user?(user) do
-      [{gettext("Saved searches"), ~p"/settings/saved_searches", :saved_searches}]
-    else
-      []
-    end
-  end
-
-  defp saved_search_rows(_user), do: []
+  @doc """
+  The one lower-cased haystack the hub's search box matches a row against:
+  its label, its hint and its `:terms` synonyms. Public so a test can pin the
+  exact string the template renders into `data-search`.
+  """
+  def settings_search_text(%{label: label, hint: hint, terms: terms}),
+    do: String.downcase("#{label} #{hint} #{terms}")
 
   @doc """
   One tappable row on the settings hub (and the profile editor's mobile
   "More profile sections" card): the whole row is the link (mobile-first tap
-  target), with an optional entry count for the profile-content sections and a
-  trailing chevron. The count is wrapped in a bare `data-hub-count` span so
-  tests can pin it, and formatted through `compact_count/1` like every
-  rendered number. `danger` renders the one red row (delete account).
+  target), the label over its hint line, with an optional entry count and a
+  trailing chevron.
+
+  Takes a whole `settings_menu/1` row, so the label, hint, search terms and
+  the red delete treatment can never drift from the menu they came from. The
+  count is wrapped in a bare `data-hub-count` span so tests can pin it, and
+  formatted through `compact_count/1` like every rendered number.
+
+  `data-settings-row` + `data-search` are what the hub's filter box reads; the
+  `<li>` deliberately carries **no** display utility, so the filter can hide it
+  with the plain `hidden` attribute instead of a class that a later-emitted
+  Tailwind display utility would silently beat.
   """
-  attr(:navigate, :string, required: true)
-  attr(:label, :string, required: true)
+  attr(:entry, :map, required: true, doc: "one row of settings_menu/1")
   attr(:count, :integer, default: nil)
-  attr(:count_key, :atom, default: nil)
-  attr(:danger, :boolean, default: false)
+  attr(:hint?, :boolean, default: true, doc: "false drops the hint line (the compact list)")
 
   def hub_row(assigns) do
     ~H"""
-    <li>
+    <li data-settings-row data-search={settings_search_text(@entry)}>
       <.link
-        navigate={@navigate}
+        navigate={@entry.path}
         class="flex items-center justify-between gap-4 px-4 py-3 hover:bg-slate-50 sm:px-5 dark:hover:bg-slate-800/60"
       >
-        <span class={[
-          "font-medium",
-          if(@danger,
-            do: "text-red-600 dark:text-red-400",
-            else: "text-slate-900 dark:text-white"
-          )
-        ]}>
-          {@label}
+        <span class="min-w-0">
+          <span class={[
+            "block font-medium",
+            if(@entry.danger,
+              do: "text-red-600 dark:text-red-400",
+              else: "text-slate-900 dark:text-white"
+            )
+          ]}>
+            {@entry.label}
+          </span>
+          <span
+            :if={@hint? and @entry.hint != ""}
+            class="mt-0.5 block text-sm text-slate-600 dark:text-slate-400"
+          >
+            {@entry.hint}
+          </span>
         </span>
         <span class="flex shrink-0 items-center gap-3">
           <span :if={not is_nil(@count)} class="text-sm text-slate-600 dark:text-slate-400">
-            <span data-hub-count={@count_key}>{compact_count(@count)}</span>
+            <span data-hub-count={@entry.key}>{compact_count(@count)}</span>
           </span>
           <span aria-hidden="true" class="text-slate-600 dark:text-slate-400">›</span>
         </span>
@@ -3305,16 +3421,16 @@ defmodule VutuvWeb.UI do
           {group}
         </p>
         <ul class="mt-1 space-y-0.5">
-          <li :for={{label, path, key} <- entries}>
+          <li :for={entry <- entries}>
             <.link
-              navigate={path}
-              aria-current={@active == key && "page"}
+              navigate={entry.path}
+              aria-current={@active == entry.key && "page"}
               class={[
                 "block rounded-lg px-2 py-1.5",
-                sidebar_link_class(key, @active)
+                sidebar_link_class(entry.key, @active)
               ]}
             >
-              {label}
+              {entry.label}
             </.link>
           </li>
         </ul>

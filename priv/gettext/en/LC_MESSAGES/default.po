@@ -15254,3 +15254,283 @@ msgstr ""
 #, elixir-autogen, elixir-format
 msgid "moved to %{address}"
 msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Name, photo, cover picture, tagline"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "avatar portrait picture image birthday gender about me"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "handle nickname rename slug profile address url mention"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "The jobs and roles on your CV"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "cv resume career employer position title company"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Schools, universities, degrees"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "cv resume study studies school university degree"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Credentials, with proof documents"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "certificate licence diploma credential award proof document"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Language skills"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "The languages you speak"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "language speak spoken fluent native mother tongue"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "The topics you are known for"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "skill topic keyword expertise endorsement"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Company pages you run"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "company employer firm business organisation page"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Contact details"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Where we reach you, and which address is public"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "mail e-mail address primary"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Landline, mobile, fax"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "telephone mobile cell fax number"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Postal addresses on your profile"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "street city postcode zip country post map"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Websites & links"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Your homepage and other links"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "url website homepage blog link verify rel=me"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Social media profiles"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Mastodon, Bluesky, GitHub and the rest"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "mastodon bluesky github gitlab codeberg linkedin x twitter instagram social"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Signal, Threema, Matrix and the rest"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "signal threema matrix xmpp telegram whatsapp chat messenger"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Notifications & feed"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Which emails we send, and what the bell tells you"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "email mail unsubscribe newsletter bell alert quiet fewer"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Keep posts out of your feed"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "mute block hide filter keyword word tag feed"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Topics whose posts reach your feed"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "tag topic subscribe follow feed"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Job and people searches that email you new matches"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "job alert search agent watchlist"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Search engines, AI, online status"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "privacy google search engine ai llm crawler noindex online dot public"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "People who cannot interact with you"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "block ban mute report abuse harassment stalker"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Followers from Mastodon and other networks"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "mastodon activitypub federation follower move migrate"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Passkeys, signed-in devices, login codes"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "password login sign in log out session device passkey totp 2fa pin"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Interface language, maps, how posts are shortened"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "german english locale translation map font length hyphenation"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Take your data over from LinkedIn"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "linkedin upload zip migrate transfer"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Download everything we store about you"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "download gdpr dsgvo data backup json cv"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Connected apps and access tokens"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "api token oauth developer connected third party"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Remove your account and everything on it"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "delete remove close quit cancel leave erase"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Search settings"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Nothing here matches. Try another word, or clear the search."
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "How you sign in"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "You sign in with your primary address, and we mail your PIN there."
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Your profile address. It is not used to sign in."
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Open"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "You do not follow any tags yet. Open a tag page and press Follow, for example"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "from the tag directory"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Your profile address"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Other members mention you as %{handle}."
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "Change your username"
+msgstr ""
+
+#, elixir-autogen, elixir-format
+msgid "This link always opens your profile, even after you change your username. It is built from a fixed id, so it never breaks on a rename. For everyday sharing the short address above is friendlier."
+msgstr ""

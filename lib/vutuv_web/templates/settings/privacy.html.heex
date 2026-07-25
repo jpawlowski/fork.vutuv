@@ -1,12 +1,17 @@
-<%!-- Privacy: who can find, reuse, and reach you. Two cards:
-"Search engines & AI" (the robot consents, the same inverted checkbox as the
-sign-up form: the field is the opt-OUT noindex?/noai?, but the box reads
-positively "Allow ...", so checked submits "false") and "Safety" (blocked
-members + the moderation status), both moved here from the account hub where
-members did not look for them. The helper line under each checkbox is forced
-font-normal because the surrounding <label> defaults to bold (components.css),
-which would otherwise render the hint heavier than its own heading. --%>
-<.settings_shell user={@user} active={:privacy} title={gettext("Privacy")}>
+<%!-- Visibility: who can find and reuse what you put here. "Search engines &
+AI" carries the robot consents (the same inverted checkbox as the sign-up form:
+the field is the opt-OUT noindex?/noai?, but the box reads positively
+"Allow ...", so checked submits "false"), then the three per-card switches, then
+Safety as a cross-link pair.
+
+The page is named for what it does, not for its group: it sits under Privacy in
+the settings menu, and calling it "Privacy" too made the trail read
+"Privacy > Privacy". Blocking has its own menu row now (/blocks); the Safety
+card stays because this is where you land when someone is a problem. The helper
+line under each checkbox is forced font-normal because the surrounding <label>
+defaults to bold (components.css), which would otherwise render the hint heavier
+than its own heading. --%>
+<.settings_shell user={@user} active={:privacy} title={gettext("Visibility")}>
 
   <div class="space-y-6">
     <.card>

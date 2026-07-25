@@ -443,11 +443,13 @@ lands here). --%>
     </h2>
     <div class="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-800">
       <ul class="divide-y divide-slate-100 dark:divide-slate-800">
+        <%!-- Compact here (hint? false): this is a jump list out of a form, not
+        the hub's map, so the labels alone keep it short. --%>
         <.hub_row
-          :for={{label, path, key} <- profile_entries}
-          :if={key != :basics}
-          navigate={path}
-          label={label}
+          :for={entry <- profile_entries}
+          :if={entry.key != :basics}
+          entry={entry}
+          hint?={false}
         />
       </ul>
     </div>

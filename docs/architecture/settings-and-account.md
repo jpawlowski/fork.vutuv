@@ -7,12 +7,48 @@ covered in [authentication.md](authentication.md).
 ## Settings hub (user-agnostic `/settings` URLs)
 
 Everything a member can change about themselves lives behind **one map** —
-`vutuv.de/settings`, iOS-Settings-style grouped rows (Profile sections with live
-entry counts / Account / Privacy, Notifications, Apps, and a red "Delete
-account" door).
+`vutuv.de/settings`, iOS-Settings-style grouped rows. `VutuvWeb.UI.settings_menu/1`
+is that map's single source: the hub and the desktop sidebar both render it, so
+they cannot drift. If an editable area is not on it, it does not exist.
+
+**Five groups**, each named for its own subject and at most eight rows long:
+
+| Group | Holds |
+| --- | --- |
+| Profile | Basics & photos, Username, Experience, Education, Certificates & licenses, Language skills, Tags, Organizations |
+| Contact details | Email addresses, Phone numbers, Addresses, Websites & links, Social media profiles, Messengers |
+| Notifications & feed | Notifications, Muted words & tags, Tags you follow, Saved searches |
+| Privacy | Visibility, Blocked members, Fediverse |
+| Account | Sign-in & security, Language & display, Import, Export, Apps & API, Delete account (red) |
+
+Each row is a map with `:key` (the sidebar's active state and the hub's entry
+counts), `:label`, `:path`, a `:hint` line saying what is inside, `:terms`
+(never-rendered search synonyms) and `:danger`. Rows are **unconditional** — a
+menu that changes shape between visits cannot be learned, and a hidden row is
+unfindable, so "Tags you follow" and "Saved searches" are always listed and
+their pages explain themselves when empty.
+
+Above the map sits a **filter box** (`[data-settings-filter]` in `app.js`) that
+matches each row's label, hint and synonyms and hides the groups that empty out.
+The synonyms are what make it worth having: "Passwort", "Handle" or "abmelden"
+find the right page although no label uses those words. It is a progressive
+enhancement — with JS off the box simply is not wired and the map below works.
+
+This replaced a flat 25-row list in three groups (Profile / Account / **More**),
+whose junk-drawer last group held Privacy and Notifications behind seventeen
+other rows, and whose desktop hub was a sidebar beside an empty pane reading
+"pick a section on the left". The same cards now flow into two columns from md
+up (CSS multicol, so groups of wildly different heights leave no ragged gaps),
+which is one list at every width instead of a phone list plus a desktop
+placeholder.
 
 The URLs carry **no username**: `/settings/links` always opens *your own* link
 editor, so the same URL works for every member (handy in support answers).
+
+Two pages that are settings in everything but their URL wear the same shell:
+the **blocked list** at `/blocks` (linked straight from profiles and post menus,
+so the path stays) and the **export corner** at `/:slug/export` (profile-scoped
+because it hosts the public CV builder link).
 
 Every profile section is two pages: the **public showcase** at `/:slug/links`
 (identical for every viewer, the owner included — private e-mail addresses never
@@ -26,7 +62,8 @@ pages (there is nothing to preview any more) and remains only on the profile
 itself.
 
 The account areas are focused subpages: Sign-in & security
-(`/settings/security`), Language & display (`/settings/preferences`), Import
+(`/settings/security` — how you sign in, signed-in devices, passkeys, login
+codes), Language & display (`/settings/preferences`), Import
 (`/settings/import/linkedin`), Export (`/:slug/export`, the profile-scoped export corner) and Delete account
 (`/settings/delete`). "Profil bearbeiten" jumps to the basics form
 (`/settings/profile`), which ends in links to the sibling sections; the old
@@ -117,8 +154,13 @@ own add tile.
 
 ## Username (@handle) changes
 
-Members change their username at `/settings/usernames/new`, linked from the
-sign-in & security page.
+The username has its own page under **Profile**, `/settings/username`: the
+everyday `vutuv.de/<handle>` address with a copy button, the rename form, and
+the permanent id-based profile link (issue #904) as the answer to "but then my
+old links break". A handle is public identity, not a credential, so burying it
+under Sign-in & security — where it lived until #1083, along with the permanent
+link — was the single clearest example of the old menu's problem. That page
+keeps a signpost row; `/settings/usernames/new` redirects here.
 
 Handles follow the Twitter username mechanism: letters, digits and underscores,
 `Vutuv.Handles.min_length/0` to `max_length/0` characters, stored lowercase,

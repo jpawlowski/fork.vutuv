@@ -7,6 +7,20 @@
       )}
     </p>
 
+    <%!-- The row is on the hub whether or not you follow anything (a menu that
+    changes shape between visits cannot be learned), so the empty case has to
+    teach the feature rather than show a blank card. --%>
+    <p
+      :if={@followed_tags == []}
+      id="followed-tags-empty"
+      class="mt-5 text-sm text-slate-600 dark:text-slate-400"
+    >
+      {gettext("You do not follow any tags yet. Open a tag page and press Follow, for example")}
+      <.link navigate={~p"/tags"} class="font-semibold text-brand-600 hover:text-brand-700">
+        {gettext("from the tag directory")}
+      </.link>.
+    </p>
+
     <ul id="followed-tags-list" class="mt-5 divide-y divide-slate-100 dark:divide-slate-800">
       <li
         :for={tag <- @followed_tags}

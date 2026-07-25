@@ -1,70 +1,82 @@
-<.page_header title={gettext("Blocked members")} crumbs={[gettext("Blocked members")]} />
+<%!-- The blocked list is a settings page in everything but its URL (which stays
+/blocks, because profiles and post menus link straight to it), so it wears the
+settings shell: the sidebar, the "Settings / Blocked members" trail, and its own
+row under Privacy in the menu. Before, tapping it from the privacy page dropped
+you out of the settings area with no way back except the browser. --%>
+<.settings_shell
+  user={@current_user}
+  active={:blocks}
+  title={gettext("Blocked members")}
+>
+  <div class="space-y-6">
+    <%!-- Block someone straight from here by @handle, so a member who knows who
+    they want gone does not have to find that person's profile first (the
+    "block my ex" case). Posts to the same BlockController.create. --%>
+    <.card>
+      <.section_title>{gettext("Block someone")}</.section_title>
+      <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
+        {gettext("Type a member's @handle. You do not have to visit their profile.")}
+      </p>
+      <.form
+        for={%{}}
+        as={:block}
+        action={~p"/blocks"}
+        id="block-someone-form"
+        class="mt-4 flex flex-col gap-2 sm:flex-row"
+      >
+        <input
+          type="text"
+          id="block-handle"
+          name="block[handle]"
+          placeholder={gettext("@handle")}
+          autocomplete="off"
+          spellcheck="false"
+          class={[input_class(), "flex-1"]}
+        />
+        <.button type="submit">{gettext("Block")}</.button>
+      </.form>
+    </.card>
 
-<div class="card-list">
-  <%!-- Block someone straight from here by @handle, so a member who knows who
-  they want gone does not have to find that person's profile first (the
-  "block my ex" case). Posts to the same BlockController.create. --%>
-  <section class="card">
-    <h2 class="text-lg font-semibold text-slate-900 dark:text-white">{gettext("Block someone")}</h2>
-    <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
-      {gettext("Type a member's @handle. You do not have to visit their profile.")}
-    </p>
-    <.form
-      for={%{}}
-      as={:block}
-      action={~p"/blocks"}
-      id="block-someone-form"
-      class="mt-4 flex flex-col gap-2 sm:flex-row"
-    >
-      <input
-        type="text"
-        id="block-handle"
-        name="block[handle]"
-        placeholder={gettext("@handle")}
-        autocomplete="off"
-        spellcheck="false"
-        class={[input_class(), "flex-1"]}
-      />
-      <.button type="submit">{gettext("Block")}</.button>
-    </.form>
-  </section>
+    <.card>
+      <.section_title>{gettext("Blocked members")}</.section_title>
+      <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
+        {gettext(
+          "Blocked members cannot follow you, connect with you, message you, or reply to your posts - and you cannot interact with them either. Blocking removed any follows and connection between you; unblocking does not restore them."
+        )}
+      </p>
 
-  <section class="card">
-    <p class="text-sm text-slate-600 dark:text-slate-400">
-      {gettext(
-        "Blocked members cannot follow you, connect with you, message you, or reply to your posts - and you cannot interact with them either. Blocking removed any follows and connection between you; unblocking does not restore them."
-      )}
-    </p>
-
-    <%= if @blocks == [] do %>
-      <p class="card__empty">{gettext("You have not blocked anyone.")}</p>
-    <% else %>
-      <ul class="mt-4 divide-y divide-slate-100 dark:divide-slate-800">
-        <%= for block <- @blocks do %>
-          <li class="flex items-center gap-3 py-4 first:pt-0 last:pb-0">
-            <.avatar user={block.blocked} size="sm" shape="circle" />
-            <div class="min-w-0 flex-1">
-              <.link
-                href={~p"/#{block.blocked}"}
-                class="block truncate font-medium text-slate-800 hover:text-brand-700 dark:text-slate-100"
+      <%= if @blocks == [] do %>
+        <p class="mt-4 text-sm text-slate-600 dark:text-slate-400">
+          {gettext("You have not blocked anyone.")}
+        </p>
+      <% else %>
+        <ul class="mt-4 divide-y divide-slate-100 dark:divide-slate-800">
+          <%= for block <- @blocks do %>
+            <li class="flex items-center gap-3 py-4 first:pt-0 last:pb-0">
+              <.avatar user={block.blocked} size="sm" shape="circle" />
+              <div class="min-w-0 flex-1">
+                <.link
+                  href={~p"/#{block.blocked}"}
+                  class="block truncate font-medium text-slate-800 hover:text-brand-700 dark:text-slate-100"
+                >
+                  {full_name(block.blocked)}
+                </.link>
+                <p class="truncate text-sm text-slate-600 dark:text-slate-400">
+                  @{block.blocked.username}
+                </p>
+              </div>
+              <.button
+                href={~p"/blocks/#{block.id}"}
+                method="delete"
+                variant="secondary"
+                data-confirm={gettext("Unblock @%{slug}?", slug: block.blocked.username)}
               >
-                {full_name(block.blocked)}
-              </.link>
-              <p class="truncate text-sm text-slate-600 dark:text-slate-400">
-                @{block.blocked.username}
-              </p>
-            </div>
-            <.button
-              href={~p"/blocks/#{block.id}"}
-              method="delete"
-              variant="secondary"
-              data-confirm={gettext("Unblock @%{slug}?", slug: block.blocked.username)}
-            >
-              {gettext("Unblock")}
-            </.button>
-          </li>
-        <% end %>
-      </ul>
-    <% end %>
-  </section>
-</div>
+                {gettext("Unblock")}
+              </.button>
+            </li>
+          <% end %>
+        </ul>
+      <% end %>
+    </.card>
+  </div>
+</.settings_shell>

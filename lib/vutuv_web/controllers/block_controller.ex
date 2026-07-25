@@ -15,7 +15,10 @@ defmodule VutuvWeb.BlockController do
   plug(VutuvWeb.Plug.RequireLoginOr404)
 
   def index(conn, _params) do
-    render(conn, "index.html", blocks: Social.list_blocked(conn.assigns.current_user))
+    render(conn, "index.html",
+      blocks: Social.list_blocked(conn.assigns.current_user),
+      page_title: gettext("Blocked members")
+    )
   end
 
   # The profile-footer control posts a user_id and lands back on the profile.

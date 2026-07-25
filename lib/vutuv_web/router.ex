@@ -904,10 +904,19 @@ defmodule VutuvWeb.Router do
     get("/import/linkedin", ImportController, :new)
     post("/import/linkedin", ImportController, :create)
     post("/import/linkedin/apply", ImportController, :confirm)
-    # Changing the username: the form, the POST, and the live availability
-    # check behind the form's as-you-type verdict.
+    # The username page: your profile address. It holds the everyday
+    # vutuv.de/<handle> link, the rename form, and the permanent id-based link
+    # that survives a rename (which used to sit on the security page, where it
+    # read as a credential rather than as something to share). It lives under
+    # Profile in the settings menu, not under Sign-in & security: a handle is
+    # public identity, and nobody looks for it among their passkeys.
+    get("/username", UsernameController, :new)
+    post("/username", UsernameController, :create)
+    # The live availability check behind the form's as-you-type verdict.
     get("/usernames/availability", UsernameController, :availability)
-    resources("/usernames", UsernameController, only: [:new, :create], as: :settings_username)
+    # The pre-#1083 URLs, kept for bookmarks and old links.
+    get("/usernames/new", UsernameController, :legacy_redirect)
+    post("/usernames", UsernameController, :create)
 
     # The profile-content section editors, each mirroring its public
     # /:slug/<section> twin. `manage` is the editor index (add tile, reorder,
