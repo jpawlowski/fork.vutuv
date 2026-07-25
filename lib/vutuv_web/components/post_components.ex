@@ -27,6 +27,7 @@ defmodule VutuvWeb.PostComponents do
   import VutuvWeb.UserHelpers, only: [full_name: 1]
 
   alias Vutuv.Accounts.User
+  alias Vutuv.Fediverse.Note
   alias Vutuv.Isbn
   alias Vutuv.Moderation.ImageScans
   alias Vutuv.Posts
@@ -677,19 +678,26 @@ defmodule VutuvWeb.PostComponents do
           aria-hidden="true"
         >
         </span>
-        <.post_card
-          post={node.post}
-          viewer={@viewer}
-          viewer_follow={node.viewer_follow}
-          engagement={node.engagement}
-          reposted_by={node.reposted_by}
-          reposters={node.reposters}
-          entry_id={node.entry_id}
-          surface={@surface}
-          conn_or_socket={@conn_or_socket}
-          mode={Map.get(node, :mode, :preview)}
-          show_reply_banner={reply_banner?(node, @connected?, @indent?, first?)}
-        />
+        <%!-- A node is either a vutuv post or a reply from another network
+        (issue #1069), which sits among them as an ordinary sibling in time
+        order and wears its own skin. --%>
+        <%= if Map.has_key?(node, :note) do %>
+          <.remote_reply_card note={node.note} owner?={node.owner?} viewer={@viewer} />
+        <% else %>
+          <.post_card
+            post={node.post}
+            viewer={@viewer}
+            viewer_follow={node.viewer_follow}
+            engagement={node.engagement}
+            reposted_by={node.reposted_by}
+            reposters={node.reposters}
+            entry_id={node.entry_id}
+            surface={@surface}
+            conn_or_socket={@conn_or_socket}
+            mode={Map.get(node, :mode, :preview)}
+            show_reply_banner={reply_banner?(node, @connected?, @indent?, first?)}
+          />
+        <% end %>
       </div>
       <.thread_chain
         :if={node.children != []}
@@ -701,6 +709,170 @@ defmodule VutuvWeb.PostComponents do
         conn_or_socket={@conn_or_socket}
       />
     </div>
+    """
+  end
+
+  @doc """
+  One reply written on **another network**, rendered as a sibling of the vutuv
+  replies in the same conversation (issues #1069 and #1071).
+
+  Same rhythm as a `<.post_card>` — avatar column, name, time, body, in the same
+  36px geometry so the thread's connector lines still land on the avatar centres
+  — and deliberately different material, because a reader has to be able to tell
+  the two worlds apart at a glance and without colour:
+
+    * an initials tile in **slate**, not the brand tint members get, carrying the
+      globe badge that issue #1068 established for "another network". No picture
+      is ever fetched or hosted: vutuv does not host a third party's image.
+    * a **dashed** left rail down the body, against the solid connector rail the
+      vutuv cards hang from.
+    * the author's name as plain text (there is no vutuv profile to link to)
+      beside their `@handle@host`, which links out to the account.
+    * **no action bar.** Liking, reposting or bookmarking a note that lives on
+      someone else's server is not a thing that exists, so the row is absent
+      rather than dead. What is there instead is where it came from, a link to
+      the original, and the takedown controls.
+
+  The body is escaped **plain text** (`Vutuv.RemoteHtml` reduced it at the
+  inbox), rendered with `whitespace-pre-line` and deliberately *not* run through
+  `VutuvWeb.Markdown`: a stranger's text must not be able to mint links, least
+  of all `@mention` links into local profiles. The "view the original" link
+  carries the reader on when they want the real thing.
+
+  A note its author put behind a content warning renders the warning as a closed
+  lid and reveals the text on a click, which is the one thing that author asked
+  for.
+
+  Rendered only inside `VutuvWeb.PostLive.Thread`, so the takedown controls are
+  plain `phx-click` events on that LiveView.
+  """
+  attr(:note, :map, required: true, doc: "a Vutuv.Fediverse.Note")
+
+  attr(:owner?, :boolean,
+    default: false,
+    doc: "whether the viewer is the member whose post this answers (they may remove it)"
+  )
+
+  attr(:viewer, :any, default: nil, doc: "the logged-in member, or nil")
+
+  def remote_reply_card(assigns) do
+    note = assigns.note
+
+    assigns =
+      assigns
+      |> assign(:author, note.display_name || Note.display_handle(note))
+      |> assign(:handle, Note.display_handle(note))
+      |> assign(:host, Note.host(note.actor_uri))
+      |> assign(:origin, Note.origin(note))
+      |> assign(:initials, name_initials(note.display_name || note.handle))
+      |> assign(:public?, Note.public?(note))
+      |> assign(:warned?, Note.warned?(note))
+
+    ~H"""
+    <article data-fediverse-reply={@note.id} data-audience={@note.audience}>
+      <div class="flex items-start gap-3">
+        <span class="relative shrink-0">
+          <span
+            data-remote-avatar
+            aria-hidden="true"
+            class="inline-flex h-9 w-9 select-none items-center justify-center rounded-full bg-slate-200 text-xs font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+          >
+            {@initials}
+          </span>
+          <span
+            aria-hidden="true"
+            title={gettext("From another network")}
+            class="absolute -bottom-1 -left-1 flex h-4 w-4 items-center justify-center rounded-full bg-white text-[9px] ring-2 ring-white dark:bg-slate-900 dark:ring-slate-900"
+          >
+            🌐
+          </span>
+        </span>
+
+        <div class="min-w-0 flex-1">
+          <div class="flex items-start gap-2">
+            <div class="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+              <span class="font-semibold text-slate-900 dark:text-white">{@author}</span>
+              <span class="text-xs text-slate-600 dark:text-slate-400">
+                <a
+                  href={@note.actor_uri}
+                  target="_blank"
+                  rel="nofollow noopener noreferrer"
+                  class="hover:text-brand-700 dark:hover:text-brand-300"
+                >{@handle}</a>
+                · <.post_time at={@note.received_at} />
+              </span>
+            </div>
+
+            <%!-- The takedown controls. Report is open to anyone who can see the
+            reply (which for a private one is its addressee alone) and deletes it
+            at once — no case workflow, because this is a cache of something that
+            still exists at its origin. --%>
+            <.card_menu :if={@viewer} id={"remote-reply-menu-#{@note.id}"}>
+              <:item
+                :if={@owner?}
+                click="remove-remote-reply"
+                value={@note.id}
+                confirm={gettext("Remove this reply from your post?")}
+              >
+                {gettext("Remove")}
+              </:item>
+              <:item
+                click="report-remote-reply"
+                value={@note.id}
+                danger
+                confirm={
+                  gettext("Report this reply as not appropriate? It is deleted right away.")
+                }
+              >
+                {gettext("Report")}
+              </:item>
+            </.card_menu>
+          </div>
+
+          <%!-- A reply addressed to the member alone (issue #1071). The lock is
+          the same glyph a restricted post wears, so "not everybody sees this"
+          reads the same way across the app — and the member must know it before
+          they answer as if the world were watching. --%>
+          <p
+            :if={!@public?}
+            data-remote-private
+            class="mb-0 mt-0.5 text-xs font-medium text-slate-600 dark:text-slate-400"
+          >
+            <span aria-hidden="true">🔒</span> {gettext("Sent to you only, visible to nobody else")}
+          </p>
+
+          <div class="mt-1.5 border-l-2 border-dashed border-slate-300 pl-3 dark:border-slate-600">
+            <%= if @warned? do %>
+              <details data-remote-warning class="group">
+                <summary class="cursor-pointer list-none text-sm font-medium text-slate-700 dark:text-slate-300">
+                  <span aria-hidden="true">⚠</span> {@note.summary}
+                  <span class="ml-1 text-xs font-normal text-brand-600 group-open:hidden dark:text-brand-400">
+                    {gettext("Show")}
+                  </span>
+                </summary>
+                <p class="mb-0 mt-1.5 whitespace-pre-line text-sm text-slate-700 dark:text-slate-300">
+                  {@note.content_text}
+                </p>
+              </details>
+            <% else %>
+              <p class="mb-0 whitespace-pre-line text-sm text-slate-700 dark:text-slate-300">
+                {@note.content_text}
+              </p>
+            <% end %>
+          </div>
+
+          <p class="mb-0 mt-1.5 text-xs text-slate-600 dark:text-slate-400">
+            {gettext("From another network")}<span :if={@host}> · {@host}</span> ·
+            <a
+              href={@origin}
+              target="_blank"
+              rel="nofollow noopener noreferrer"
+              class="font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+            >{gettext("View the original")}</a>
+          </p>
+        </div>
+      </div>
+    </article>
     """
   end
 
@@ -758,6 +930,14 @@ defmodule VutuvWeb.PostComponents do
         "batched by the host so the cards' bars don't each load their own"
   )
 
+  attr(:remote_replies, :map,
+    default: %{},
+    doc:
+      "replies from other networks by the post id they answer " <>
+        "(Vutuv.Fediverse.list_notes/2, already viewer-scoped): woven in as " <>
+        "siblings of that post's own answers, in time order"
+  )
+
   attr(:conn_or_socket, :any, required: true)
 
   def thread_conversation(assigns) do
@@ -785,6 +965,7 @@ defmodule VutuvWeb.PostComponents do
   attr(:auto_scroll?, :boolean, default: true)
   attr(:viewer_follows, :map, default: %{})
   attr(:engagement, :map, default: %{})
+  attr(:remote_replies, :map, default: %{})
   attr(:conn_or_socket, :any, required: true)
 
   def thread_window_conversation(assigns) do
@@ -878,7 +1059,43 @@ defmodule VutuvWeb.PostComponents do
     end)
     |> Posts.thread_forest()
     |> banner_on_roots()
+    |> weave_remote_replies(assigns[:remote_replies] || %{}, assigns.viewer)
   end
+
+  # Hangs the replies written on other networks (issue #1069) under the posts
+  # they answer, merged into that post's own answers **in time order** rather
+  # than parked in a block below them. They are part of the conversation, so
+  # they read as part of it; what marks them out is the card, not a ghetto.
+  #
+  # `remote_replies` is `Vutuv.Fediverse.list_notes/2`'s per-post map, already
+  # viewer-scoped — a reply addressed to the member alone never reaches anybody
+  # else's render.
+  defp weave_remote_replies(nodes, remote, _viewer) when remote == %{}, do: nodes
+
+  defp weave_remote_replies(nodes, remote, viewer) do
+    Enum.map(nodes, fn node ->
+      children =
+        node.children
+        |> weave_remote_replies(remote, viewer)
+        |> merge_remote_nodes(Map.get(remote, node.post.id, []), node.post, viewer)
+
+      %{node | children: children}
+    end)
+  end
+
+  defp merge_remote_nodes(children, [], _post, _viewer), do: children
+
+  defp merge_remote_nodes(children, notes, post, viewer) do
+    owner? = match?(%User{}, viewer) and viewer.id == post.user_id
+
+    remote_nodes =
+      Enum.map(notes, &%{note: &1, owner?: owner?, children: []})
+
+    Enum.sort_by(children ++ remote_nodes, &node_time/1, {:asc, NaiveDateTime})
+  end
+
+  defp node_time(%{note: note}), do: DateTime.to_naive(note.received_at)
+  defp node_time(%{post: post}), do: post.inserted_at
 
   # Fallback when a caller does not compute the full visible chain: the single
   # preloaded `reply_ref` parent (one level), or none when nesting is off (the
@@ -2162,37 +2379,70 @@ defmodule VutuvWeb.PostComponents do
       </.action_button>
     </div>
 
-    <.fediverse_reaction_line :if={@engagement} count={@engagement.fediverse_reactions} />
+    <.fediverse_line
+      :if={@engagement}
+      reactions={@engagement.fediverse_reactions}
+      replies={Map.get(@engagement, :fediverse_replies, 0)}
+    />
     """
   end
 
-  # What other networks did with this post (issue #1068): a labelled count on
-  # its OWN line under the vutuv counters, never folded into them. A member who
-  # publishes outward otherwise gets no feedback at all, and keeping the figure
-  # separate means a hostile remote server can inflate only its own line — and
-  # the reader can see which world answered. Public, because it is an aggregate
-  # with no identity attached. Renders nothing at zero, so a post nobody out
-  # there touched stays clean.
-  attr(:count, :integer, required: true)
+  # What other networks did with this post (issues #1068 and #1069): labelled
+  # counts on their OWN line under the vutuv counters, never folded into them. A
+  # member who publishes outward otherwise gets no feedback at all, and keeping
+  # the figures separate means a hostile remote server can inflate only its own
+  # line — and the reader can see which world answered. Public, because both are
+  # aggregates with no identity attached; the reply figure counts **public**
+  # replies only, so a note addressed to the member alone (issue #1071) never
+  # moves a number a stranger can read. Renders nothing while both are zero, so
+  # a post nobody out there touched stays clean.
+  attr(:reactions, :integer, required: true)
+  attr(:replies, :integer, required: true)
 
-  defp fediverse_reaction_line(%{count: count} = assigns) when count > 0 do
+  defp fediverse_line(%{reactions: reactions, replies: replies} = assigns)
+       when reactions > 0 or replies > 0 do
+    assigns = assign(assigns, :text, fediverse_line_text(reactions, replies))
+
     ~H"""
     <div
       class="mt-2 border-t border-slate-100 pt-2 text-sm text-slate-600 dark:border-slate-800 dark:text-slate-400"
-      data-fediverse-reactions={@count}
+      data-fediverse-reactions={@reactions}
+      data-fediverse-replies={@replies}
     >
-      <span aria-hidden="true" class="mr-1">🌐</span>
-      {ngettext(
-        "%{formatted} reaction from other networks",
-        "%{formatted} reactions from other networks",
-        @count,
-        formatted: compact_count(@count)
-      )}
+      <span aria-hidden="true" class="mr-1">🌐</span>{@text}
     </div>
     """
   end
 
-  defp fediverse_reaction_line(assigns), do: ~H""
+  defp fediverse_line(assigns), do: ~H""
+
+  # One **whole** sentence per case, never a line assembled from fragments: the
+  # figures go in as placeholders so a translator owns the word order (German
+  # would otherwise be at the mercy of where the English happens to put "from
+  # other networks"). The noun phrases are their own ngettext calls, because
+  # only they need the singular/plural split.
+  defp fediverse_line_text(reactions, 0), do: gettext_from_networks(reaction_phrase(reactions))
+  defp fediverse_line_text(0, replies), do: gettext_from_networks(reply_phrase(replies))
+
+  defp fediverse_line_text(reactions, replies) do
+    gettext("%{reactions} and %{replies} from other networks",
+      reactions: reaction_phrase(reactions),
+      replies: reply_phrase(replies)
+    )
+  end
+
+  defp gettext_from_networks(phrase),
+    do: gettext("%{count} from other networks", count: phrase)
+
+  defp reaction_phrase(count) do
+    ngettext("%{formatted} reaction", "%{formatted} reactions", count,
+      formatted: compact_count(count)
+    )
+  end
+
+  defp reply_phrase(count) do
+    ngettext("%{formatted} reply", "%{formatted} replies", count, formatted: compact_count(count))
+  end
 
   # The Like control: a real toggle for everyone but the author. On your OWN
   # post it is a plain, non-interactive count instead of a clickable heart —

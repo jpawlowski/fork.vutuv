@@ -24,6 +24,11 @@ defmodule VutuvWeb.Admin.FediverseController do
     render(conn, "index.html",
       blocked: Fediverse.list_blocked_instances(),
       inbound_hosts: Fediverse.inbound_hosts(),
+      # Stored replies per server (issue #1069), keyed by host so the volume
+      # table can show them beside the follower counts: the same "who is sending
+      # us the most" question, now that text arrives too.
+      note_hosts: Map.new(Fediverse.note_hosts(), &{&1.host, &1.notes}),
+      note_events: Fediverse.recent_note_events(),
       stats: Fediverse.stats(),
       caps: Fediverse.inbound_caps(),
       page_title: gettext("Fediverse")

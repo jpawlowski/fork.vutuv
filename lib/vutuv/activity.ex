@@ -27,6 +27,7 @@ defmodule Vutuv.Activity do
 
   alias Vutuv.Accounts.HandleChangeNotification
   alias Vutuv.Accounts.User
+  alias Vutuv.Fediverse.Note
   alias Vutuv.Moderation.ImageScans
   alias Vutuv.Notifications.Emailer
   alias Vutuv.Organizations.Organization
@@ -342,6 +343,34 @@ defmodule Vutuv.Activity do
   end
 
   @doc ~S"""
+  Convenience: a "replied to your post from another network" notification
+  (issue #1069) — somebody on Mastodon or a comparable server answered a post of
+  the member's, and the reply is now stored as a `Vutuv.Fediverse.Note`.
+
+  The live push only; the durable half is the note row itself, which
+  `fediverse_reply_items/3` derives the notification from. That is the point of
+  sourcing this kind straight from the notes table: when the note is deleted
+  (reported, expired, withdrawn upstream), its notification goes with it and
+  there is no second place to remember.
+
+  The actor is a stranger with no vutuv profile, so the item carries their
+  display name, their `@handle@host` and a link **out** to their account, and
+  none of the local `actor_param` / avatar fields a member's actor would.
+  """
+  def notify_fediverse_reply(%User{} = user, post, note) do
+    notify(
+      user.id,
+      Map.merge(remote_actor_fields(note), %{
+        kind: "fediverse_reply",
+        text: "replied to your post from another network.",
+        post_id: post.id,
+        note_id: note.id,
+        at: note.received_at
+      })
+    )
+  end
+
+  @doc ~S"""
   Convenience: a "mentioned you in a post" notification for a member the post's
   body names by `@handle`. `post_id` is that post — written by the actor, not by
   the recipient, so the row links it under the **author's** profile.
@@ -511,6 +540,7 @@ defmodule Vutuv.Activity do
       {"reply", &reply_items(user_id, &1, &2)},
       {"thread", &thread_items(user_id, &1, &2)},
       {"mention", &mention_items(user_id, &1, &2)},
+      {"fediverse_reply", &fediverse_reply_items(user_id, &1, &2)},
       {"like", &like_items(user_id, &1, &2)},
       {"organization_role", &organization_role_items(user_id, &1, &2)},
       {"moderation", &moderation_items(user_id, &1, &2)},
@@ -608,6 +638,7 @@ defmodule Vutuv.Activity do
       {"reply", count_replies(user_id, read_at)},
       {"thread", count_thread_replies(user_id, read_at)},
       {"mention", count_mentions(user_id, read_at)},
+      {"fediverse_reply", count_fediverse_replies(user_id, read_at)},
       {"like", count_likes(user_id, read_at)},
       {"organization_role", count_organization_roles(user_id, read_at)},
       {"cv_update", count_cv_updates(user_id, read_at)},
@@ -771,6 +802,69 @@ defmodule Vutuv.Activity do
       |> Map.put(:post_id, post_id)
     end)
   end
+
+  # Replies written on other networks under the member's posts (issue #1069),
+  # derived **straight from the notes table** rather than from a stored
+  # notification row. That is deliberate: when the note goes — reported,
+  # expired, withdrawn upstream, the server blocked — its notification goes with
+  # it, and there is no second place that has to remember to forget.
+  #
+  # No viewer scoping is needed here: every note under the member's own posts is
+  # theirs to see, including the ones addressed to them alone (issue #1071).
+  defp fediverse_reply_items(user_id, limit, cursor) do
+    user_id
+    |> fediverse_reply_events()
+    |> order_by([note: n], desc: n.received_at, desc: n.id)
+    |> limit(^limit)
+    |> select([note: n], n)
+    |> note_at_or_before(cursor)
+    |> Repo.all()
+    |> Enum.map(fn note ->
+      note
+      |> remote_actor_fields()
+      |> Map.merge(%{
+        id: "fediverse_reply-#{note.id}",
+        kind: "fediverse_reply",
+        # The merged feed sorts and cursors on NaiveDateTime (Vutuv.FeedPage);
+        # this is the one source whose column is a DateTime.
+        at: DateTime.to_naive(note.received_at),
+        post_id: note.post_id,
+        note_id: note.id,
+        note_audience: note.audience,
+        note_text: note.summary || note.content_text
+      })
+    end)
+  end
+
+  defp fediverse_reply_events(user_id) do
+    from(n in Note,
+      as: :note,
+      join: p in Post,
+      on: p.id == n.post_id,
+      where: p.user_id == ^user_id
+    )
+  end
+
+  defp count_fediverse_replies(user_id, read_at) do
+    user_id
+    |> fediverse_reply_events()
+    |> select([note: n], %{count: count()})
+    |> note_since(read_at)
+  end
+
+  # `received_at` is a :utc_datetime while the feed's cursor and the read marker
+  # are NaiveDateTimes, so both boundaries are converted rather than left to an
+  # implicit cast.
+  defp note_at_or_before(query, nil), do: query
+
+  defp note_at_or_before(query, %{at: at}),
+    do: where(query, [note: n], n.received_at <= ^to_utc(at))
+
+  defp note_since(query, nil), do: query
+  defp note_since(query, read_at), do: where(query, [note: n], n.received_at > ^to_utc(read_at))
+
+  defp to_utc(%NaiveDateTime{} = at), do: DateTime.from_naive!(at, "Etc/UTC")
+  defp to_utc(%DateTime{} = at), do: at
 
   # The base scope behind the "mention" kind, shared by items / count / read
   # marker. The write side already excludes self-mentions and posts the member
@@ -1087,6 +1181,27 @@ defmodule Vutuv.Activity do
 
   defp actor_item(id, kind, at, actor) do
     Map.merge(actor_fields(actor), %{id: id, kind: kind, at: at})
+  end
+
+  # The actor half for somebody on **another** network (issue #1069). They have
+  # no vutuv profile, so the three local fields are deliberately nil — the row
+  # then renders the kind glyph instead of an avatar and does not link into a
+  # profile that does not exist — and two remote-only fields carry what a reader
+  # actually needs: the `@handle@host` that names which network answered, and
+  # the account URL to follow out to.
+  #
+  # `actor_url` also gives the grouping a stable identity: without it two
+  # different strangers who share a display name would fold into one row
+  # (`VutuvWeb.NotificationLive.Groups.actor_key/1`).
+  defp remote_actor_fields(%Note{} = note) do
+    %{
+      actor_id: nil,
+      actor_name: note.display_name || Note.display_handle(note),
+      actor_param: nil,
+      actor_avatar: nil,
+      actor_handle: Note.display_handle(note),
+      actor_url: note.actor_uri
+    }
   end
 
   # The actor fields (id / name / route param / avatar) that the live `notify_*`

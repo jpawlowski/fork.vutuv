@@ -447,6 +447,77 @@ defmodule VutuvWeb.AgentDocsDriftTest do
     assert rendered.txt =~ "Reactions from other networks: 1"
   end
 
+  test "post permalink: a reply from another network reaches every format (issue #1069)", %{
+    user: user,
+    post: post
+  } do
+    now = DateTime.utc_now(:second)
+
+    Vutuv.Repo.insert!(%Vutuv.Fediverse.Note{
+      post_id: post.id,
+      object_uri: "https://social.example/users/alice/statuses/9",
+      actor_uri: "https://social.example/users/alice",
+      origin_url: "https://social.example/@alice/9",
+      handle: "alice",
+      display_name: "Alice Anders",
+      content_text: "Sturdier than they look.",
+      audience: "public",
+      received_at: now,
+      checked_at: now,
+      expires_at: DateTime.add(now, 86_400)
+    })
+
+    rendered = formats_for("/drift_tester/posts/#{post.id}")
+
+    for fact <- ["Alice Anders", "Sturdier than they look.", "@alice@social.example"],
+        do: assert_fact_everywhere(rendered, fact)
+
+    doc = Jason.decode!(rendered.json)
+    assert doc["fediverse_reply_count"] == 1
+    assert [entry] = doc["fediverse_replies"]
+    assert entry["handle"] == "@alice@social.example"
+    assert entry["url"] == "https://social.example/@alice/9"
+    # Never folded into the vutuv reply figure: this post has no vutuv reply,
+    # and one from another network must not make it look as though it had.
+    assert doc["reply_count"] == 0
+
+    assert rendered.md =~ "Replies from other networks: 1"
+    assert rendered.txt =~ "Replies from other networks: 1"
+  end
+
+  test "a reply sent to the member alone never reaches an agent format (issue #1071)", %{
+    user: user,
+    post: post
+  } do
+    now = DateTime.utc_now(:second)
+
+    Vutuv.Repo.insert!(%Vutuv.Fediverse.Note{
+      post_id: post.id,
+      object_uri: "https://social.example/users/mallory/statuses/1",
+      actor_uri: "https://social.example/users/mallory",
+      handle: "mallory",
+      display_name: "Mallory Private",
+      content_text: "This one is between us.",
+      audience: "direct",
+      received_at: now,
+      checked_at: now,
+      expires_at: DateTime.add(now, 86_400)
+    })
+
+    rendered = formats_for("/drift_tester/posts/#{post.id}")
+
+    for format <- [rendered.md, rendered.txt, rendered.json, rendered.xml] do
+      refute format =~ "This one is between us."
+      refute format =~ "Mallory Private"
+    end
+
+    doc = Jason.decode!(rendered.json)
+    assert doc["fediverse_replies"] == []
+    # The count a stranger can read must not move either, or it leaks that a
+    # private message exists.
+    assert doc["fediverse_reply_count"] == 0
+  end
+
   test "post permalink: the whole conversation reaches every format (issue #1006)", %{
     user: user,
     post: post

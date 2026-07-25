@@ -185,31 +185,11 @@ defmodule Vutuv.Mastodon do
 
   @doc """
   Reduces a status' HTML `content` (untrusted, server-rendered by a federated
-  instance) to plain text: `<br>`/`</p>` become line breaks, every tag is
-  stripped, the base entities are decoded exactly once, and runaway posts are
-  capped. The result is plain text that the template interpolates (and HEEx
-  escapes again) — the sanitization chokepoint for everything Mastodon.
-  """
-  def text_content(html) when is_binary(html) do
-    html
-    |> String.replace(~r{<br\s*/?>}i, "\n")
-    |> String.replace(~r{</p>}i, "\n\n")
-    |> HtmlSanitizeEx.strip_tags()
-    |> decode_entities()
-    |> String.trim()
-    |> Post.truncate()
-  end
+  instance) to plain text — the sanitization chokepoint for everything Mastodon.
 
-  # strip_tags/1 returns text with the base named entities still escaped (the
-  # numeric ones it decodes itself); undo them exactly once. `&amp;` must come
-  # last so a literal "&amp;amp;" cannot double-unescape.
-  defp decode_entities(text) do
-    text
-    |> String.replace("&lt;", "<")
-    |> String.replace("&gt;", ">")
-    |> String.replace("&quot;", "\"")
-    |> String.replace("&#39;", "'")
-    |> String.replace("&nbsp;", " ")
-    |> String.replace("&amp;", "&")
-  end
+  The reduction itself lives in `Vutuv.RemoteHtml`, shared with the inbound
+  Fediverse replies (issue #1069), so remote HTML is turned into text exactly
+  one way in this codebase.
+  """
+  defdelegate text_content(html), to: Vutuv.RemoteHtml, as: :to_text
 end

@@ -30,6 +30,14 @@ config :vutuv, :fediverse_deliverer, false
 # outside; tests call Vutuv.Fediverse.prune_due_followers/1 directly with a
 # stubbed HTTP layer.
 config :vutuv, :fediverse_follower_pruning, false
+# The hourly retention sweep of stored remote replies, same reasoning; tests
+# call Vutuv.Fediverse.expire_due_notes/1 directly.
+config :vutuv, :fediverse_note_sweeping, false
+# The on-view freshness re-fetch spawns a task under Vutuv.TaskSupervisor, which
+# does not own the sandbox connection — so it would crash there, and only into
+# the log, since nothing awaits a Task. Tests call
+# Vutuv.Fediverse.refresh_note/1 directly with a stubbed HTTP layer.
+config :vutuv, :fediverse_note_refresh, false
 # Post link-screenshots drain via a polling GenServer that would touch the
 # sandbox from outside; tests call Vutuv.Posts.Screenshots.deliver_due/1 directly
 # with a stubbed capture. ScreenshotWorker.nudge/0 casts into the void then.

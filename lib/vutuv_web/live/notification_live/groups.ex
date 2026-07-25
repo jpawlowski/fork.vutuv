@@ -149,15 +149,24 @@ defmodule VutuvWeb.NotificationLive.Groups do
         id: &1[:actor_id],
         name: &1[:actor_name],
         param: &1[:actor_param],
-        avatar: &1[:actor_avatar]
+        avatar: &1[:actor_avatar],
+        # Somebody on another network (issue #1069): no vutuv profile to link
+        # to, so the row links out to their account instead and names them by
+        # their `@handle@host`.
+        url: &1[:actor_url],
+        handle: &1[:actor_handle]
       }
     )
   end
 
-  # One stable identity per actor: their id when we have it, otherwise a hash
-  # of the display name (live-pushed test payloads carry bare maps).
+  # One stable identity per actor: their id when we have it, then their remote
+  # account URL, then their route param, and only as a last resort a hash of the
+  # display name (live-pushed test payloads carry bare maps). The remote URL
+  # matters — without it two different strangers who happen to share a display
+  # name would fold into a single row.
   defp actor_key(item) do
-    item[:actor_id] || item[:actor_param] || "anon-#{:erlang.phash2(item[:actor_name])}"
+    item[:actor_id] || item[:actor_url] || item[:actor_param] ||
+      "anon-#{:erlang.phash2(item[:actor_name])}"
   end
 
   defp unread?(_item, nil), do: true

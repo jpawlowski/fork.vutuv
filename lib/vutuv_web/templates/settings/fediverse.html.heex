@@ -76,6 +76,21 @@ subpage now (/settings/fediverse/move), linked from the footer below. --%>
           )}
         </.setting_toggle>
 
+        <%!-- Replies (issues #1069 and #1071): its own switch, off by default,
+              because this is the one thing here that stores what somebody else
+              wrote. The wording says the three things that decide it: you get
+              to read the answers, we keep a copy for a while, and you can throw
+              any of it away. --%>
+        <.setting_toggle
+          :if={Vutuv.Fediverse.federated?(@user)}
+          label={gettext("Show replies from other networks")}
+        >
+          <:checkbox><%= checkbox f, :fediverse_replies?, class: checkbox_class() %></:checkbox>
+          {gettext(
+            "Answers people write out there appear under your post, marked as coming from another network. We keep a copy for up to six months and check now and then whether it is still published; if the author deletes it, ours goes too. You can remove any single reply, and switching this off deletes all of them."
+          )}
+        </.setting_toggle>
+
         <div class="pt-1">
           <.button type="submit">{gettext("Save")}</.button>
         </div>

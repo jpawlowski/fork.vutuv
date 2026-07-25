@@ -195,6 +195,16 @@ defmodule Vutuv.Accounts.User do
     # deletion path is) and a switch nobody finds helps nobody. Switching it off
     # drops every stored row (`Vutuv.Fediverse.drop_reactions/1`).
     field(:fediverse_reactions?, :boolean, default: true)
+    # Whether replies written on other networks are shown under the member's
+    # posts (issues #1069 and #1071). **Off** by default, unlike the reaction
+    # counts above, and that difference is the point: a counter row says nothing
+    # about a person, while a reply is a stranger's words with their name on
+    # them, held on our server. That is a decision the member has to take
+    # deliberately, so it is its own switch on /settings/fediverse. Covers both
+    # public replies and ones addressed to them alone, the way vutuv's own
+    # messages work. Switching it off deletes every stored note
+    # (`Vutuv.Fediverse.drop_notes/1`).
+    field(:fediverse_replies?, :boolean, default: false)
     # The Fediverse account(s) the member is migrating *from* (issue #986,
     # half 1): actor URIs rendered as `alsoKnownAs` on the actor document. A
     # remote server (Mastodon) checks this before it moves a member's followers
@@ -363,7 +373,7 @@ defmodule Vutuv.Accounts.User do
   # :email_confirmed? is NOT here either: it flips only via the login-PIN path
   # (Accounts.activate_user/1, its own narrow cast) — castable, it would let a
   # registration self-activate without ever proving control of an email.
-  @optional_fields ~w(noindex? noai? notification_emails? dm_email_each_message? dm_email_delay_minutes email_on_endorsement? email_on_follower? newsletter_emails? saved_search_emails? cv_update_notifications? thread_notifications? show_online_status? show_mastodon_feed? show_code_stats? fediverse_followers? fediverse_reactions? also_known_as_input map_google? map_openstreetmap? map_apple? default_map_service post_lines_desktop post_lines_mobile post_hyphenate_desktop post_hyphenate_mobile notification_post_lines headline employment_status employment_status_visibility desired_salary_min desired_salary_currency desired_salary_period desired_salary_visibility desired_workplace_types first_name last_name middle_name nickname honorific_prefix honorific_suffix gender birthdate birthdate_visibility locale tag_list)a
+  @optional_fields ~w(noindex? noai? notification_emails? dm_email_each_message? dm_email_delay_minutes email_on_endorsement? email_on_follower? newsletter_emails? saved_search_emails? cv_update_notifications? thread_notifications? show_online_status? show_mastodon_feed? show_code_stats? fediverse_followers? fediverse_reactions? fediverse_replies? also_known_as_input map_google? map_openstreetmap? map_apple? default_map_service post_lines_desktop post_lines_mobile post_hyphenate_desktop post_hyphenate_mobile notification_post_lines headline employment_status employment_status_visibility desired_salary_min desired_salary_currency desired_salary_period desired_salary_visibility desired_workplace_types first_name last_name middle_name nickname honorific_prefix honorific_suffix gender birthdate birthdate_visibility locale tag_list)a
 
   # The job-availability values a member can advertise (issue #870), other
   # than the "not specified" default which is stored as nil. The single source

@@ -6,10 +6,12 @@ defmodule VutuvWeb.FediverseController do
       `@handle@host` into an actor URL,
     * `GET /:slug/actor` (+ `/followers`, `/outbox`) — the member's
       machine-readable identity,
-    * `POST /:slug/actor/inbox` — receives signed `Follow`/`Undo` activities
-      plus the remote actor's own lifecycle (`Update` re-syncs the stored
-      follower, `Delete` of the actor removes it); everything else is
-      acknowledged and dropped (outbound-only by design).
+    * `POST /:slug/actor/inbox` — receives signed `Follow`/`Undo` activities,
+      the reactions and replies other networks send back (`Like`/`Announce`,
+      issue #1068; `Create(Note)`, issues #1069 and #1071, plus the author's own
+      `Update`/`Delete` of such a note) and the remote actor's own lifecycle
+      (`Update` re-syncs the stored follower, `Delete` of the actor removes it);
+      everything else is acknowledged and dropped.
 
   Deliberately outside the `:browser` pipeline: no session, no CSRF — remote
   servers authenticate with HTTP signatures instead, verified against the
@@ -191,15 +193,30 @@ defmodule VutuvWeb.FediverseController do
     send_resp(conn, 202, "")
   end
 
+  # Somebody on another network answered one of the member's posts (issues
+  # #1069 and #1071). Every gate lives in `Fediverse.record_reply/3` — the
+  # member's separate opt-in among them — and the answer is the same 202
+  # whatever it decides, so a misdirected activity never learns which gate it
+  # failed.
+  defp perform(conn, user, %{"type" => "Create"} = activity, remote) do
+    Fediverse.record_reply(user, activity, remote_author(remote))
+    send_resp(conn, 202, "")
+  end
+
   # A remote actor that renamed or moved its inbox broadcasts an `Update` of
   # itself to everyone following it. Re-sync from the actor document we just
   # fetched: the row is both a delivery target and what the member sees on
   # their Fediverse settings page, so a stale copy shows the wrong handle and
-  # can deliver to the wrong inbox. An `Update` of anything else (a remote
-  # note) falls through to the catch-all.
+  # can deliver to the wrong inbox.
+  #
+  # An `Update` of anything else is an author editing a note they sent us, which
+  # is honoured too — including a narrowed audience, which is the same "stop
+  # showing this" signal a 403 carries.
   defp perform(conn, user, %{"type" => "Update"} = activity, remote) do
     if object_id(activity["object"]) == remote.id do
       Fediverse.refresh_follower(user, follower_attrs(remote))
+    else
+      Fediverse.update_reply(user, activity, remote.id)
     end
 
     send_resp(conn, 202, "")
@@ -216,6 +233,12 @@ defmodule VutuvWeb.FediverseController do
   defp perform(conn, user, %{"type" => "Delete"} = activity, remote) do
     if object_id(activity["object"]) == remote.id do
       Fediverse.remove_follower(user, remote.id)
+    else
+      # Not the actor: the author is withdrawing a note they wrote under one of
+      # our members' posts. Honoured at once and unconditionally — an upstream
+      # withdrawal is the deletion path that makes storing their words
+      # defensible, so it must not depend on any switch still being on.
+      Fediverse.delete_reply(remote.id, object_id(activity["object"]))
     end
 
     send_resp(conn, 202, "")
@@ -227,6 +250,14 @@ defmodule VutuvWeb.FediverseController do
 
   defp reaction_kind("Like"), do: "like"
   defp reaction_kind("Announce"), do: "announce"
+
+  # What a stored reply keeps about its author: the actor URI (the takedown and
+  # dedupe key) plus the two cosmetic display strings. No avatar — the card
+  # renders initials and links out, so vutuv never hosts a third party's
+  # picture.
+  defp remote_author(remote) do
+    %{uri: remote.id, handle: remote.preferred_username, name: remote.name}
+  end
 
   defp follower_attrs(remote) do
     %{

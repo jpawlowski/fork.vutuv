@@ -74,7 +74,7 @@ defmodule VutuvWeb.NotificationLive.Index do
   # `kinds:` option keeps. "all" passes nil (every source).
   @filters %{
     "all" => nil,
-    "posts" => ~w(reply thread mention like),
+    "posts" => ~w(reply thread mention like fediverse_reply),
     "people" => ~w(follower connection endorsement),
     "other" =>
       ~w(organization_role moderation image_rejected report_protection handle_change cv_update
@@ -464,6 +464,31 @@ defmodule VutuvWeb.NotificationLive.Index do
           />
         </div>
 
+        <%!-- A reply from another network quotes its text (issue #1069). Plain
+        text, clamped like the other quotes and deliberately NOT run through the
+        Markdown renderer: a stranger's words must not be able to mint links,
+        least of all @mention links into local profiles. A private reply
+        (issue #1071) says so, since the member has to know that before they
+        answer. --%>
+        <div :if={@group.kind == "fediverse_reply" and @n[:note_text]} class="mt-1.5 space-y-1">
+          <p
+            :if={@n[:note_audience] && @n.note_audience != "public"}
+            data-remote-private
+            class="mb-0 text-xs font-medium text-slate-600 dark:text-slate-400"
+          >
+            <span aria-hidden="true">🔒</span> {gettext("Sent to you only, visible to nobody else")}
+          </p>
+          <div
+            data-remote-reply-preview="true"
+            class="border-l-2 border-dashed border-slate-300 pl-2.5 dark:border-slate-600"
+          >
+            <p
+              class="notif-clamp mb-0 whitespace-pre-line text-sm text-slate-600 dark:text-slate-400"
+              {clamp_attrs(@quote_lines)}
+            >{@n.note_text}</p>
+          </div>
+        </div>
+
         <%!-- The day's first thread row says why it is here and links to the
         switch that stops it (issue #1025), once per day so it stays a hint and
         not a banner. It shows only when thread events reach this reader, which
@@ -650,13 +675,27 @@ defmodule VutuvWeb.NotificationLive.Index do
 
   defp actor_link(assigns) do
     ~H"""
-    <%= if @actor.param do %>
-      <.link
-        href={~p"/#{@actor.param}"}
-        class="font-semibold text-slate-900 hover:text-brand-700 dark:text-white dark:hover:text-brand-300"
-      >{@actor.name}</.link>
-    <% else %>
-      <span class="font-semibold">{@actor.name}</span>
+    <%= cond do %>
+      <% @actor.param -> %>
+        <.link
+          href={~p"/#{@actor.param}"}
+          class="font-semibold text-slate-900 hover:text-brand-700 dark:text-white dark:hover:text-brand-300"
+        >{@actor.name}</.link>
+      <% @actor[:url] -> %>
+        <%!-- Somebody on another network (issue #1069). There is no vutuv
+        profile behind the name, so it links out to their account and the
+        `@handle@host` beside it says which network answered. --%>
+        <a
+          href={@actor.url}
+          target="_blank"
+          rel="nofollow noopener noreferrer"
+          class="font-semibold text-slate-900 hover:text-brand-700 dark:text-white dark:hover:text-brand-300"
+        >{@actor.name}</a><span
+          :if={@actor[:handle] && @actor.handle != @actor.name}
+          class="text-xs font-normal text-slate-600 dark:text-slate-400"
+        > {@actor.handle}</span>
+      <% true -> %>
+        <span class="font-semibold">{@actor.name}</span>
     <% end %>
     """
   end
@@ -806,7 +845,7 @@ defmodule VutuvWeb.NotificationLive.Index do
   # Event kinds that share the brand badge colour, so the class string lives
   # in one place.
   @brand_kind_classes "bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-100"
-  @brand_kinds ~w(follower reply thread mention connection report_protection organization_role handle_change cv_update)
+  @brand_kinds ~w(follower reply thread mention connection report_protection organization_role handle_change cv_update fediverse_reply)
 
   defp kind_classes("endorsement"),
     do: "bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300"
@@ -834,6 +873,9 @@ defmodule VutuvWeb.NotificationLive.Index do
   # label tells them apart where the glyph alone would not.
   defp kind_glyph("mention"), do: "@"
   defp kind_glyph("like"), do: "♥"
+  # A reply written on another network (issue #1069) — the same globe the
+  # post card's "from other networks" line uses, so one glyph means one thing.
+  defp kind_glyph("fediverse_reply"), do: "🌐"
   # "connection" is the vernetzt (mutual-follow) event; the handshake glyph.
   defp kind_glyph("connection"), do: "🤝"
   defp kind_glyph("moderation"), do: "⚑"
@@ -854,6 +896,7 @@ defmodule VutuvWeb.NotificationLive.Index do
   defp kind_label("thread"), do: gettext("Thread reply")
   defp kind_label("mention"), do: gettext("Mention")
   defp kind_label("like"), do: gettext("Like")
+  defp kind_label("fediverse_reply"), do: gettext("Reply from another network")
   defp kind_label("connection"), do: gettext("Connection")
   defp kind_label("moderation"), do: gettext("Moderation")
   defp kind_label("image_rejected"), do: gettext("Image review")
@@ -975,7 +1018,13 @@ defmodule VutuvWeb.NotificationLive.Index do
     primary_target(n, viewer) || actor_target(n)
   end
 
-  defp primary_target(%{kind: kind} = n, viewer) when kind in ["reply", "like"] do
+  # A reply from another network (issue #1069) opens the reader's **own** post,
+  # where the reply card sits among the rest of the conversation — deliberately
+  # not the remote original, which the card itself links to. The reader stays on
+  # vutuv unless they choose otherwise, and a private reply (issue #1071) has no
+  # public page to open anyway.
+  defp primary_target(%{kind: kind} = n, viewer)
+       when kind in ["reply", "like", "fediverse_reply"] do
     if is_binary(n[:post_id]) and viewer != nil, do: ~p"/#{viewer}/posts/#{n.post_id}"
   end
 
@@ -994,6 +1043,9 @@ defmodule VutuvWeb.NotificationLive.Index do
   defp notification_text(%{kind: "reply"}), do: gettext("replied to your post.")
 
   defp notification_text(%{kind: "mention"}), do: gettext("mentioned you in a post.")
+
+  defp notification_text(%{kind: "fediverse_reply"}),
+    do: gettext("replied to your post from another network.")
 
   # Live-pushed thread events land here (no group context yet): one actor.
   defp notification_text(%{kind: "thread"}), do: thread_text(1)

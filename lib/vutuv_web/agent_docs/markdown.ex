@@ -113,7 +113,15 @@ defmodule VutuvWeb.AgentDocs.Markdown do
         "#{gettext("Conversation")} (#{length(doc.thread)})",
         doc.thread |> Enum.reject(&(&1.id == doc.id)) |> Enum.map(&thread_block/1)
       ),
-      if(doc.thread_truncated, do: gettext("Only part of this long conversation is shown."))
+      if(doc.thread_truncated, do: gettext("Only part of this long conversation is shown.")),
+      # Replies written on other networks (issue #1069), in their own section so
+      # a reader can tell which world answered — the same distinction the HTML
+      # card draws with its skin. Public ones only; a reply addressed to the
+      # member alone never leaves the page it was sent to (issue #1071).
+      section(
+        "#{gettext("Replies from other networks")} (#{length(doc.fediverse_replies)})",
+        Enum.map(doc.fediverse_replies, &remote_reply_block/1)
+      )
     ]
     |> join_blocks()
   end
@@ -857,6 +865,12 @@ defmodule VutuvWeb.AgentDocs.Markdown do
         vutuv_counts <>
           " · " <> gettext("Reactions from other networks") <> ": #{count}"
     end
+    |> then(fn line ->
+      case doc[:fediverse_reply_count] || 0 do
+        0 -> line
+        count -> line <> " · " <> gettext("Replies from other networks") <> ": #{count}"
+      end
+    end)
   end
 
   @doc """
@@ -943,6 +957,22 @@ defmodule VutuvWeb.AgentDocs.Markdown do
       "#{heading} [#{md_text(entry.author)}](#{entry.url}) · #{entry.published_on}",
       reply_to,
       entry.body_markdown
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n\n")
+  end
+
+  # A reply from another network: who wrote it, where the authoritative original
+  # lives (ours is a cache and says so), and the plain text. Escaped as text
+  # rather than emitted as Markdown — it is a stranger's writing, and it must
+  # not be able to mint links in our document.
+  defp remote_reply_block(entry) do
+    [
+      "### #{md_text(entry.author)} (#{md_text(entry.handle)})",
+      entry.content_warning &&
+        "> " <> gettext("Content warning") <> ": " <> md_text(entry.content_warning),
+      md_text(entry.text),
+      "[#{gettext("View the original")}](#{entry.url})"
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n\n")

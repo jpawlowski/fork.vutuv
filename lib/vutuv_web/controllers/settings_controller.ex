@@ -280,6 +280,11 @@ defmodule VutuvWeb.SettingsController do
         # goes with it, since that is the whole reason storing it is defensible.
         unless saved.fediverse_reactions?, do: Vutuv.Fediverse.drop_reactions(saved)
 
+        # And the same for the replies (issues #1069 and #1071), where it
+        # matters more: those rows hold a stranger's words, so the switch has to
+        # be a real delete lever and not a display toggle.
+        unless saved.fediverse_replies?, do: Vutuv.Fediverse.drop_notes(saved)
+
         # Same rule for the followers themselves: leaving deletes the rows about
         # people on other networks. The actor answers 410 from now on, so those
         # servers drop the follow at their end too — a kept row would only be a
