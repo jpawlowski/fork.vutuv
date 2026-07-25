@@ -914,7 +914,7 @@ defmodule VutuvWeb.Router do
     post("/username", UsernameController, :create)
     # The live availability check behind the form's as-you-type verdict.
     get("/usernames/availability", UsernameController, :availability)
-    # The pre-#1082 URLs, kept for bookmarks and old links.
+    # The pre-#1083 URLs, kept for bookmarks and old links.
     get("/usernames/new", UsernameController, :legacy_redirect)
     post("/usernames", UsernameController, :create)
 

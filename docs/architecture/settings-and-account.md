@@ -158,7 +158,7 @@ The username has its own page under **Profile**, `/settings/username`: the
 everyday `vutuv.de/<handle>` address with a copy button, the rename form, and
 the permanent id-based profile link (issue #904) as the answer to "but then my
 old links break". A handle is public identity, not a credential, so burying it
-under Sign-in & security — where it lived until #1082, along with the permanent
+under Sign-in & security — where it lived until #1083, along with the permanent
 link — was the single clearest example of the old menu's problem. That page
 keeps a signpost row; `/settings/usernames/new` redirects here.
 
