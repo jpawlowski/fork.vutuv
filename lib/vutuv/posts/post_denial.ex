@@ -24,10 +24,6 @@ defmodule Vutuv.Posts.PostDenial do
 
   @wildcards ~w(everyone non_connections non_followers non_followees logged_out)
 
-  # The post_denials.group_id column is intentionally still present (audience
-  # Groups were removed; the table-drop is a sequenced follow-up deploy), but
-  # the schema no longer maps it: a denial now targets a single user or a
-  # wildcard. The DB check constraint still holds (group_id stays NULL).
   schema "post_denials" do
     belongs_to(:post, Vutuv.Posts.Post)
     belongs_to(:denied_user, Vutuv.Accounts.User)

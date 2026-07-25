@@ -595,19 +595,11 @@ defmodule Vutuv.Accounts do
 
   Most rows are removed by the database `ON DELETE` cascade (or `SET NULL` for
   the records that deliberately outlive their author: sent messages and
-  replies to a now-deleted post). Two things the cascade cannot do are handled
-  here:
-
-    * **On-disk files.** Post-image files and the avatar / cover trees live on
-      disk, not in a table, so the cascade never touches them. Their tokens
-      and paths are collected *before* the delete and removed *after* it
-      commits, so a rolled-back delete never strands the account without its
-      files.
-    * **Cascade ordering.** The user's posts are deleted first, inside the
-      transaction. The audience-Groups feature is gone, but its legacy
-      `post_denials.group_id` column (and its RESTRICT FK to `groups`) is kept
-      for one N-1 deploy, so clearing the user's posts before the `groups`
-      cascade keeps any stale group-denial row from blocking the delete.
+  replies to a now-deleted post). The one thing the cascade cannot do is
+  handled here: **on-disk files.** Post-image files and the avatar / cover
+  trees live on disk, not in a table, so the cascade never touches them. Their
+  tokens and paths are collected *before* the delete and removed *after* it
+  commits, so a rolled-back delete never strands the account without its files.
 
   Returns `{:ok, user}`.
   """
@@ -689,11 +681,11 @@ defmodule Vutuv.Accounts do
     # drop the logged-in chrome at once instead of on their next reload.
     Vutuv.Sessions.disconnect_user(user.id)
 
-    {:ok, _} =
-      Repo.transaction(fn ->
-        Repo.delete_all(from(p in Vutuv.Posts.Post, where: p.user_id == ^user.id))
-        Repo.delete!(user)
-      end)
+    # Every foreign key into `posts` cascades or nilifies, so the account's
+    # posts (and everything hanging off them) go with this one delete. The
+    # posts used to be cleared first, to keep a stale group denial's RESTRICT
+    # FK from blocking the cascade; that column is gone (drop_audience_groups).
+    {:ok, _} = Repo.delete(user)
 
     Enum.each(image_tokens, &Vutuv.PostImageStore.delete/1)
     Enum.each(job_image_tokens, &Vutuv.JobPostingImageStore.delete/1)
