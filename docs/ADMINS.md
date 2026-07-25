@@ -117,6 +117,8 @@ Everything else has a default (the vutuv.de production value):
 | `POST_EDIT_WINDOW_MINUTES` | `30` | How long a post stays editable after publishing. Editing also closes with the first like, repost or reply, whatever this value says (an edit would silently rewrite what somebody else endorsed); deleting is never blocked. Raise it for a closed community where posts get little immediate engagement |
 | `FEDIVERSE_ENABLED` | `true` | `false` turns follow-only ActivityPub federation off entirely (endpoints 404, nothing is delivered) — set it on intranet installations |
 | `FEDIVERSE_INBOUND_CAPS` | `600,60` | `host,actor`: how many rows one remote server, and one remote account, may store here per hour. Anything past the budget is dropped for that hour. The floor under the operator blocklist at `/admin/fediverse`, since it also bounds servers nobody has blocked yet |
+| `FEDIVERSE_NOTE_RETENTION_DAYS` | `183` | How long a reply written on another network may be held here at the very most, in days. It is deleted when the clock runs out whatever else happens, so this is the promise your privacy page can make. Only applies once a member switches replies on (off by default) |
+| `FEDIVERSE_NOTE_REFRESH_DAYS` | `7` | How stale a stored reply may get before vutuv asks its origin server whether it is still published there. Still there means the text is refreshed and the retention clock starts again; gone (or locked away) means it is deleted at once; unreachable changes nothing. Replies sent to a member privately are never re-checked |
 | `FETCH_BOOK_METADATA` | `true` | `false` turns the catalogue lookups behind post **book reviews** off (the composer's ISBN → title/author/year prefill, the cover image, page count and publisher from Open Library, and an audiobook's running time). The review feature itself keeps working — members type the fields by hand and the card renders without a cover or those details. Set it on installations that must not call out (intranets) |
 | `DNB_SRU_URL` | `https://services.dnb.de/sru/dnb` | Where an **audiobook's running time** is looked up by ISBN: an SRU endpoint answering MARC21-xml (the Deutsche Nationalbibliothek by default — Open Library records no durations). Point it at another catalogue's SRU endpoint, or set it **empty** (`DNB_SRU_URL=`) to switch that one lookup off while the rest of the book metadata keeps working |
 | `AMAZON_DOMAIN` | `www.amazon.de` | The store a book review card's shop link points at (`https://<domain>/dp/<isbn10>`). Set your regional store (`www.amazon.com`, …) — or an **empty** value (`AMAZON_DOMAIN=`) to remove the shop link entirely |
@@ -466,7 +468,8 @@ is not a vetted party. Your levers live at **`/admin` → Fediverse**
   and before any of its documents are fetched, and it is answered with a plain
   `202` rather than a refusal, so the list cannot be probed from outside.
   Blocking also **deletes what that server already stored here** (its remote
-  followers, its queued deliveries) and stops your members' posts from going
+  followers, the replies its members wrote under your members' posts, its queued
+  deliveries) and stops your members' posts from going
   there. Lifting a block later does not bring any of that back — the server has
   to follow again.
 - **Caps.** Independent of the list, one remote server may store at most 600
@@ -474,8 +477,47 @@ is not a vetted party. Your levers live at **`/admin` → Fediverse**
   nobody has thought to block yet; anything past the budget is dropped for that
   hour. Set `FEDIVERSE_INBOUND_CAPS` to change it (see the configuration table).
 - **Inbound volume.** The same page lists what each server has stored here,
-  biggest first, and the dashboard card names the busiest one. That is the list
-  a block decision is made from.
+  biggest first (followers and stored replies side by side), and the dashboard
+  card names the busiest one. That is the list a block decision is made from.
+- **Takedowns.** Below it, the replies your members removed or reported. A report
+  deletes the reply immediately — there is no queue to work through, because the
+  original still sits on the server it was written on and only our copy goes.
+  The list is there so you can see a pattern: one account showing up again and
+  again, or a whole server doing so, is what the blocklist above is for. It
+  deliberately holds **no text and no links**, only which server, which account
+  (as a short digest, so repeats are recognizable without keeping the account's
+  address), and when — keeping a stranger's words after deleting their reply
+  would make the deletion untrue.
+
+**Replies from other networks.** Off by default and switched on per member on
+their own Fediverse settings page. Once on, an answer written on another server
+under one of their public posts is stored here as **plain text** (never HTML,
+and no copy of the author's picture) and shown in the conversation, clearly
+marked as coming from elsewhere and linking to the original. A reply addressed
+to the member alone is shown only to them.
+
+The retention model, which is what makes holding a stranger's words defensible
+at all — they never signed up here and cannot practically be asked:
+
+- A copy is deleted after **six months** at the latest, whatever else happens
+  (`FEDIVERSE_NOTE_RETENTION_DAYS`).
+- Before that, vutuv asks the origin server now and then whether the reply is
+  still published there (`FEDIVERSE_NOTE_REFRESH_DAYS`, and only when somebody
+  actually opens the page). Gone or locked away means it is deleted at once,
+  usually far earlier than the six months; still there means the text is
+  refreshed and the clock starts again, so a reply people keep reading stays in
+  step with its original. A server that is simply unreachable changes nothing.
+- If the author deletes or edits it on their own server and that reaches us, we
+  follow immediately.
+- The member can remove any single reply, and switching the setting off deletes
+  every one of them.
+- Replies sent to a member privately are never re-checked against their origin:
+  the answer would be "not found" for anyone but the recipient, and asking would
+  tell that server we are holding it.
+
+If you run an installation where holding third-party text is not acceptable at
+all, leave it as it is: members have to switch it on themselves, and
+`FEDIVERSE_ENABLED=false` turns the whole of federation off.
 
 **Followers who leave without saying so.** Somebody on another server who
 unfollows, or who deletes their account and whose server announces it, disappears

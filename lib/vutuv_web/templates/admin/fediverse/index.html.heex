@@ -134,12 +134,56 @@ Classic admin page, so it uses the shared card/table/editform classes. --%>
             <tr>
               <th>{gettext("Server")}</th>
               <th>{gettext("Followers")}</th>
+              <th>{gettext("Stored replies")}</th>
             </tr>
           </thead>
           <tbody>
             <tr :for={row <- @inbound_hosts} data-inbound-host={row.host}>
               <td class="breakwrap">{row.host}</td>
               <td>{delimited_count(row.followers)}</td>
+              <td>{delimited_count(Map.get(@note_hosts, row.host, 0))}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    <% end %>
+  </section>
+</div>
+
+<%!-- The takedown log (issue #1069). It answers one question — is this one
+troll, or is this server the problem — because that is the decision the
+blocklist above acts on. It deliberately carries no content and no URIs: keeping
+a stranger's words after deleting their reply would make the deletion untrue.
+The short digest stands in for the account, so repeat offenders are still
+visible as repeats. Automatic deletions (expiry, an upstream withdrawal, a
+block) are not listed; they would drown this and go to the log file instead. --%>
+<div class="card-list">
+  <section class="card">
+    <h2 class="card__label">{gettext("Replies taken down by members")}</h2>
+    <%= if @note_events == [] do %>
+      <p class="card__empty">{gettext("Nobody has removed or reported a reply yet.")}</p>
+    <% else %>
+      <p class="editform__hint">
+        {gettext(
+          "A report deletes the reply right away, with no queue to work through. This is the trail, so a server that keeps showing up here can be blocked above. It holds no text and no links, only which server and which account (as a short digest)."
+        )}
+      </p>
+      <div class="card__tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>{gettext("When")}</th>
+              <th>{gettext("What")}</th>
+              <th>{gettext("Server")}</th>
+              <th>{gettext("Account")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={event <- @note_events} data-note-event={event.action}>
+              <td><.local_time at={event.inserted_at} /></td>
+              <td>{note_event_label(event)}</td>
+              <td class="breakwrap">{event.host}</td>
+              <td><code>{String.slice(event.actor_digest, 0, 8)}</code></td>
             </tr>
           </tbody>
         </table>

@@ -106,6 +106,13 @@ defmodule VutuvWeb.AgentDocs.Text do
         doc.thread |> Enum.reject(&(&1.id == doc.id)) |> Enum.map(&thread_lines/1)
       ),
       if(doc.thread_truncated, do: gettext("Only part of this long conversation is shown.")),
+      # Replies written on other networks (issue #1069), in their own section so
+      # a reader can tell which world answered. Public ones only; a reply
+      # addressed to the member alone stays on the page it was sent to (#1071).
+      section(
+        "#{gettext("Replies from other networks")} (#{length(doc.fediverse_replies)})",
+        Enum.map(doc.fediverse_replies, &remote_reply_lines/1)
+      ),
       footer(doc)
     ]
     |> join_blocks()
@@ -629,6 +636,19 @@ defmodule VutuvWeb.AgentDocs.Text do
     pad <>
       "* #{entry.author} · #{entry.published_on} · #{entry.url}\n" <>
       reply_to <> indent_block(entry.body_markdown, pad <> "  ")
+  end
+
+  # A reply from another network: who wrote it, where the authoritative original
+  # lives, and the plain text. Ours is a cache, so the origin URL rides along on
+  # every entry.
+  defp remote_reply_lines(entry) do
+    warning =
+      if entry.content_warning,
+        do: "  " <> gettext("Content warning") <> ": #{entry.content_warning}\n",
+        else: ""
+
+    "* #{entry.author} (#{entry.handle}) · #{entry.url}\n" <>
+      warning <> indent_block(entry.text, "  ")
   end
 
   defp indent_block(text, pad) do

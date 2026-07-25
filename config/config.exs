@@ -134,6 +134,31 @@ config :vutuv, :fediverse_enabled, true
 # an Undo or a Delete. A no-op anyway while :fediverse_enabled is off.
 config :vutuv, :fediverse_follower_pruning, true
 
+# Whether the hourly GenServer that deletes expired remote replies runs (off in
+# tests, same sandbox reasoning; tests call Vutuv.Fediverse.expire_due_notes/1
+# directly). A no-op while :fediverse_enabled is off.
+config :vutuv, :fediverse_note_sweeping, true
+
+# Whether opening a page queues the freshness re-fetch for the stale replies on
+# it (off in tests, where it would run outside the SQL sandbox). Off, the hard
+# ceiling still governs; on, a reply confirmed still published at its origin
+# refreshes and pushes its ceiling out, and one that is gone is deleted early.
+config :vutuv, :fediverse_note_refresh, true
+
+# How long a reply written on another network may be held here (issues #1069 and
+# #1071), and how stale a stored copy may get before its origin is asked whether
+# it is still published there.
+#
+# The two work as a pair: the ceiling is the promise the privacy page makes and
+# fires whatever else happens, while a note confirmed still live pushes that date
+# forward, so a reply people keep reading tracks its original and one nobody has
+# opened in six months is collected. An operator holding a stranger's words has
+# to be able to set both, so they are env-overridable
+# (FEDIVERSE_NOTE_RETENTION_DAYS / FEDIVERSE_NOTE_REFRESH_DAYS in
+# config/runtime.exs).
+config :vutuv, :fediverse_note_retention_days, 183
+config :vutuv, :fediverse_note_refresh_days, 7
+
 # The site-wide AI-crawler stance (see VutuvWeb.ContentPolicy): :permissive
 # welcomes search, live AI input AND model training; :block_training keeps
 # retrieval but declares ai-train=no and blocks the training crawlers in

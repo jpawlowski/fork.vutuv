@@ -11,6 +11,8 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
 
   use Gettext, backend: VutuvWeb.Gettext
 
+  alias Vutuv.Fediverse
+  alias Vutuv.Fediverse.Note
   alias Vutuv.Posts
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostImage
@@ -75,7 +77,15 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       bookmark_count: engagement.bookmarks,
       # Favourites and re-shares from OTHER networks (issue #1068), the same
       # separate figure the HTML shows on its own line under the vutuv counters.
-      fediverse_reaction_count: engagement.fediverse_reactions
+      fediverse_reaction_count: engagement.fediverse_reactions,
+      fediverse_reply_count: engagement.fediverse_replies,
+      # The replies written on other networks that the HTML thread weaves in
+      # (issue #1069). **Public ones only, on every path** — note the hardcoded
+      # `nil` viewer: `build/3` also serves the authenticated `/api/2.0` reads,
+      # and a reply addressed to the member alone (issue #1071) must not leave
+      # the page it was sent to, not through an API and not through a `.json`
+      # sibling. The member reads their private replies on the post itself.
+      fediverse_replies: [post.id] |> Fediverse.list_notes(nil) |> remote_entries(post.id)
     })
   end
 
@@ -159,6 +169,26 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
     Enum.reduce(posts, %{}, fn post, depths ->
       parent_id = post.reply_ref && post.reply_ref.parent_post_id
       Map.put(depths, post.id, (parent_id && depths[parent_id] && depths[parent_id] + 1) || 0)
+    end)
+  end
+
+  # One reply from another network as a doc entry: who wrote it in the
+  # `@handle@host` form the HTML card shows, where the original lives, and the
+  # plain text. No avatar (there is none stored) and no actor URI beyond the
+  # public account link.
+  defp remote_entries(by_post, post_id) do
+    by_post
+    |> Map.get(post_id, [])
+    |> Enum.map(fn note ->
+      %{
+        handle: Note.display_handle(note),
+        author: note.display_name || Note.display_handle(note),
+        network: Note.host(note.actor_uri),
+        url: Note.origin(note),
+        received_at: note.received_at,
+        content_warning: note.summary,
+        text: note.content_text
+      }
     end)
   end
 

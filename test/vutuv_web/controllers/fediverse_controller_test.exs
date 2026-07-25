@@ -464,6 +464,143 @@ defmodule VutuvWeb.FediverseControllerTest do
     end
   end
 
+  describe "POST /:slug/actor/inbox — replies from other networks (#1069, #1071)" do
+    @public "https://www.w3.org/ns/activitystreams#Public"
+
+    defp replying_user do
+      user = insert(:activated_user, fediverse_followers?: true, fediverse_replies?: true)
+      {:ok, _actor} = Fediverse.ensure_actor(user)
+      user
+    end
+
+    defp create_note(note_url, opts \\ []) do
+      %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id" => "https://social.example/activities/create-1",
+        "type" => "Create",
+        "actor" => @remote_actor,
+        "to" => Keyword.get(opts, :to, [@public]),
+        "object" => %{
+          "id" => Keyword.get(opts, :object_id, "#{@remote_actor}/statuses/1"),
+          "type" => "Note",
+          "inReplyTo" => note_url,
+          "content" => Keyword.get(opts, :content, "<p>Sehe ich auch so.</p>"),
+          "url" => "https://social.example/@alice/1",
+          "to" => Keyword.get(opts, :to, [@public])
+        }
+      }
+    end
+
+    test "a signed public reply is stored under the post", %{conn: conn} do
+      {priv, pub} = Keys.generate()
+      stub_remote_actor(pub, %{"preferredUsername" => "alice", "name" => "Alice Anders"})
+      user = replying_user()
+      post = create_post!(user, %{body: "Reachable from anywhere."})
+
+      conn = signed_post(conn, user, create_note(Docs.note_url(user, post.id)), priv)
+
+      assert conn.status == 202
+      assert [note] = Fediverse.list_notes([post.id], user)[post.id]
+      assert note.content_text == "Sehe ich auch so."
+      assert note.handle == "alice"
+      assert note.display_name == "Alice Anders"
+      assert Fediverse.note_count(post.id) == 1
+    end
+
+    test "a member who did not switch replies on stores nothing", %{conn: conn} do
+      {priv, pub} = Keys.generate()
+      stub_remote_actor(pub)
+      # federated_user/0 leaves fediverse_replies? at its default: off.
+      user = federated_user()
+      post = create_post!(user, %{body: "Reachable from anywhere."})
+
+      conn = signed_post(conn, user, create_note(Docs.note_url(user, post.id)), priv)
+
+      # Same 202 as a stored one, so a sender cannot probe the setting.
+      assert conn.status == 202
+      assert Fediverse.list_notes([post.id], user) == %{}
+    end
+
+    test "a reply addressed only to the member is stored, but privately", %{conn: conn} do
+      {priv, pub} = Keys.generate()
+      stub_remote_actor(pub)
+      user = replying_user()
+      post = create_post!(user, %{body: "Reachable from anywhere."})
+
+      activity = create_note(Docs.note_url(user, post.id), to: [Docs.actor_url(user)])
+      conn = signed_post(conn, user, activity, priv)
+
+      assert conn.status == 202
+      assert [%{audience: "direct"}] = Fediverse.list_notes([post.id], user)[post.id]
+      # Nobody else sees it, and the public figure does not move.
+      assert Fediverse.list_notes([post.id], nil) == %{}
+      assert Fediverse.note_count(post.id) == 0
+    end
+
+    test "the author's Update rewrites the stored text", %{conn: conn} do
+      {priv, pub} = Keys.generate()
+      stub_remote_actor(pub)
+      user = replying_user()
+      post = create_post!(user, %{body: "Reachable from anywhere."})
+      note_url = Docs.note_url(user, post.id)
+
+      signed_post(conn, user, create_note(note_url), priv)
+
+      update =
+        note_url
+        |> create_note(content: "<p>Korrektur: doch nicht.</p>")
+        |> Map.put("type", "Update")
+
+      conn = signed_post(recycle(conn), user, update, priv)
+
+      assert conn.status == 202
+
+      assert [%{content_text: "Korrektur: doch nicht."}] =
+               Fediverse.list_notes([post.id], user)[post.id]
+    end
+
+    test "the author's Delete removes it, and does not touch the follow", %{conn: conn} do
+      {priv, pub} = Keys.generate()
+      stub_remote_actor(pub)
+      user = replying_user()
+      post = create_post!(user, %{body: "Reachable from anywhere."})
+      note_url = Docs.note_url(user, post.id)
+
+      signed_post(conn, user, follow_activity(user), priv)
+      signed_post(recycle(conn), user, create_note(note_url), priv)
+      assert Fediverse.note_count(post.id) == 1
+
+      delete = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id" => "https://social.example/activities/delete-1",
+        "type" => "Delete",
+        "actor" => @remote_actor,
+        "object" => %{"id" => "#{@remote_actor}/statuses/1", "type" => "Tombstone"}
+      }
+
+      conn = signed_post(recycle(conn), user, delete, priv)
+
+      assert conn.status == 202
+      assert Fediverse.note_count(post.id) == 0
+      # Deleting a note must leave the follow intact (only a Delete of the
+      # actor itself drops that).
+      assert Fediverse.follower_count(user) == 1
+    end
+
+    test "a reply to somebody else's post is acknowledged and dropped", %{conn: conn} do
+      {priv, pub} = Keys.generate()
+      stub_remote_actor(pub)
+      user = replying_user()
+      stranger = replying_user()
+      post = create_post!(stranger, %{body: "Not yours to answer here."})
+
+      conn = signed_post(conn, user, create_note(Docs.note_url(stranger, post.id)), priv)
+
+      assert conn.status == 202
+      assert Fediverse.note_count(post.id) == 0
+    end
+  end
+
   describe "POST /:slug/actor/inbox — blocked servers (#1067)" do
     setup do
       admin = insert(:activated_user, admin?: true)

@@ -911,6 +911,15 @@ defmodule Vutuv.Posts do
           fragment(
             "(SELECT count(*) FROM fediverse_reactions fr WHERE fr.post_id = ?)",
             unquote(post).id
+          ),
+        # Replies written on other networks (issue #1069), on their own figure
+        # for the same reason. **Public ones only**: a reply addressed to the
+        # member alone (issue #1071) must not move a number anybody else can
+        # read, or the count itself would leak that a private message exists.
+        fediverse_replies:
+          fragment(
+            "(SELECT count(*) FROM fediverse_notes fn WHERE fn.post_id = ? AND fn.audience = 'public')",
+            unquote(post).id
           )
       }
     end
@@ -923,7 +932,14 @@ defmodule Vutuv.Posts do
       |> select([p], engagement_count_select(p))
 
     Repo.one(query) ||
-      %{likes: 0, bookmarks: 0, reposts: 0, replies: 0, fediverse_reactions: 0}
+      %{
+        likes: 0,
+        bookmarks: 0,
+        reposts: 0,
+        replies: 0,
+        fediverse_reactions: 0,
+        fediverse_replies: 0
+      }
   end
 
   @doc """

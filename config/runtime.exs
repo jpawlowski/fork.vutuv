@@ -161,6 +161,19 @@ if config_env() == :prod do
     config :vutuv, :fediverse_inbound_caps, {host_cap, actor_cap}
   end
 
+  # How long a reply written on another network may be held here, and how stale
+  # a stored copy may get before its origin is asked whether it is still
+  # published (issues #1069 and #1071). Holding a stranger's words is a call the
+  # operator has to be able to make, so both are settable per installation; the
+  # shipped six months / one week are what vutuv.de runs.
+  if days = System.get_env("FEDIVERSE_NOTE_RETENTION_DAYS") do
+    config :vutuv, :fediverse_note_retention_days, String.to_integer(String.trim(days))
+  end
+
+  if days = System.get_env("FEDIVERSE_NOTE_REFRESH_DAYS") do
+    config :vutuv, :fediverse_note_refresh_days, String.to_integer(String.trim(days))
+  end
+
   # Book metadata + covers for post reviews come keyless from Open Library.
   # FETCH_BOOK_METADATA=false turns every such fetch off (intranets); the
   # review panel then has no lookup button and covers stay empty.

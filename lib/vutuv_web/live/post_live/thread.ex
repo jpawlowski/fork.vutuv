@@ -5,6 +5,13 @@ defmodule VutuvWeb.PostLive.Thread do
   pattern: the controller keeps owning the URL, the agent-format negotiation
   and the page chrome; the socket owns the conversation card).
 
+  Replies written on **other networks** (issues #1069 and #1071) are woven into
+  the same conversation as ordinary siblings, in time order, wearing their own
+  card (`VutuvWeb.PostComponents.remote_reply_card/1`); `Vutuv.Fediverse.list_notes/2`
+  scopes them to the viewer, so one addressed to the member alone never reaches
+  anybody else's render. Their takedown controls are the `remove-remote-reply` /
+  `report-remote-reply` events below.
+
   It renders `Vutuv.Posts.thread_window/3`: a small conversation whole
   (`:all`, the issue #1006 page unchanged), a big one as a **window around
   the permalinked post** — the root pinned on top, a "Show N earlier posts"
@@ -36,6 +43,7 @@ defmodule VutuvWeb.PostLive.Thread do
 
   use Gettext, backend: VutuvWeb.Gettext
 
+  alias Vutuv.Fediverse
   alias Vutuv.Posts
   alias Vutuv.Social
   alias VutuvWeb.Live.InitAssigns
@@ -53,6 +61,7 @@ defmodule VutuvWeb.PostLive.Thread do
       |> assign(:ancestor_budget, defaults.ancestors)
       |> assign(:reply_budget, defaults.replies)
       |> assign(:subscribed_ids, MapSet.new())
+      |> assign(:notice, nil)
       |> load_window()
 
     {:ok, socket}
@@ -75,6 +84,25 @@ defmodule VutuvWeb.PostLive.Thread do
      socket
      |> assign(:reply_budget, socket.assigns.reply_budget + step)
      |> load_window()}
+  end
+
+  # The member takes a reply from another network off their own post, or
+  # anybody who can see it marks it as not appropriate. Both delete at once
+  # (`Vutuv.Fediverse`), which is the whole workflow — there is no case and no
+  # freezer, because unlike a member's own post this is a cache of something
+  # that still exists at its origin.
+  def handle_event("remove-remote-reply", %{"id" => id}, socket) do
+    {:noreply, take_down(socket, id, &Fediverse.remove_note/2, gettext("Reply removed."))}
+  end
+
+  def handle_event("report-remote-reply", %{"id" => id}, socket) do
+    {:noreply,
+     take_down(
+       socket,
+       id,
+       &Fediverse.report_note/2,
+       gettext("Thank you. The reply was deleted right away.")
+     )}
   end
 
   @impl true
@@ -103,7 +131,7 @@ defmodule VutuvWeb.PostLive.Thread do
     case Posts.get_post(socket.assigns.post_id) do
       nil ->
         # Deleted while the socket lived; the controller 404s the next load.
-        socket |> assign(:window, nil) |> assign(:focus, nil)
+        socket |> assign(:window, nil) |> assign(:focus, nil) |> assign(:remote_replies, %{})
 
       post ->
         window =
@@ -126,12 +154,56 @@ defmodule VutuvWeb.PostLive.Thread do
             %{}
           end
 
+        # Replies written on other networks under any post in the window
+        # (issues #1069 and #1071), viewer-scoped by `list_notes/2` — a reply
+        # addressed to the member alone never reaches anybody else's render.
+        remote = Fediverse.list_notes(ids, viewer)
+
+        # The lazy freshness check (issue #1069): ask the origins of the stale
+        # public ones whether they are still published there. Deliberately
+        # fire-and-forget in a task, so a stranger's slow server can never hold
+        # up this render, and only on connect, so the throwaway dead render
+        # does not pay for it.
+        if connected?(socket) do
+          remote |> Map.values() |> List.flatten() |> Fediverse.refresh_async()
+        end
+
         socket
         |> assign(:window, window)
         |> assign(:focus, Enum.find(posts, &(&1.id == post.id)) || post)
         |> assign(:engagement, Posts.post_engagement_map(ids, viewer))
         |> assign(:viewer_follows, follows)
+        |> assign(:remote_replies, remote)
         |> subscribe_shown(ids)
+    end
+  end
+
+  # The outcome is shown as an inline notice above the conversation, not as a
+  # toast: this is an **embedded** LiveView and the toast tray lives in the dead
+  # app layout, so a `put_flash/3` here would never reach the screen.
+  #
+  # A successful takedown says so by the card vanishing, which is why it clears
+  # the notice rather than setting one.
+  defp take_down(socket, id, fun, _message) do
+    case socket.assigns.current_user do
+      nil ->
+        socket
+
+      viewer ->
+        case fun.(id, viewer) do
+          :ok ->
+            socket |> assign(:notice, nil) |> load_window()
+
+          {:error, :rate_limited} ->
+            assign(
+              socket,
+              :notice,
+              gettext("You have reported a lot today. Please try again tomorrow.")
+            )
+
+          _ ->
+            assign(socket, :notice, gettext("That reply is not yours to remove."))
+        end
     end
   end
 
@@ -158,12 +230,23 @@ defmodule VutuvWeb.PostLive.Thread do
   def render(assigns) do
     ~H"""
     <div id="post-thread-frame">
+      <p
+        :if={@notice}
+        id="thread-notice"
+        role="status"
+        class="mb-3 rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-200"
+      >
+        {@notice}
+      </p>
       <%= cond do %>
         <% is_nil(@window) -> %>
           <div id="post-thread-gone"></div>
-        <% @window.mode == :all and @window.total == 1 -> %>
-          <%!-- No conversation: the post stands alone as its own card. The
-          author's Edit/Delete live in the card's own ⋯ menu. --%>
+        <% @window.mode == :all and @window.total == 1 and @remote_replies == %{} -> %>
+          <%!-- No conversation at all: the post stands alone as its own card.
+          The author's Edit/Delete live in the card's own ⋯ menu. A post with no
+          vutuv replies but an answer from another network (issue #1069) is not
+          this case — it falls through to the conversation below, which is what
+          weaves that answer in. --%>
           <.post_card
             post={@focus}
             viewer={@current_user}
@@ -186,6 +269,7 @@ defmodule VutuvWeb.PostLive.Thread do
                 viewer={@current_user}
                 viewer_follows={@viewer_follows}
                 engagement={@engagement}
+                remote_replies={@remote_replies}
                 auto_scroll?={@auto_scroll?}
                 conn_or_socket={@socket}
               />
@@ -196,6 +280,7 @@ defmodule VutuvWeb.PostLive.Thread do
                 viewer={@current_user}
                 viewer_follows={@viewer_follows}
                 engagement={@engagement}
+                remote_replies={@remote_replies}
                 auto_scroll?={@auto_scroll?}
                 conn_or_socket={@socket}
               />

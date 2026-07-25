@@ -138,7 +138,9 @@ defmodule Vutuv.FediverseBlocklistTest do
       assert {:ok, {_blocked, purged}} =
                Fediverse.block_instance(%{"host" => "spam.example"}, admin())
 
-      assert purged == %{followers: 1, deliveries: 1}
+      # `notes` joined the tally with issue #1069: a block is also a takedown of
+      # the replies that server's members wrote under vutuv posts.
+      assert purged == %{followers: 1, deliveries: 1, notes: 0}
       assert [%Follower{actor_uri: "https://social.example/users/alice"}] = Repo.all(Follower)
       assert [%Delivery{inbox_uri: "https://social.example/inbox"}] = Repo.all(Delivery)
     end

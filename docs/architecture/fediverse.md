@@ -2,12 +2,14 @@
 
 People on Mastodon and other ActivityPub servers can follow an opted-in
 member and receive their **public** posts. Federation is outbound-first by
-design: no remote posts or reply text is stored. The one thing that does come
-back is a **count** (issue #1068) — how many people out there favourited or
-re-shared a post — and even that is a bare counter row. The inbox otherwise
-processes only `Follow`, `Undo(Follow)` and the remote actor's own lifecycle
-(`Update` / `Delete`); everything else is acknowledged (202) and dropped.
-Everything lives in `Vutuv.Fediverse`.
+design, and what comes back is accepted in two tiers, each with its own switch:
+a bare **count** of favourites and re-shares (issue #1068, on by default) and,
+behind a second and deliberately separate opt-in, the **replies** people out
+there write under a member's post (issues #1069 and #1071, off by default). The
+inbox otherwise processes only `Follow`, `Undo(Follow)`, the remote actor's own
+lifecycle (`Update` / `Delete`) and an author's `Update`/`Delete` of a reply they
+sent us; everything else is acknowledged (202) and dropped. Everything lives in
+`Vutuv.Fediverse`.
 
 ## Consent first
 
@@ -119,6 +121,75 @@ every endpoint 404s and nothing is delivered.
   vutuv counters, never folded into them: a hostile server can then inflate
   only its own line, and the reader sees which world answered. Public and
   hidden at zero.
+- **Replies from other networks** (issues #1069 and #1071, the first content
+  vutuv stores that its own members did not write): a `Create(Note)` whose
+  `inReplyTo` names one of a member's public posts becomes a row in
+  `fediverse_notes` (`Vutuv.Fediverse.Note`). `record_reply/3` holds the gates in
+  order — the installation switch, the member federates, the member switched
+  **replies** on (`users.fediverse_replies?`, **off** by default, its own switch
+  beside the counts because a counter row says nothing about a person while a
+  sentence with their name on it does), the Note answers one of *their own*
+  posts, the post is public, the sender is within its inbound cap, and there is
+  text left once the markup is gone. Same 202 whatever it decides.
+  - **Plain text, never HTML.** `Vutuv.RemoteHtml.to_text/2` (shared with the
+    Mastodon profile feed, so remote HTML is reduced exactly one way) drops
+    `<script>`/`<style>` **with their contents**, turns `<br>`/`</p>` into line
+    breaks, strips every remaining tag, decodes the base entities once and
+    clamps. So nothing a stranger wrote is ever rendered `raw`, the agent-format
+    siblings carry the value unchanged, and the cap is well defined. **No avatar
+    is copied**: the card renders initials and links to the origin.
+  - **Audience** (issue #1071), read from `to`/`cc` on both the Create and the
+    Note, handling all three spellings of the public collection. Only `"public"`
+    is public; `"followers"`, `"direct"` and `"unknown"` render to the addressed
+    member alone, signed in, on their own post, behind the same 🔒 a restricted
+    post wears plus "sent to you only". Never widened, and there is deliberately
+    **no** button to publish one: we can never ask the author of a private
+    message whether that would be alright. `list_notes/2` is the one
+    viewer-scoped read, so no call site can forget the rule; `PostDoc` takes
+    public notes even on the authenticated `viewer:` path, so a private reply
+    cannot leave through `/api/2.0` or a `.json` sibling; and the public count
+    (`engagement_count_select` → `:fediverse_replies`) counts public notes only,
+    or the figure itself would leak that a private message exists.
+  - **Retention is two layers.** The ceiling is `expires_at`, six months out
+    (`:fediverse_note_retention_days`), swept hourly by
+    `Vutuv.Fediverse.NoteSweeper` — the promise that holds whatever else fails.
+    Under it a **lazy on-view freshness check**: rendering a note whose
+    `checked_at` is older than a week (`:fediverse_note_refresh_days`) queues an
+    SSRF-vetted `refresh_note/1` in a task, so no render waits on a stranger's
+    server. `200` and still public refreshes the text **and pushes the ceiling
+    out**; `404`/`410`/`403`, or an audience narrowed away from public, deletes
+    at once; anything else changes nothing, so an offline server buys no
+    retention and an outage triggers no mass delete. Net effect, and the reason
+    "cache" is an honest word here: a reply people keep reading tracks its
+    original, one nobody has opened in six months is collected. **Non-public
+    notes are never re-fetched** — a direct message answers 403/404 to any fetch
+    we can make, which the checker would read as "deleted upstream" and act on,
+    and asking would tell the origin we hold it. They live by the ceiling and an
+    upstream `Delete` alone.
+  - **Takedown, with no workflow.** The member removes a reply from their own
+    post; anyone who can see it reports it, which **deletes it immediately** —
+    no case, no freezer, because unlike a member's own post this is a cache of
+    something that still exists at its origin. Both write one
+    `Vutuv.Fediverse.NoteEvent` row, which keeps **no content and no URIs**
+    (following `FollowerPrune`, #1072): action, host, a keyed HMAC of the actor
+    URI, who acted, when. That is enough for the only decision it serves — one
+    troll or the whole server — without holding an identifier of somebody whose
+    words we just deleted. Reports are rate limited per reporter. Automatic
+    deletions are **not** logged per row (an expiry run would drown it); they go
+    to the log in aggregate.
+  - Everything else that deletes: the post, the account (both by FK cascade),
+    `purge_instance/1` when the server is blocked, and switching the opt-in off
+    (`drop_notes/1`) — the switch is a delete lever, not a display toggle.
+  - **Where it shows.** Woven into the permalink's conversation as an ordinary
+    sibling in time order (`VutuvWeb.PostLive.Thread` +
+    `PostComponents.remote_reply_card/1`), wearing its own skin so the two worlds
+    are told apart without colour: a **slate** initials tile with the 🌐 badge,
+    a **dashed** left rail against the solid connector rail, the name as plain
+    text beside a `@handle@host` that links out, and **no action bar** (liking a
+    note on someone else's server is not a thing that exists). A content warning
+    renders as a closed lid. The member also gets a notification: the
+    `fediverse_reply` kind, sourced **straight from the notes table**, so
+    deleting a note deletes its notification with no second place to remember.
 - **The operator's safety floor** (issue #1067): anyone can run an ActivityPub
   server, so before anything a remote sends is stored, two independent levers
   sit in front of it. The **blocklist**
@@ -283,11 +354,21 @@ guarantee.
 
 ## Deliberate v1 limits
 
-No inbound **content** — remote reply text, names, avatars and boost rosters are
-all still dropped. Only the reaction *count* is stored (issue #1068, above); the
-rest of the inbound tier is planned in issues #1069–#1071 under the agreed
-retention model: counts before text, a counter row lives as long as its post,
-stored remote text expires after six months. The operator blocklist and the
+Inbound **reply text** is stored now (issues #1069 and #1071, see the bullet
+above) under the agreed retention model: counts before text, a counter row lives
+as long as its post, stored remote text expires after six months unless its
+origin confirms it is still published. Still dropped: **avatars** (initials and
+a link out instead), **boost rosters** (who re-shared stays a number), inline
+**images** in a remote reply, and replies that answer another *remote* reply
+rather than a vutuv post — that conversation lives on its author's server, and
+following it would mean storing arbitrary third-party threads.
+
+Replying **back** to somebody on another network from vutuv is not built either:
+it would mean delivering to servers that never followed us and sending a member's
+words somewhere they did not choose, which deserves its own decision. The card
+links to the original instead.
+
+The operator blocklist and the
 inbound caps that were the condition for storing anything shipped alongside it
 (issue #1067, see the safety-floor bullet above). Reposts
 now federate as

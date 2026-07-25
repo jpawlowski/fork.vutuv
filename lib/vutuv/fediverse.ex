@@ -31,6 +31,7 @@ defmodule Vutuv.Fediverse do
   require Logger
 
   alias Vutuv.Accounts.User
+  alias Vutuv.Activity
   alias Vutuv.Fediverse.Actor
   alias Vutuv.Fediverse.BlockedInstance
   alias Vutuv.Fediverse.Deliverer
@@ -39,11 +40,14 @@ defmodule Vutuv.Fediverse do
   alias Vutuv.Fediverse.FollowerPrune
   alias Vutuv.Fediverse.HttpSignature
   alias Vutuv.Fediverse.Keys
+  alias Vutuv.Fediverse.Note
+  alias Vutuv.Fediverse.NoteEvent
   alias Vutuv.Fediverse.Reaction
   alias Vutuv.Posts
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostDenial
   alias Vutuv.RateLimiter
+  alias Vutuv.RemoteHtml
   alias Vutuv.Repo
   alias Vutuv.SocialFeed.Http
   alias Vutuv.UUIDv7
@@ -51,6 +55,27 @@ defmodule Vutuv.Fediverse do
 
   @max_attempts 8
   @max_body_bytes 500_000
+
+  # Inbound replies (issues #1069 and #1071). Six months is the hard ceiling a
+  # confirmed-live note pushes forward and nothing else does; a week is how
+  # stale a copy may get before its origin is asked again. Both are
+  # per-installation knobs (see `note_retention_days/0`), because "how long may
+  # we hold a stranger's words" is a call an operator has to be able to make.
+  @note_retention_days 183
+  @note_refresh_days 7
+  # How many remote replies one member may report per day. Deleting a cached
+  # copy is cheap and reversible only for its author, so the lever stays open —
+  # but not unlimited, or wiping every answer under somebody's post is free.
+  @note_report_limit 20
+
+  # Every spelling of the public collection that servers use in the wild. A note
+  # is public if one of these is addressed, and private otherwise — including
+  # when we cannot tell.
+  @public_collections [
+    "https://www.w3.org/ns/activitystreams#Public",
+    "as:Public",
+    "Public"
+  ]
 
   @doc "The installation-wide switch (FEDIVERSE_ENABLED; off = no endpoints, no deliveries)."
   def enabled?, do: Application.get_env(:vutuv, :fediverse_enabled, true)
@@ -472,17 +497,23 @@ defmodule Vutuv.Fediverse do
   end
 
   @doc """
-  Deletes everything stored from `host`: its remote followers, and the outbound
-  deliveries still queued for it. Returns `%{followers: n, deliveries: n}`.
+  Deletes everything stored from `host`: its remote followers, the replies its
+  members wrote under vutuv posts, and the outbound deliveries still queued for
+  it. Returns `%{followers: n, notes: n, deliveries: n}`.
   """
   def purge_instance(host) when is_binary(host) do
     {followers, _} =
       Repo.delete_all(from(f in Follower, where: uri_host(f.actor_uri) == ^host))
 
+    # A block is also a takedown: text that server's members wrote under our
+    # members' posts goes with it (issue #1069), not just the follow rows.
+    {notes, _} =
+      Repo.delete_all(from(n in Note, where: uri_host(n.actor_uri) == ^host))
+
     {deliveries, _} =
       Repo.delete_all(from(d in Delivery, where: uri_host(d.inbox_uri) == ^host))
 
-    %{followers: followers, deliveries: deliveries}
+    %{followers: followers, notes: notes, deliveries: deliveries}
   end
 
   @doc """
@@ -640,6 +671,515 @@ defmodule Vutuv.Fediverse do
   defp activity_object_id(%{"id" => id}) when is_binary(id), do: id
   defp activity_object_id(id) when is_binary(id), do: id
   defp activity_object_id(_), do: nil
+
+  ## Inbound replies (issues #1069 and #1071)
+
+  @doc "How long a stored remote reply may live at the very most (days)."
+  def note_retention_days,
+    do: Application.get_env(:vutuv, :fediverse_note_retention_days, @note_retention_days)
+
+  @doc "How stale a stored reply may get before its origin is asked again (days)."
+  def note_refresh_days,
+    do: Application.get_env(:vutuv, :fediverse_note_refresh_days, @note_refresh_days)
+
+  @doc "How many remote replies one member may report per day."
+  def report_limit, do: @note_report_limit
+
+  @doc """
+  Stores a reply somebody on another network wrote under a member's post
+  (issues #1069 and #1071). `actor` is the fetched remote actor as
+  `%{uri:, handle:, name:}`.
+
+  This is the first time vutuv keeps a stranger's *words*, so every gate that
+  must hold sits here, in order: the installation switch, the member federates,
+  the member switched replies on (`users.fediverse_replies?`, off by default and
+  deliberately separate from the reaction counts), the activity really carries a
+  Note, that Note answers one of *their own* posts, the post is public, the
+  sending server is within its inbound cap, and there is text left once the
+  markup is gone. Anything else is `:skip` — the inbox answers the same 202
+  either way, so a misdirected activity never learns which gate it failed.
+
+  The note is stored as **plain text** (`Vutuv.RemoteHtml`), never HTML, and
+  without any copy of the author's picture: the card renders initials and links
+  to the origin.
+
+  A redelivery of a note we already hold is a no-op; an author's edit arrives as
+  an `Update` and goes through `update_reply/3`.
+  """
+  def record_reply(%User{} = user, activity, actor) do
+    with true <- enabled?(),
+         true <- federated?(user),
+         true <- user.fediverse_replies?,
+         %{} = object <- note_object(activity["object"]),
+         %Post{} = post <- resolve_own_note(user, object["inReplyTo"]),
+         false <- Posts.restricted?(post),
+         :ok <- check_inbound_cap(actor.uri),
+         {:ok, note} <- insert_note(user, post, activity, object, actor) do
+      Posts.broadcast_post_counters(post.id)
+      Activity.notify_fediverse_reply(user, post, note)
+      :ok
+    else
+      _ -> :skip
+    end
+  end
+
+  @doc """
+  Applies an author's edit of a reply they already sent (`Update(Note)`).
+
+  Scoped to the actor that wrote it, so one server cannot rewrite another's
+  words, and it re-reads the audience: an author who narrows a public reply to
+  their followers has said "stop showing this", and that has to take effect.
+  """
+  def update_reply(%User{} = user, activity, actor_uri) when is_binary(actor_uri) do
+    with %{} = object <- note_object(activity["object"]),
+         uri when is_binary(uri) <- object["id"],
+         %Note{} = note <- Repo.get_by(Note, object_uri: uri, actor_uri: actor_uri),
+         text when text != "" <- remote_text(object["content"], Note.max_content()) do
+      note
+      |> Note.changeset(%{
+        content_text: text,
+        summary: remote_text(object["summary"], Note.max_summary()),
+        audience: audience(user, activity, object),
+        checked_at: DateTime.utc_now(:second)
+      })
+      |> Repo.update()
+
+      Posts.broadcast_post_counters(note.post_id)
+    end
+
+    :ok
+  end
+
+  def update_reply(_user, _activity, _actor_uri), do: :ok
+
+  @doc """
+  Honours an upstream `Delete` of a reply.
+
+  Deliberately **un**gated, like `remove_reaction/4`: an author withdrawing their
+  words is the deletion path that makes storing them defensible in the first
+  place, so it must not depend on any switch still being on. Scoped to the actor
+  that wrote the note, so one server cannot delete another's.
+  """
+  def delete_reply(actor_uri, object_uri)
+      when is_binary(actor_uri) and is_binary(object_uri) do
+    post_ids =
+      Repo.all(
+        from(n in Note,
+          where: n.object_uri == ^object_uri and n.actor_uri == ^actor_uri,
+          select: n.post_id
+        )
+      )
+
+    if post_ids != [] do
+      Repo.delete_all(from(n in Note, where: n.object_uri == ^object_uri))
+      Enum.each(post_ids, &Posts.broadcast_post_counters/1)
+    end
+
+    :ok
+  end
+
+  def delete_reply(_actor_uri, _object_uri), do: :ok
+
+  @doc """
+  The stored replies for `post_ids`, grouped by post id, oldest first — what the
+  thread renderer interleaves among the vutuv replies.
+
+  **Viewer-scoped** (issue #1071): a public reply is for everyone, anything else
+  only ever reaches the member whose post it answers, signed in. This is the one
+  read the pages use, so the visibility rule cannot be forgotten at a call site.
+  """
+  def list_notes(post_ids, viewer) do
+    from(n in Note,
+      join: p in Post,
+      on: p.id == n.post_id,
+      where: n.post_id in ^post_ids,
+      where: n.audience == "public" or p.user_id == ^note_viewer_id(viewer),
+      order_by: [asc: n.received_at, asc: n.id]
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.post_id)
+  end
+
+  @doc """
+  How many replies from other networks a post carries **publicly**.
+
+  Public notes only, on purpose: a reply addressed to the member alone must not
+  move a figure anybody else can read, or the count itself leaks that a private
+  message exists.
+  """
+  def note_count(post_id) do
+    Repo.aggregate(
+      from(n in Note, where: n.post_id == ^post_id and n.audience == "public"),
+      :count
+    )
+  end
+
+  @doc "One stored reply, or nil."
+  def get_note(id), do: UUIDv7.with_cast(id, &Repo.get(Note, &1))
+
+  @doc """
+  The member takes a reply off their own post. Deletes it at once and records
+  the takedown in `Vutuv.Fediverse.NoteEvent`.
+  """
+  def remove_note(note_id, %User{} = actor),
+    do: take_down_note(note_id, actor, "removed_by_member", &note_owner?/3)
+
+  @doc """
+  Somebody marks a reply as not appropriate. **Deletes it immediately** — there
+  is no case workflow and no freezer, because unlike a member's own post this is
+  a cache of something that still exists at its origin, so removing it costs the
+  author nothing they did not keep.
+
+  Rate limited per reporter (`report_limit/0` a day), so quietly wiping every
+  answer under somebody's post is not free. A private reply can only be reported
+  by the member it was addressed to, since nobody else may even see it.
+  """
+  def report_note(note_id, %User{} = reporter) do
+    case RateLimiter.hit(
+           {:fediverse_note_report, reporter.id},
+           @note_report_limit,
+           :timer.hours(24)
+         ) do
+      :ok -> take_down_note(note_id, reporter, "reported", &note_visible?/3)
+      _ -> {:error, :rate_limited}
+    end
+  end
+
+  @doc """
+  Drops every remote reply stored under a member's posts — what switching the
+  replies off means. Nothing is kept "just in case": the switch is the member's
+  deletion lever over third-party data they never asked for.
+  """
+  def drop_notes(%User{id: user_id}) do
+    {count, _} =
+      Repo.delete_all(
+        from(n in Note,
+          where:
+            n.post_id in subquery(from(p in Post, where: p.user_id == ^user_id, select: p.id))
+        )
+      )
+
+    count
+  end
+
+  @doc """
+  Deletes every stored reply past its ceiling — the floor under everything else,
+  so a copy nobody looked at and no server told us about still goes.
+  """
+  def expire_due_notes(now \\ nil) do
+    now = now || DateTime.utc_now(:second)
+    {count, _} = Repo.delete_all(from(n in Note, where: n.expires_at <= ^now))
+    count
+  end
+
+  @doc """
+  Which of `notes` should have their origin asked again — the lazy on-view
+  freshness check (issue #1069).
+
+  **Public notes only.** A reply addressed to the member alone answers `403` or
+  `404` to any fetch we can make, which `refresh_note/1` would read as "deleted
+  upstream" and act on, quietly destroying every private reply about a week
+  after it arrived; and asking would tell the origin server that we are sitting
+  on their member's private message, and how often we look at it. Those are
+  governed by the ceiling and an upstream `Delete` alone.
+  """
+  def due_for_refresh(notes) do
+    cutoff = DateTime.add(DateTime.utc_now(:second), -note_refresh_days() * 86_400)
+
+    Enum.filter(notes, fn note ->
+      Note.public?(note) and
+        (is_nil(note.checked_at) or DateTime.compare(note.checked_at, cutoff) == :lt)
+    end)
+  end
+
+  @doc """
+  Asks a note's origin whether it is still published there, and acts on the
+  answer. The half of retention that deletes *earlier* than the ceiling, and the
+  half that keeps the word "cache" honest.
+
+  `200` and still public refreshes the text and pushes the ceiling out (a copy
+  confirmed live last week has a far better claim to being necessary than one
+  that is merely young). `404`, `410` and `403` delete at once — gone, or the
+  author locked their account, which is equally a "stop showing this" signal we
+  would otherwise never see. **Anything else changes nothing**, so a server that
+  stays offline cannot buy indefinite retention and a three-week outage cannot
+  trigger a mass delete.
+  """
+  def refresh_note(%Note{} = note) do
+    with true <- enabled?(),
+         true <- Note.public?(note),
+         %Post{} = post <- Repo.get(Post, note.post_id),
+         %User{} = author <- Repo.get(User, post.user_id) do
+      apply_refresh(note, fetch_remote_note(note.object_uri, signer(author)))
+    else
+      _ -> :skip
+    end
+  end
+
+  @doc """
+  Runs `refresh_note/1` for every due note in the background, so a page render
+  never waits on a stranger's server. Returns immediately.
+
+  Off in tests (`:fediverse_note_refresh`), like every other background job that
+  talks to the network: the task runs outside the SQL sandbox's ownership, so it
+  would crash there — silently, since a Task's crash is only logged. Tests call
+  `refresh_note/1` directly with a stubbed HTTP layer instead.
+  """
+  def refresh_async(notes) do
+    with true <- Application.get_env(:vutuv, :fediverse_note_refresh, true),
+         [_ | _] = due <- due_for_refresh(notes) do
+      Task.Supervisor.start_child(Vutuv.TaskSupervisor, fn ->
+        Enum.each(due, &refresh_note/1)
+      end)
+    end
+
+    :ok
+  end
+
+  @doc """
+  What each remote server has stored here as replies, biggest first — the other
+  half of the operator's `/admin/fediverse` picture beside `inbound_hosts/1`.
+  """
+  def note_hosts(limit \\ 20) do
+    Repo.all(
+      from(n in Note,
+        group_by: uri_host(n.actor_uri),
+        order_by: [desc: count(n.id)],
+        limit: ^limit,
+        select: %{host: uri_host(n.actor_uri), notes: count(n.id)}
+      )
+    )
+  end
+
+  @doc """
+  The most recent member takedowns of remote replies, newest first — the log an
+  operator reads before deciding whether one troll or a whole server is the
+  problem. Carries no content and no URIs by construction (see
+  `Vutuv.Fediverse.NoteEvent`).
+  """
+  def recent_note_events(limit \\ 25) do
+    Repo.all(from(e in NoteEvent, order_by: [desc: e.id], limit: ^limit))
+  end
+
+  @doc "How many remote replies are stored across the installation."
+  def note_total, do: Repo.aggregate(Note, :count)
+
+  # An activity delivers what it claims, or it is dropped: a Create whose object
+  # is a bare id is not worth an outbound request to a stranger's server.
+  defp note_object(%{"type" => "Note"} = object), do: object
+  defp note_object(_), do: nil
+
+  defp insert_note(user, post, activity, object, actor) do
+    uri = object["id"]
+    text = remote_text(object["content"], Note.max_content())
+    received = DateTime.utc_now(:second)
+
+    cond do
+      not is_binary(uri) or uri == "" ->
+        :error
+
+      # Nothing left once the markup is gone (a picture-only or empty note): a
+      # row about a third party has to earn its place.
+      text in [nil, ""] ->
+        :error
+
+      Repo.exists?(from(n in Note, where: n.object_uri == ^uri)) ->
+        :error
+
+      true ->
+        %Note{post_id: post.id}
+        |> Note.changeset(%{
+          object_uri: uri,
+          actor_uri: actor.uri,
+          origin_url: presence(object["url"]),
+          in_reply_to_uri: object["inReplyTo"],
+          handle: actor.handle,
+          display_name: actor.name,
+          content_text: text,
+          summary: remote_text(object["summary"], Note.max_summary()),
+          audience: audience(user, activity, object),
+          received_at: received,
+          # It was demonstrably published the moment it was delivered, so the
+          # delivery is the first freshness confirmation.
+          checked_at: received,
+          expires_at: DateTime.add(received, note_retention_days() * 86_400)
+        })
+        |> Repo.insert()
+    end
+  end
+
+  # How the note was addressed, read from `to`/`cc` on **both** the Create and
+  # the Note (servers put the audience on either). Only the public collection
+  # makes it public; everything else, including anything we cannot read, renders
+  # to the addressed member alone. Never widen the sender's audience.
+  defp audience(user, activity, object) do
+    addressed =
+      [object["to"], object["cc"], activity["to"], activity["cc"]]
+      |> Enum.flat_map(&normalize_uri_list/1)
+
+    cond do
+      Enum.any?(addressed, &(&1 in @public_collections)) -> "public"
+      Enum.any?(addressed, &String.ends_with?(&1, "/followers")) -> "followers"
+      Docs.actor_url(user) in addressed -> "direct"
+      true -> "unknown"
+    end
+  end
+
+  defp remote_text(nil, _max), do: nil
+
+  defp remote_text(html, max) when is_binary(html), do: presence(RemoteHtml.to_text(html, max))
+
+  defp remote_text(_html, _max), do: nil
+
+  defp presence(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp presence(_), do: nil
+
+  # The nil UUID can never match a row: "not the author" without a NULL arm,
+  # the same trick `Vutuv.Posts.engagement_viewer_id/1` uses.
+  defp note_viewer_id(%User{id: id}), do: id
+  defp note_viewer_id(id) when is_binary(id), do: id
+  defp note_viewer_id(_), do: "00000000-0000-0000-0000-000000000000"
+
+  # Only the member whose post it sits under (or an admin) may remove a reply.
+  defp note_owner?(_note, author_id, %User{} = actor),
+    do: actor.id == author_id or actor.admin? == true
+
+  # Anyone who can see it may report it, which for a private reply is its
+  # addressee alone.
+  defp note_visible?(note, author_id, %User{} = actor),
+    do: Note.public?(note) or note_owner?(note, author_id, actor)
+
+  defp take_down_note(note_id, %User{} = actor, action, authorized?) do
+    query =
+      from(n in Note,
+        join: p in Post,
+        on: p.id == n.post_id,
+        where: n.id == ^to_string(note_id),
+        select: {n, p.user_id}
+      )
+
+    case UUIDv7.with_cast(note_id, fn _ -> Repo.one(query) end) do
+      {%Note{} = note, author_id} ->
+        if authorized?.(note, author_id, actor) do
+          Repo.delete(note)
+          log_note_event(note, author_id, actor, action)
+          Posts.broadcast_post_counters(note.post_id)
+          :ok
+        else
+          {:error, :not_allowed}
+        end
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp log_note_event(%Note{} = note, author_id, %User{} = actor, action) do
+    Repo.insert!(%NoteEvent{
+      action: action,
+      host: Note.host(note.actor_uri) || "unknown",
+      actor_digest: note_actor_digest(note.actor_uri),
+      audience: note.audience,
+      user_id: author_id,
+      actor_id: actor.id
+    })
+  end
+
+  # A keyed HMAC, not a bare hash: it groups a repeat offender across takedowns
+  # without keeping an online identifier of somebody whose words we just
+  # deleted, and a DB or backup leak alone cannot turn it back into the actor
+  # URI. Same pepper construction as the invitation and login-PIN hashes.
+  defp note_actor_digest(actor_uri) do
+    :hmac
+    |> :crypto.mac(:sha256, note_actor_pepper(), actor_uri)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp note_actor_pepper do
+    secret = Application.fetch_env!(:vutuv, VutuvWeb.Endpoint)[:secret_key_base]
+    :crypto.hash(:sha256, "vutuv/fediverse_note_actor/pepper/v1" <> secret)
+  end
+
+  defp apply_refresh(%Note{} = note, {:ok, doc}) do
+    text = remote_text(doc["content"], Note.max_content())
+    still_public? = doc_public?(doc)
+
+    cond do
+      # The author narrowed the audience: the same "stop showing this" signal a
+      # 403 carries, just visible to us.
+      not still_public? ->
+        delete_note_row(note)
+        :deleted
+
+      text in [nil, ""] ->
+        delete_note_row(note)
+        :deleted
+
+      true ->
+        now = DateTime.utc_now(:second)
+
+        note
+        |> Note.changeset(%{
+          content_text: text,
+          summary: remote_text(doc["summary"], Note.max_summary()),
+          checked_at: now,
+          expires_at: DateTime.add(now, note_retention_days() * 86_400)
+        })
+        |> Repo.update()
+
+        :refreshed
+    end
+  end
+
+  defp apply_refresh(%Note{} = note, {:gone, status}) do
+    Logger.info("fediverse note #{note.id} gone upstream (#{status}), deleting")
+    delete_note_row(note)
+    :deleted
+  end
+
+  # Unreachable, a 5xx, a 429, a malformed body: not fresh, but not evidence of
+  # anything either. Nothing changes, so the ceiling still governs.
+  defp apply_refresh(%Note{}, _other), do: :unchanged
+
+  # By id, not by struct: `refresh_async/1` is fire-and-forget and undeduped, so
+  # two page renders can queue a check for the same note and both conclude it is
+  # gone. `Repo.delete/1` on the loser's stale struct raises
+  # `Ecto.StaleEntryError` — inside a Task, where it would only ever be logged.
+  # Deleting by id is simply a no-op the second time.
+  defp delete_note_row(%Note{} = note) do
+    Repo.delete_all(from(n in Note, where: n.id == ^note.id))
+    Posts.broadcast_post_counters(note.post_id)
+  end
+
+  # A refetched note counts as public only if it still addresses the public
+  # collection; anything else (including an answer we cannot parse) is a signal
+  # to stop showing it, never a reason to keep it.
+  defp doc_public?(doc) do
+    [doc["to"], doc["cc"]]
+    |> Enum.flat_map(&normalize_uri_list/1)
+    |> Enum.any?(&(&1 in @public_collections))
+  end
+
+  # The same https-only, SSRF-guarded, size-capped, signed GET
+  # `fetch_remote_actor/2` uses — pointed at a note instead of an actor.
+  defp fetch_remote_note(uri, signer) do
+    with {:parse, %URI{scheme: "https", host: host}} <- {:parse, URI.parse(uri)},
+         {:ssrf, false} <- {:ssrf, Vutuv.Ssrf.resolves_to_internal?(host)},
+         {:ok, %Req.Response{status: 200, body: body}} <- ap_get(uri, signer),
+         {:size, true} <- {:size, byte_size(body) <= @max_body_bytes},
+         {:ok, %{} = doc} <- Jason.decode(body) do
+      {:ok, doc}
+    else
+      {:ok, %Req.Response{status: status}} when status in [403, 404, 410] -> {:gone, status}
+      other -> {:error, other}
+    end
+  end
 
   ## Account migration — move out (issue #986, half 2)
 
