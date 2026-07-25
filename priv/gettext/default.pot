@@ -15765,6 +15765,8 @@ msgstr ""
 #: lib/vutuv_web/live/notification_live/index.ex:1048
 #, elixir-autogen, elixir-format
 msgid "replied to your post from another network."
+msgstr ""
+
 #: lib/vutuv_web/templates/settings/fediverse.html.heex:150
 #, elixir-autogen, elixir-format
 msgid "All followers"

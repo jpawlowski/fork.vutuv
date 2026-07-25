@@ -16508,8 +16508,6 @@ msgstr "Was"
 #, elixir-autogen, elixir-format
 msgid "You have reported a lot today. Please try again tomorrow."
 msgstr "Sie haben heute schon viel gemeldet. Bitte versuchen Sie es morgen wieder."
-"Sie haben das heutige Einladungslimit erreicht. Bitte versuchen Sie es "
-"morgen erneut."
 
 #: lib/vutuv_web/live/notification_live/index.ex:1048
 #, elixir-autogen, elixir-format
