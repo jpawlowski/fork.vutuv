@@ -255,15 +255,11 @@ defmodule VutuvWeb.UserProfileLiveTest do
       {conn, viewer} = create_and_login_user(conn)
       owner = insert_activated_user()
 
-      # The owner's leading tag drives the topical suggestions: everyone endorsed
-      # for it is a candidate.
-      tag = insert(:tag)
-      insert(:user_tag, user: owner, tag: tag)
-
       already_followed = insert_activated_user()
       not_followed = insert_activated_user()
-      insert(:user_tag, user: already_followed, tag: tag)
-      insert(:user_tag, user: not_followed, tag: tag)
+      # Both are in the pool (recent posters), so the follow edge alone decides.
+      insert(:post, user: already_followed)
+      insert(:post, user: not_followed)
       # The viewer already follows one of the two candidates.
       insert(:follow, follower: viewer, followee: already_followed)
 
@@ -586,6 +582,150 @@ defmodule VutuvWeb.UserProfileLiveTest do
                view,
                ~s(#profile-completion a[href="#{~p"/settings/import/linkedin"}"])
              )
+    end
+  end
+
+  # Make `candidate` appear in the "Who to follow" pool: the suggestions are
+  # the window's most-hearted recent posters (Posts.top_recent_posters/2), so
+  # one fresh post is the ticket in.
+  defp suggest_to(_owner, candidate) do
+    insert(:post, user: candidate)
+    candidate
+  end
+
+  describe "'Who to follow' promotion while the owner follows fewer than five members" do
+    test "the owner's rail leads with the promoted card", %{conn: conn} do
+      {conn, owner} = create_and_login_user(conn)
+      suggest_to(owner, insert_activated_user())
+
+      {:ok, view, _html} = live(conn, ~p"/#{owner}")
+
+      # Promoted: the marker attribute and the intro line explaining why
+      # following matters are both on.
+      assert has_element?(view, ~s(#profile-who-to-follow[data-promoted]))
+      assert has_element?(view, "#discovery-intro")
+
+      # And the card really renders at the top of the rail, before the
+      # "General Info" card that normally leads it. Position is document
+      # order, so this one assertion reads the raw HTML.
+      html = render(view)
+      {rail_idx, _} = :binary.match(html, ~s(id="profile-who-to-follow"))
+      {about_idx, _} = :binary.match(html, ~s(id="profile-about"))
+      assert rail_idx < about_idx
+    end
+
+    test "five follows put the card back in its regular late-rail spot", %{conn: conn} do
+      {conn, owner} = create_and_login_user(conn)
+      suggest_to(owner, insert_activated_user())
+      for _ <- 1..5, do: insert(:follow, follower: owner, followee: insert_activated_user())
+
+      {:ok, view, _html} = live(conn, ~p"/#{owner}")
+
+      # The card still renders (there is a suggestion), but demoted: no
+      # marker, no intro line, and it sits after the General Info card again.
+      refute has_element?(view, ~s(#profile-who-to-follow[data-promoted]))
+      refute has_element?(view, "#discovery-intro")
+      assert has_element?(view, "#profile-who-to-follow")
+
+      html = render(view)
+      {rail_idx, _} = :binary.match(html, ~s(id="profile-who-to-follow"))
+      {about_idx, _} = :binary.match(html, ~s(id="profile-about"))
+      assert rail_idx > about_idx
+    end
+
+    test "a visitor never gets the promoted treatment", %{conn: conn} do
+      # The viewer follows nobody themselves, but they are not the owner:
+      # promotion is the owner's onboarding, not a viewer state.
+      {conn, _viewer} = create_and_login_user(conn)
+      owner = insert_activated_user()
+      candidate = insert_activated_user()
+      insert(:post, user: candidate)
+
+      {:ok, view, _html} = live(conn, ~p"/#{owner}")
+
+      assert has_element?(view, "#profile-who-to-follow")
+      refute has_element?(view, ~s(#profile-who-to-follow[data-promoted]))
+      refute has_element?(view, "#discovery-intro")
+    end
+
+    test "only accounts that posted in the last four weeks are suggested", %{conn: conn} do
+      {conn, owner} = create_and_login_user(conn)
+
+      # Three members: one with a fresh post, one whose last post is older
+      # than the window, one who never posted.
+      active = suggest_to(owner, insert_activated_user())
+      stale = insert_activated_user()
+
+      insert(:post,
+        user: stale,
+        inserted_at: NaiveDateTime.add(NaiveDateTime.utc_now(), -30, :day)
+      )
+
+      silent = insert_activated_user()
+
+      {:ok, view, _html} = live(conn, ~p"/#{owner}")
+
+      # A suggestion is a promise that following fills your feed; only the
+      # recently posting account can keep it.
+      rail = "#profile-who-to-follow"
+      assert has_element?(view, ~s(#{rail} a[href="/#{active.username}"]))
+      refute has_element?(view, ~s(#{rail} a[href="/#{stale.username}"]))
+      refute has_element?(view, ~s(#{rail} a[href="/#{silent.username}"]))
+    end
+
+    test "the fifth follow ticks the checklist live but leaves the card in place",
+         %{conn: conn} do
+      {conn, owner} = create_and_login_user(conn)
+      candidate = suggest_to(owner, insert_activated_user())
+      for _ <- 1..4, do: insert(:follow, follower: owner, followee: insert_activated_user())
+
+      {:ok, view, _html} = live(conn, ~p"/#{owner}")
+
+      # Four follows: promoted, and the checklist's follow step is still a
+      # link (an undone step renders as a link, a done one as plain text).
+      assert has_element?(view, ~s(#profile-who-to-follow[data-promoted]))
+      assert has_element?(view, ~s(#profile-completion a[href="#profile-who-to-follow"]))
+
+      view
+      |> element(
+        ~s(#profile-who-to-follow button[phx-click="follow"][phx-value-followee="#{candidate.id}"])
+      )
+      |> render_click()
+
+      # The step completed without a reload...
+      refute has_element?(view, ~s(#profile-completion a[href="#profile-who-to-follow"]))
+      assert render(view) =~ "Follow 5 members"
+      # ...but the promoted card stays where it is: recomputing the placement
+      # mid-click would teleport the rail away under the member's cursor. The
+      # next visit demotes it.
+      assert has_element?(view, ~s(#profile-who-to-follow[data-promoted]))
+    end
+  end
+
+  describe "onboarding checklist 'Follow 5 members' step" do
+    test "links to the rail card and counts existing follows in its hint", %{conn: conn} do
+      {conn, owner} = create_and_login_user(conn)
+      suggest_to(owner, insert_activated_user())
+      for _ <- 1..2, do: insert(:follow, follower: owner, followee: insert_activated_user())
+
+      {:ok, view, _html} = live(conn, ~p"/#{owner}")
+
+      step = view |> element(~s(#profile-completion a[href="#profile-who-to-follow"])) |> render()
+      assert step =~ "Follow 5 members"
+      # The progress hint sits under the label once the count is started.
+      assert render(view) =~ "You already follow 2 members."
+    end
+
+    test "falls back to the most-followed listing when there is nobody to suggest",
+         %{conn: conn} do
+      {conn, owner} = create_and_login_user(conn)
+
+      {:ok, view, _html} = live(conn, ~p"/#{owner}")
+
+      # Alone on the installation: no rail card to jump to, so the step links
+      # to the browsable listing instead of a dead anchor.
+      refute has_element?(view, "#profile-who-to-follow")
+      assert has_element?(view, ~s(#profile-completion a[href="/listings/most_followed_users"]))
     end
   end
 

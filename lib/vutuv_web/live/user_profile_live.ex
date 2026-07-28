@@ -45,7 +45,6 @@ defmodule VutuvWeb.UserProfileLive do
   alias Vutuv.Social.Follow
   alias Vutuv.SocialFeed
   alias Vutuv.Tags
-  alias Vutuv.Tags.Tag
   alias Vutuv.Tags.UserTag
   alias Vutuv.Tags.UserTagEndorsement
   alias VutuvWeb.Fediverse.Docs
@@ -476,7 +475,14 @@ defmodule VutuvWeb.UserProfileLive do
         force: true
       )
 
-    put_social_assigns(socket, user)
+    socket
+    |> put_social_assigns(user)
+    # The follow step is the one checklist item completable on this very page
+    # (the promoted rail's follow buttons), so re-derive the steps and the tick
+    # lands live. The checklist's visibility and the rail's promoted spot stay
+    # as mounted; recomputing them here would yank the panel (or the card)
+    # away under the member's cursor on the fifth follow.
+    |> refresh_completion_steps()
   end
 
   # The follow-graph slice of the assigns, shared by the initial load and the
@@ -572,6 +578,13 @@ defmodule VutuvWeb.UserProfileLive do
 
   # ── Initial load (ports UserController.show_html) ──
 
+  # The discovery threshold: the owner's own profile leads the rail with the
+  # promoted "Who to follow" card (and the checklist carries a follow step)
+  # until they follow at least this many members. Below it their feed is too
+  # empty to be worth visiting (Home.path even keeps them on the profile), so
+  # discovery outranks their own detail cards.
+  @discovery_follow_target 5
+
   defp load_profile(socket) do
     current_user = socket.assigns.current_user
     base_user = Repo.get!(User, socket.assigns.profile_user_id)
@@ -597,16 +610,11 @@ defmodule VutuvWeb.UserProfileLive do
     recommended_users = recommended_users(user, current_user)
 
     posts_total = Vutuv.Posts.count_author_posts(user, current_user)
-    steps = completion_steps(user, posts_total)
 
     # The showcased post (issue #1110), scoped to this viewer: a pin that is
     # restricted, frozen or gone simply isn't there. It renders above the
     # timeline, which therefore leaves it out (see profile_posts/4).
     pinned_post = Vutuv.Posts.pinned_post(user, current_user)
-
-    show_completion? =
-      owner? and not user.onboarding_dismissed? and
-        Enum.any?(steps, &(not &1.done)) and onboarding_window?(user)
 
     socket
     |> assign(:as_owner?, owner?)
@@ -642,13 +650,25 @@ defmodule VutuvWeb.UserProfileLive do
     # memory (no extra query). header_job stays the resolved work role for the
     # JSON-LD Person markup below.
     |> assign(:work_info, profile_headline(user, header_job, 60))
-    |> assign(:completion_steps, steps)
-    |> assign(:show_completion?, show_completion?)
     |> assign(:recommended_users, recommended_users)
     |> assign(:totals, totals)
     # Builds the social slice (counts, header pill state, follow previews); reads
     # :current_user / :recommended_users set above, so it goes last.
     |> put_social_assigns(user)
+    # The rail promotion and the checklist's follow step both read the followee
+    # count put_social_assigns just computed. The promotion is deliberately set
+    # only here, never on the social-graph refresh: the fifth follow, made from
+    # the promoted rail itself, must not teleport the card to the bottom of the
+    # page under the member's cursor. The next visit demotes it.
+    |> then(
+      &assign(
+        &1,
+        :promote_discovery?,
+        owner? and &1.assigns.followee_count < @discovery_follow_target
+      )
+    )
+    |> refresh_completion_steps()
+    |> then(&assign(&1, :show_completion?, show_completion?(&1.assigns)))
     |> put_social_feed_assigns(user)
     |> put_code_stats_assigns(user)
     |> put_job_search_assigns(user)
@@ -1012,7 +1032,25 @@ defmodule VutuvWeb.UserProfileLive do
     )
   end
 
-  defp completion_steps(user, posts_total) do
+  # Re-derive the checklist from the current assigns; called from the initial
+  # load and from the social-graph refresh (the follow step's count changes
+  # live). Reads :followee_count, so it must run after put_social_assigns.
+  defp refresh_completion_steps(socket) do
+    %{user: user, posts_total: posts_total, followee_count: followee_count} = socket.assigns
+
+    assign(
+      socket,
+      :completion_steps,
+      completion_steps(user, posts_total, followee_count, socket.assigns.recommended_users != [])
+    )
+  end
+
+  defp show_completion?(%{as_owner?: owner?, user: user, completion_steps: steps}) do
+    owner? and not user.onboarding_dismissed? and
+      Enum.any?(steps, &(not &1.done)) and onboarding_window?(user)
+  end
+
+  defp completion_steps(user, posts_total, followee_count, suggestions?) do
     [
       # Sign-up requires three tags, so this step arrives already checked: the
       # checklist opens with visible progress instead of a wall of zeros
@@ -1035,9 +1073,29 @@ defmodule VutuvWeb.UserProfileLive do
         done: posts_total > 0,
         href: ~p"/feed#compose",
         hint: first_post_hint(user)
+      },
+      # vutuv runs on following: the feed stays empty until the member follows
+      # people, so the list closes with the social step. Its link jumps to the
+      # "Who to follow" card, which the under-threshold owner view promotes to
+      # the top of the rail; an installation with nobody to suggest falls back
+      # to the browsable most-followed listing instead of a dead anchor.
+      %{
+        label: gettext("Follow %{count} members", count: @discovery_follow_target),
+        done: followee_count >= @discovery_follow_target,
+        href:
+          if(suggestions?, do: "#profile-who-to-follow", else: ~p"/listings/most_followed_users"),
+        hint: follow_step_hint(followee_count)
       }
     ]
   end
+
+  # Progress under the follow step ("You already follow 2 members."): visible
+  # momentum once the count has started, nothing at zero (the label alone
+  # reads cleaner) and nothing once the step is done.
+  defp follow_step_hint(n) when n < 1 or n >= @discovery_follow_target, do: nil
+
+  defp follow_step_hint(n),
+    do: ngettext("You already follow one member.", "You already follow %{count} members.", n)
 
   # A concrete first-post prompt borrowed from the member's own sign-up tags
   # ("a thought on #elixir") — which doubles as a quiet demo that #hashtags
@@ -1064,39 +1122,33 @@ defmodule VutuvWeb.UserProfileLive do
       @onboarding_window_seconds
   end
 
-  # The rail's count, and the size of the popularity pool we top up from when the
-  # topical pool is thin.
+  # The rail's count, and how many ranked candidates we draw before the
+  # per-viewer exclusions (self, owner, already-followed, blocked) thin them.
   @recommended_count 6
   @recommended_pool 60
 
-  # The "Who to follow" rail. We suggest members most endorsed for this profile's
-  # leading tag (so the suggestion is topically tied to whoever you're viewing),
-  # falling back to the most-followed members when the profile has no tag. Then we
-  # drop everyone the rail must never suggest: the profile owner, the `viewer`
-  # themselves and — the bug this fixes — anyone the viewer *already follows*
-  # (listing someone you already follow as a suggestion is pointless; the rail
-  # used to come back all "Following" rows). When the topical pool is mostly
-  # already-followed and runs thin, we top it up from the most-followed pool so
-  # the rail still fills with fresh faces. `viewer` is the current user (nil when
+  # The candidate window: only members who posted within it are suggested at
+  # all. The card promises that following fills your feed, and a silent
+  # account cannot keep that promise - strict on purpose, a thin (or empty)
+  # card is more honest than padding it with inactive accounts.
+  @suggested_window_days 28
+
+  # The "Who to follow" rail: the window's most-hearted recent posters
+  # (`Posts.top_recent_posters/2` - members who posted in the last
+  # @suggested_window_days days, ranked by the hearts those posts collected),
+  # minus everyone the rail must never suggest: the profile owner, the
+  # `viewer` themselves, anyone the viewer *already follows* (suggesting them
+  # is pointless) and blocked members. `viewer` is the current user (nil when
   # logged out), so a logged-out visitor gets unfiltered suggestions and no
-  # follow state.
+  # follow state. This replaced a most-followed/topical-tag source: follower
+  # totals reward the past, but the card's promise is a feed with something
+  # in it, which only current, liked output can keep.
   defp recommended_users(user, viewer) do
-    topical =
-      case first_tag(user) do
-        nil -> []
-        tag -> Tag.recommended_users(tag)
-      end
-      |> suggestable(user, viewer)
+    candidates = Vutuv.Posts.top_recent_posters(@suggested_window_days, @recommended_pool)
 
-    users =
-      if length(topical) >= @recommended_count do
-        topical
-      else
-        popular = suggestable(Social.most_followed_users(@recommended_pool), user, viewer)
-        Enum.uniq_by(topical ++ popular, & &1.id)
-      end
-
-    Enum.take(users, @recommended_count)
+    candidates
+    |> suggestable(user, viewer)
+    |> Enum.take(@recommended_count)
   end
 
   # Keep only members the rail may suggest: not the profile owner, not the viewer,
@@ -1115,16 +1167,5 @@ defmodule VutuvWeb.UserProfileLive do
       u.id == user.id or u.id == viewer_id or Map.has_key?(following, u.id) or
         MapSet.member?(blocked, u.id)
     end)
-  end
-
-  defp first_tag(user) do
-    Repo.one(
-      from(w in Ecto.assoc(user, :user_tags),
-        join: t in assoc(w, :tag),
-        order_by: w.inserted_at,
-        limit: 1,
-        select: t
-      )
-    )
   end
 end

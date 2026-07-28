@@ -2059,6 +2059,45 @@ defmodule Vutuv.Posts do
   end
 
   @doc """
+  The profile card's "Who to follow" candidate pool: the members who posted
+  (replies included) within the last `days` days, ranked by the hearts those
+  in-window posts collected, post count breaking ties - at most `limit` of
+  them, as listing-row `User` structs. A suggestion is a promise that
+  following fills your feed, so the pool is built from demonstrated recent
+  output and the ranking from what readers actually liked about it; a
+  most-followed veteran who went quiet does not qualify. Local hearts only,
+  like the discover rail's ranking (fediverse reactions stay out); no
+  self-like filter is needed since a member cannot like their own post.
+  """
+  def top_recent_posters(days, limit) do
+    # Re-imported locally: a scoped `import Mod, only:` replaces the module
+    # import's visible names inside this function, so both macros must appear.
+    import Vutuv.Moderation.Query, only: [account_hidden_row: 1, account_confirmed_row: 1]
+
+    cutoff = NaiveDateTime.add(NaiveDateTime.utc_now(), -days, :day)
+
+    stats =
+      from(p in Post,
+        where: p.inserted_at > ^cutoff,
+        left_join: l in PostLike,
+        on: l.post_id == p.id,
+        group_by: p.user_id,
+        select: %{user_id: p.user_id, hearts: count(l.id), posts: count(p.id, :distinct)}
+      )
+
+    Repo.all(
+      from(u in User,
+        join: s in subquery(stats),
+        on: s.user_id == u.id,
+        where: account_confirmed_row(u) and not account_hidden_row(u),
+        order_by: [desc: s.hearts, desc: s.posts, asc: u.first_name, asc: u.id],
+        limit: ^limit,
+        select: struct(u, ^User.listing_fields())
+      )
+    )
+  end
+
+  @doc """
   Maps a raw filter string (a phx-value or `?type=` query param) to one of the
   timeline filters `author_posts_page/5` / `profile_posts/3` / `count_author_posts/3`
   understand, defaulting to `:all` for anything unrecognised (issue #945).

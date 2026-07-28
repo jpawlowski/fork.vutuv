@@ -146,11 +146,33 @@ found; validated in `User.registration_changeset/2` with the same comma/space
 parsing and case-insensitive de-duplication the tag creation uses).
 
 After the confirmation PIN a fresh member lands on their own profile, where the
-**"Complete your profile" checklist** (owner-only, first 24h or 24h after a
-dormant return) opens with the tag step already checked — 1/4 done — and leads
-through photo → tagline (Kurzbeschreibung) → **first post**, the last step
-suggesting a topic from the member's own tags ("Zum Beispiel ein Gedanke
-zu #elixir").
+**"Complete your profile" checklist** (owner-only, first hour after sign-up —
+`UserProfileLive.@onboarding_window_seconds`) opens with the tag step already
+checked — 1/5 done — and leads through photo → tagline (Kurzbeschreibung) →
+**first post** (suggesting a topic from the member's own tags, "Zum Beispiel
+ein Gedanke zu #elixir") → **"Follow 5 members"**. The follow step shows the
+running count as its hint, ticks off live when the fifth follow happens on the
+page itself, and links to the "Who to follow" card — or, on an installation
+with nobody to suggest, to the most-followed listing.
+
+While the owner follows fewer than five members
+(`UserProfileLive.@discovery_follow_target`), the profile also renders the
+**"Who to follow" card promoted at the top of the rail** (`data-promoted`,
+plus an intro line saying that the feed is built from followed members)
+instead of its regular late-rail spot: every other card on a fresh profile
+points inward, and this is the one moment to show that there are people here
+to follow. The placement is sticky per page view — the fifth follow, made from
+the promoted card itself, must not teleport the card away mid-click; the next
+visit demotes it. The suggestions are the last four weeks' most-hearted
+posters (`Posts.top_recent_posters/2`,
+`UserProfileLive.@suggested_window_days`): members with a post in the window,
+ranked by the local hearts those posts collected (post count breaks ties),
+then thinned by the per-viewer exclusions (owner, viewer, already-followed,
+blocked). Follower totals deliberately play no part — they reward the past,
+while the card's promise is a feed with something in it, which only current,
+liked output can keep. Deliberately strict, so a thin card beats a padded
+one; an installation with no recent posts renders no card, and the checklist
+step then links to the most-followed listing instead.
 
 Work experience is deliberately not on the checklist; its section card keeps its
 own add tile.
