@@ -620,11 +620,10 @@ like two kinds, with the questions asked diverging per tab, so they went:
 **whether photos are attached**.
 
 The **editor is always on top**. Attached photos always render as the
-**large grid** below it (the grid is a `phx-drop-target`; adding more photos
-is a tile in the grid, and with no photos yet the picker is the bottom row's
-"Add photos" label — exactly one upload input renders, and both carry the
-same `composer-add-photos` id, which is how the feed's camera button finds
-its target). Tiles keep the photo's **own aspect ratio** (inline
+**large grid** below it (adding more photos is a tile in the grid, and with
+no photos yet the picker is the bottom row's "Add photos" label — exactly
+one upload input renders, and both carry the same `composer-add-photos` id,
+which is how the feed's camera button finds its target). Tiles keep the photo's **own aspect ratio** (inline
 `aspect-ratio` from the stored dimensions — the author judges the upload by
 the full frame, never a square crop). Under every tile sit the things a
 photographer looks for and would not find behind a gear icon: **one caption
@@ -635,9 +634,10 @@ camera settings" switch with the very line visitors would see**. **The
 picture itself is the options button** (a real `<button>`, so keyboard users
 reach the panel too); the old four-button bottom scrim is gone — with a
 single photo it was two dead arrows plus a ⚙ the picture-tap covers. What
-remains on the tile: a remove dot top-right, and the ◀ ▶ reorder dots only
-when more than one photo gives them meaning (they stay the touch reorder
-path, native drag cannot fire there). The book/film review triggers are
+remains on the tile: a remove dot top-right and the crop dot bottom-center.
+Reordering is **pointer drag on the tile itself** — mouse and touch alike
+(hold a tile briefly on touch to lift it; the ◀ ▶ arrow dots that used to be
+the touch path are gone, on Stefan's ask). The book/film review triggers are
 always available (a book review may well carry a photo of the book); the
 licence and download pair folds behind the **"Photo details" row** (see
 below). The cover badge appears only from the second photo on, and the amber
@@ -665,6 +665,72 @@ a stale or hostile id list can neither steal a photo nor resurrect a removed
 one). This is the photo half of issue #1130: the pending rows survive in the
 DB, only the socket state died. A photos-only draft also counts as drafting,
 so the feed re-opens the collapsed composer over it.
+
+### Drop anywhere, crop to a shape, arrange the bento
+
+**The whole composer form is the drop zone** (`phx-drop-target` on the form,
+not on the photo grid — a nested second zone would steal the active state):
+photos can be dragged in from the first drag on, before any grid exists.
+LiveView stamps `phx-drop-target-active` on the form while files hover it,
+and two `components.css` rules use that class to reveal the "Drop photos to
+add them" overlay (the markup carries no competing display utility — the
+#880 lesson). A drop **into the prose editor** stays different on purpose:
+the editor's ProseMirror handler swallows it (now with `stopPropagation`, or
+the same drop would also bubble to LiveView's window listener and upload
+twice) and inserts the picture inline at the drop point.
+
+**The ratio crop** (`Vutuv.Uploads.Crop` fractions, the avatar/cover
+machinery reused). Every tile carries a crop dot; it opens the
+`assets/js/photo_crop.js` dialog — the avatar modal's pan/zoom interaction
+plus a chip row of the popular shapes (1:1, 4:3/3:4, 3:2/2:3, 16:9/9:16;
+deliberately no freeform handle) and pinch-zoom for touch. The dialog loads
+the **author-only `source` workbench**
+(`GET /post_images/:token/source.avif`, `PostImageStore.source_path/1`: the
+uncropped frame at feed size, derived on demand from the kept original,
+cached in the private originals tree, 404 for everyone but the author), so a
+photo that is already cropped still shows its whole frame to re-crop from.
+"Apply" pushes `photo-crop` to the composer; `Posts.crop_image/2` +
+`PostImageStore.apply_crop/2` re-derive **every served version** from the
+original with the crop applied, persist the fractions in `post_images.crop`
+(the Regenerator re-applies them — without that a re-derive would silently
+un-crop everyone) and set `width`/`height` to the served (cropped)
+dimensions, which is what the mosaic and the `<img>` attributes read.
+
+Once a crop exists, **the uncropped picture leaves the server on no path but
+the workbench**: the served versions and lightbox `xl` show the crop, the
+`og.jpg` derive re-applies it, and the original download serves a
+full-resolution cropped JPEG (`cropped.jpg` beside the original, dropped on
+re-crop) — the exact-file choice is forced off and blocked while cropped
+(`download_exact`), because the upload still shows what the author cut away.
+The proxy's cache header is immutable, so `PostImage.url/2` appends a
+crop-keyed `?v=<hash>` buster while a crop is set (bodies stored under an
+older buster keep resolving: the inline-image whitelist strips `?v=` before
+lookup).
+
+**The bento workshop** appears with the second photo: a live preview
+rendered by the very `mosaic_layout/2` the feed uses, plus pattern chips —
+each chip draws its arrangement's real 12×6 geometry in miniature from
+`Vutuv.Posts.GalleryLayout`, the named catalog the old hardcoded
+`mosaic_shape` clauses moved into. "Auto" (nil) is the default and keeps the
+orientation-driven choice bit for bit; a chosen name is stored in
+`posts.gallery_layout` (cast through `GalleryLayout.cast/1`, unknown names
+mean auto), rides the draft (`post_drafts.layout`) and falls back to auto at
+counts where the name does not exist, so removing a photo never invalidates
+a post. The frame stays orientation-tuned even for a chosen variant — the
+variant names where the tiles sit, the frame keeps the hero cell near the
+hero's own shape. Swapping photos in the preview is **tap-tap** (`mosaic-swap`:
+first tap marks, second trades places), which needs no drag and therefore
+works identically on a phone; the grid reorders by pointer drag (below).
+
+The workshop also owns the **fit pair** ("Whole photos" / "Fill the tiles",
+`mosaic-fit`): by default the mosaic shows every photo **whole**, letterboxed
+inside its tile (`object-contain` — nobody's picture loses its edges
+unasked); "fill" switches the tiles to the old `object-cover` behaviour,
+where the photo covers its tile and is cropped by it. Stored as
+`posts.gallery_fill?` (default false — which deliberately flips existing
+posts to whole-photo rendering too, decided 2026-07-30), drafted as
+`post_drafts.fill?`. The orientation-tuned frames matter in both modes: they
+minimise the letterboxing exactly where they used to minimise the crop.
 
 ### A post waits for all of its photos
 
@@ -703,11 +769,12 @@ the permalink still shows those whole.
 
 **In the feed, two or more attachments lay themselves out as an aspect-aware
 bento mosaic** (`VutuvWeb.PostComponents.mosaic/1`). The first photo is the
-hero and gets the big tile, so **reordering is the only layout control** — drag
-in the composer, or the ◀ ▶ buttons, which are the path on touch (HTML5 drag
-cannot fire there). At most five tiles show; the rest fold into a `+N` on the
+hero and gets the big tile, so **ordering leads the layout** — pointer drag in
+the composer's grid (the PhotoStrip hook: lift on first mouse movement, or
+after a short still hold on touch, so scrolling over the photos keeps
+working), or the bento preview's tap-tap swap. At most five tiles show; the rest fold into a `+N` on the
 last one, and the block is height-capped, so a photo essay costs the same
-timeline height as a snapshot. The layout table is in `mosaic_shape/2` on a
+timeline height as a snapshot. The layout table is `Vutuv.Posts.GalleryLayout` on a
 12×6 grid; what it tunes is the **hero cell's** aspect, not the frame's (a
 cell's shape is `frame × cols/12 ÷ rows/6`, so the two pull in opposite
 directions). `mosaic_layout_test.exs` asserts both the tiling and the hero
