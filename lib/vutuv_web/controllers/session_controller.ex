@@ -29,7 +29,7 @@ defmodule VutuvWeb.SessionController do
     # `pin_fallback/2` and flashed by `VutuvWeb.Plug.PendingFlash` before this
     # action runs.
     case Accounts.read_pin_cookie(conn) do
-      email when is_binary(email) -> render(conn, "pin_user_login.html")
+      email when is_binary(email) -> ControllerHelpers.render_pin_screen(conn)
       nil -> render(conn, "new.html")
     end
   end
@@ -42,8 +42,8 @@ defmodule VutuvWeb.SessionController do
         # Always advances to the PIN screen — login_by_email/2 mails a PIN
         # only when the address has an account, but the response is the same
         # either way so it cannot be used to find out who has an account.
-        {:ok, conn} = Accounts.login_by_email(conn, email)
-        render(conn, "pin_user_login.html")
+        {:ok, conn} = Accounts.login_by_email(conn, email, :login)
+        ControllerHelpers.render_pin_screen(conn)
 
       :rate_limited ->
         conn
@@ -86,8 +86,7 @@ defmodule VutuvWeb.SessionController do
           :rate_limited ->
             conn
             |> put_flash(:error, gettext("Too many PIN requests. Please try again later."))
-            |> put_status(:too_many_requests)
-            |> render("pin_user_login.html")
+            |> ControllerHelpers.render_pin_screen(status: :too_many_requests)
         end
 
       nil ->
@@ -102,11 +101,22 @@ defmodule VutuvWeb.SessionController do
   # the PIN-entry form while a PIN is in flight, so the visitor can sign in or
   # register as someone else.
   def cancel(conn, _params) do
+    # Where "start over" leads depends on what was being started. A cancelled
+    # LOGIN goes back to the login form, which is the step before it. A cancelled
+    # REGISTRATION goes to "/", the sign-up form — sending someone who was
+    # half-way through creating an account to a login page offers them the one
+    # thing they cannot do yet. The flow has to be read before the cookie that
+    # carries it is dropped.
+    {_email, flow} = Accounts.pending_pin_identity(conn) || {nil, :login}
+
     conn
     |> Accounts.delete_pin_cookie()
     |> put_flash(:info, gettext("Okay, let's start over."))
-    |> redirect(to: ~p"/login")
+    |> redirect(to: cancel_return_path(flow))
   end
+
+  defp cancel_return_path(:registration), do: ~p"/"
+  defp cancel_return_path(_login), do: ~p"/login"
 
   # ── Passkey login (issue #795) ──
   # Two requests driven by assets/js/webauthn.js: step 1 mints a WebAuthn
@@ -176,7 +186,7 @@ defmodule VutuvWeb.SessionController do
   defp pin_fallback(conn, email) do
     case RateLimit.check(conn, :login_email, email) do
       :ok ->
-        {:ok, conn} = Accounts.login_by_email(conn, email)
+        {:ok, conn} = Accounts.login_by_email(conn, email, :login)
 
         conn
         |> PendingFlash.put_pending_flash(
@@ -262,12 +272,18 @@ defmodule VutuvWeb.SessionController do
 
   defp clear_auth_challenge(conn), do: delete_session(conn, :webauthn_auth_challenge)
 
+  # Re-minting the cookie must not change which flow it belongs to. It did:
+  # `login_by_email/3` used to default the flow to `:login`, so one tap on
+  # "Resend PIN" turned a pending registration into a pending login for good —
+  # and the registration screen posts to this very action. The default is gone;
+  # the flow now travels from the cookie back into the cookie.
   defp resend_pin(conn, email) do
-    {:ok, conn} = Accounts.login_by_email(conn, email)
+    {_email, flow} = Accounts.pending_pin_identity(conn) || {email, :login}
+    {:ok, conn} = Accounts.login_by_email(conn, email, flow)
 
     conn
     |> put_flash(:info, gettext("A new PIN is on its way to your email."))
-    |> render("pin_user_login.html")
+    |> ControllerHelpers.render_pin_screen()
   end
 
   def delete(conn, _) do

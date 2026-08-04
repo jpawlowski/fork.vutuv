@@ -34,14 +34,11 @@
         sections instead of one long, undifferentiated list. Shared class/option
         bindings keep the repeated radio groups and consent checkboxes
         consistent. --%>
-  <% gender_options = [{gettext("male"), "male"}, {gettext("female"), "female"}, {gettext("other"), "other"}] %>
   <%!-- Order and default come from the schema (Vutuv.Accounts.Email.email_types/0),
         so the form can never offer a value the changeset rejects: Privat, Arbeit,
         Andere - with Privat preselected by the controller. --%>
   <% email_type_options = Enum.map(Email.email_types(), &{email_type_label(&1), &1}) %>
-  <% radio_class = "h-4 w-4 border-slate-300 text-brand-600 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800" %>
   <% legend_class = "mb-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300" %>
-  <% radio_label_class = "flex items-center gap-2 text-sm font-normal text-slate-700 dark:text-slate-200" %>
   <% check_label_class = "flex items-start gap-2 text-sm text-slate-600 dark:text-slate-300" %>
 
   <.form
@@ -54,26 +51,15 @@
   >
     <.form_error changeset={@changeset} />
 
-    <%!-- Group 1: who you are. A radio group, not a dropdown: all options are
-          visible and "männlich" is preselected (set on the changeset by the
-          controller), so a normal user is not left on an empty
-          "Geschlecht auswählen" prompt. --%>
+    <%!-- Group 1: who you are. The name comes first and takes the autofocus:
+          the salutation question below it reads as "and how should we address
+          you" only once there is a name to address, and asking it first (which
+          is where the old gender radios sat) made it a gate in front of the
+          form rather than a detail within it. --%>
     <div class="space-y-4">
-      <fieldset>
-        <legend class={legend_class}>{gettext("Gender")}</legend>
-        <div class="flex flex-wrap gap-x-5 gap-y-2">
-          <%= for {glabel, gvalue} <- gender_options do %>
-            <label class={radio_label_class}>
-              <%= radio_button f, :gender, gvalue, class: radio_class, autofocus: gvalue == "male" %>
-              <span>{glabel}</span>
-            </label>
-          <% end %>
-        </div>
-        <%= error_tag f, :gender %>
-      </fieldset>
       <div class="grid gap-4 sm:grid-cols-2">
         <div>
-          <%= text_input f, :first_name, class: input_class(f, :first_name), placeholder: gettext("Enter your first name"), "aria-invalid": f.errors[:first_name] && "true" %>
+          <%= text_input f, :first_name, class: input_class(f, :first_name), placeholder: gettext("Enter your first name"), autofocus: true, "aria-invalid": f.errors[:first_name] && "true" %>
           <%= error_tag f, :first_name %>
         </div>
         <div>
@@ -81,6 +67,34 @@
           <%= error_tag f, :last_name %>
         </div>
       </div>
+      <%!-- A radio group, not a dropdown, so all three answers are visible at
+            once and "No salutation" cannot hide behind a closed select.
+
+            The checked state is computed here rather than left to
+            `radio_button/4`'s own detection, which compares the field value to
+            the option value — and `html_escape(nil)` equals the blank option's
+            "", so a fresh form would arrive with "No salutation" already
+            selected. Nothing may be preselected (`PageController.index/2` says
+            why), so an option is checked when it matches, and the blank one
+            additionally only once the form has been submitted, which is what
+            keeps a failed submit from silently dropping the member's answer. --%>
+      <% salutation_value = to_string(f[:salutation].value) %>
+      <% submitted? = @changeset.action != nil %>
+      <fieldset id="signup-salutation">
+        <legend class={legend_class}>
+          {gettext("Salutation")}
+          <span class="font-normal text-slate-600 dark:text-slate-400">{gettext("(optional)")}</span>
+        </legend>
+        <div class="flex flex-wrap gap-x-5 gap-y-2">
+          <%= for {slabel, svalue} <- salutation_options() do %>
+            <label class={radio_label_class()}>
+              <%= radio_button f, :salutation, svalue, class: radio_class(), checked: salutation_value == svalue and (svalue != "" or submitted?) %>
+              <span>{slabel}</span>
+            </label>
+          <% end %>
+        </div>
+        <%= error_tag f, :salutation %>
+      </fieldset>
       <div>
         <.tag_input
           id="signup-tags"
@@ -102,28 +116,37 @@
       </div>
     </div>
 
-    <%!-- Group 2: email. The email-type choice comes first (above the address
-          field): a radio group, not a dropdown, so a normal user sees all three
-          choices at once, and "Work" is preselected (set on the changeset by
-          the controller) instead of the old unhelpful "Other" default. --%>
+    <%!-- Group 2: email. The address itself comes first, then the two things
+          that are true *about* it: what kind of address it is, and who may see
+          it. A property is answered after the thing it belongs to — the same
+          order the name/salutation block above follows, and the reason the type
+          moved down here: it used to sit above the field, so the form asked how
+          to classify an address before asking for one, and it was the only
+          property of the address that did not sit under it (the visibility
+          checkbox always has). --%>
     <div class="space-y-4 border-t border-slate-200 pt-6 dark:border-slate-800">
       <.inputs_for :let={ef} field={f[:emails]}>
+        <div>
+          <%= email_input ef, :value, class: input_class(ef, :value), placeholder: gettext("Enter your email address"), "aria-invalid": ef.errors[:value] && "true" %>
+          <%= error_tag ef, :value %>
+        </div>
+        <%!-- A radio group, not a dropdown, so a normal user sees all three
+              choices at once, and "Personal" is preselected (set on the
+              changeset by `PageController.index/2`) instead of the old
+              unhelpful "Other" default — most people sign up with their
+              private address. --%>
         <fieldset>
           <legend class={legend_class}>{gettext("Type of email address")}</legend>
           <div class="flex flex-wrap gap-x-5 gap-y-2">
             <%= for {elabel, evalue} <- email_type_options do %>
-              <label class={radio_label_class}>
-                <%= radio_button ef, :email_type, evalue, class: radio_class %>
+              <label class={radio_label_class()}>
+                <%= radio_button ef, :email_type, evalue, class: radio_class() %>
                 <span>{elabel}</span>
               </label>
             <% end %>
           </div>
           <%= error_tag ef, :email_type %>
         </fieldset>
-        <div>
-          <%= email_input ef, :value, class: input_class(ef, :value), placeholder: gettext("Enter your email address"), "aria-invalid": ef.errors[:value] && "true" %>
-          <%= error_tag ef, :value %>
-        </div>
         <%!-- Checked by default (the controller primes public?: true on the
               changeset), so a normal member's address shows on their profile
               unless they opt out here. --%>
@@ -181,10 +204,28 @@
                 <label> bold, which the three box labels want and this helper
                 line does not - without it the explanation shouts as loudly as
                 the choice it explains. --%>
+          <%!-- "Mastodon" links out to the project's own site, because the word
+                is the one thing in this sentence a first-time visitor may not
+                know, and the tick is only informed consent if they can find
+                out. Split on a placeholder with `split_marker/2` (the same
+                total, never-raising helper the terms line below uses) rather
+                than matching the sentence itself: a hard split on a translated
+                string turns any .po slip into a 500. The link text is not
+                translated - it is a product name. --%>
+          <% {mastodon_pre, mastodon_post} =
+            split_marker(
+              gettext(
+                "Your public posts then also appear on {mastodon} and other independent networks, where people can follow you. Replies and reposts come back under your posts, with the account's address, and are kept for up to six months. You can switch it off at any time."
+              ),
+              "{mastodon}"
+            ) %>
           <span class="mt-0.5 block text-xs font-normal text-slate-600 dark:text-slate-400">
-            {gettext(
-              "People on Mastodon and other independent networks can then follow this profile, and your public posts appear there. What they answer or share comes back and is shown under your posts, by their account address. A reply from there is stored here for up to six months. You can switch all of it off again at any time."
-            )}
+            {mastodon_pre}<a
+              href="https://joinmastodon.org"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="font-semibold text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+            >Mastodon</a>{mastodon_post}
           </span>
         </span>
         <%= error_tag f, :fediverse_followers? %>

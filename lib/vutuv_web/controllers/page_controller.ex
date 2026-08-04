@@ -8,24 +8,34 @@ defmodule VutuvWeb.PageController do
   alias Vutuv.SearchText
   alias VutuvWeb.AgentDocs
   alias VutuvWeb.AgentDocs.ListDocs
+  alias VutuvWeb.ControllerHelpers
   alias VutuvWeb.LandingExperiment
+  alias VutuvWeb.RateLimit
 
   def index(conn, params) do
     # An invitation link lands here with the invited person's data in the query:
     # either the compact `i=` token or, for older links still in inboxes, the
-    # spelled-out first_name/last_name/gender/tags/email params (see
+    # spelled-out first_name/last_name/salutation/tags/email params (see
     # Vutuv.Invitations.prefill_from_params/1). Stamp the invitation's first visit
     # (a no-op for a plain visitor or an unknown address) and prefill the sign-up
     # form with whatever the inviter entered.
     prefill = Vutuv.Invitations.prefill_from_params(params)
     Vutuv.Invitations.record_visit(prefill["email"])
 
-    # Sign-up form defaults: preselect "männlich" (gender), pre-check "show on
-    # profile" (public?: true) and preselect the "Personal" email type (most
-    # people sign up with their private address). These prime
-    # the form's controls only - the User/Email schemas keep their own defaults
-    # for every other code path, so an address created without an explicit
-    # choice still stays private.
+    # Sign-up form defaults: pre-check "show on profile" (public?: true) and
+    # preselect the "Personal" email type (most people sign up with their
+    # private address). These prime the form's controls only - the User/Email
+    # schemas keep their own defaults for every other code path, so an address
+    # created without an explicit choice still stays private.
+    #
+    # The salutation is the one control deliberately left UNSET, and it is the
+    # only field on this form where that is a decision rather than an omission.
+    # It used to be a `gender` radio group preselected to "männlich", so every
+    # woman signing up had to correct an assumption about herself before typing
+    # her name, and members wrote in about it. Nothing may fill it in for them:
+    # an unset group asks, a preselected one assumes. An invitation link may
+    # still carry a salutation the inviter chose, since that is a person naming
+    # how they address someone they know, not the form guessing.
     #
     # The Fediverse box is pre-checked the same way: most people who join want
     # the connection to Mastodon and friends, and sign-up is the one moment
@@ -42,7 +52,10 @@ defmodule VutuvWeb.PageController do
     # somebody reading it, and the box's own text says so.
     changeset =
       %User{
-        gender: prefill_gender(prefill["gender"]),
+        # Already filtered to a value the form offers, or absent:
+        # `Invitations.prefill_from_params/1` owns that vocabulary because it is
+        # the one place that decodes invitation links.
+        salutation: prefill["salutation"],
         first_name: SearchText.normalize_search(prefill["first_name"]),
         last_name: SearchText.normalize_search(prefill["last_name"]),
         tag_list: SearchText.normalize_search(prefill["tags"]),
@@ -245,16 +258,26 @@ defmodule VutuvWeb.PageController do
   defp handle_post_registration_login(conn, email) do
     # The account was just created, so login_by_email/2 always mails the PIN
     # and advances to the confirmation screen.
-    {:ok, conn} = Vutuv.Accounts.login_by_email(conn, email)
-    render(conn, "pin_new_registration.html")
+    {:ok, conn} = Vutuv.Accounts.login_by_email(conn, email, :registration)
+    ControllerHelpers.render_pin_screen(conn)
   end
 
   # Same confirmation screen as a real sign-up (so the response can't be told
-  # apart), but notify_registration_attempt/2 mints no account and sends the
-  # existing owner a notice instead of a PIN.
+  # apart), and no account is minted here. What reaches the address depends on
+  # what is behind it — an established member gets a notice, an abandoned
+  # sign-up gets a fresh PIN so a second attempt actually works; see
+  # `Accounts.notify_registration_attempt/3`.
+  #
+  # The rate limit is checked for every address, not just the ones that would
+  # get a PIN, so the bucket behaves identically whoever is typed in. It is the
+  # same budget the login form spends, because it is the same kind of mail; a
+  # spent budget falls back to the notice. (The notice itself is not throttled,
+  # which is unchanged and predates this.)
   defp handle_existing_email_registration(conn, email) do
-    {:ok, conn} = Vutuv.Accounts.notify_registration_attempt(conn, email)
-    render(conn, "pin_new_registration.html")
+    pin_allowed? = RateLimit.check(conn, :login_email, email) == :ok
+
+    {:ok, conn} = Vutuv.Accounts.notify_registration_attempt(conn, email, pin_allowed?)
+    ControllerHelpers.render_pin_screen(conn)
   end
 
   # Also served as Markdown / text / JSON via VutuvWeb.AgentDocs.ListDocs.
@@ -413,9 +436,14 @@ defmodule VutuvWeb.PageController do
     end
   end
 
-  # If a login PIN is already in flight (the visitor entered their email, got a
-  # PIN, then came back to "/"), show the PIN-entry form instead of the sign-up
-  # page so they can finish logging in.
+  # If a PIN is already in flight (the visitor entered their email, got a PIN,
+  # then came back to "/"), show the PIN-entry form instead of the sign-up page
+  # so they can finish. Which of the two PIN screens is decided by the flow the
+  # cookie records: somebody half-way through a REGISTRATION used to land on the
+  # login screen here, which told them to "log in with one of your other
+  # addresses" — advice for an account they do not have yet (reported
+  # 2026-08-04). The two screens differ only in copy, and both registration
+  # branches mint the same cookie, so this leaks nothing about the address.
   defp display_pin_entry(conn, _params) do
     # A valid signed cookie means a login is in progress for that identity;
     # show the PIN form. Deliberately NOT gated on a PIN row existing in the
@@ -423,19 +451,8 @@ defmodule VutuvWeb.PageController do
     # (an enumeration oracle), since at step 1 an unknown address sets the
     # same cookie but creates no PIN row.
     case Vutuv.Accounts.read_pin_cookie(conn) do
-      nil ->
-        conn
-
-      _email ->
-        conn
-        |> put_view(VutuvWeb.SessionHTML)
-        |> render("pin_user_login.html")
-        |> halt()
+      nil -> conn
+      _email -> conn |> ControllerHelpers.render_pin_screen() |> halt()
     end
   end
-
-  # Only honor a prefilled gender the sign-up form actually offers; otherwise
-  # keep the form's own "male" default.
-  defp prefill_gender(gender) when gender in ["male", "female", "other"], do: gender
-  defp prefill_gender(_), do: "male"
 end

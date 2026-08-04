@@ -261,34 +261,59 @@ defmodule Vutuv.Accounts do
   belongs to an account; an attacker who guesses an unknown address gets
   the identical PIN screen but never receives a PIN.
   """
-  def login_by_email(conn, email) do
-    advance_to_pin_screen(conn, email, &send_login_pin/2)
+  def login_by_email(conn, email, flow) when flow in [:login, :registration] do
+    advance_to_pin_screen(conn, email, &send_login_pin/2, flow)
   end
 
   @doc """
-  Step 1 of registration when the address is **already taken**. The sign-up
-  form must not betray that an account exists, so this returns the exact same
-  `{:ok, conn}` — same pin cookie, same PIN-entry screen — as a fresh sign-up:
+  Step 1 of registration when the address is **already taken**.
+
+  Two kinds of "taken" hide behind that, and they need opposite answers. An
+  established member gets the notice below. An **abandoned sign-up** — an
+  account created minutes ago whose PIN was never entered — gets a fresh login
+  PIN instead, because the person filling in the form is that same person having
+  another go, and the alternative is what they used to get: a PIN screen and no
+  PIN, with the way out mentioned only inside an email. That covers a deliberate
+  cancel-and-retry, but far more often a double-submitted form, a back button or
+  a lost tab. `pin_allowed?` is the caller's rate-limit verdict: a PIN carries a
+  credential, so it must not be mailable without a budget, and a spent budget
+  falls back to the notice.
+
+  The account is **not** rewritten from the second attempt's fields. It is the
+  same address either way, the profile is editable the moment they are in, and
+  a write path here could be aimed at a stranger's half-finished sign-up.
+
+  The sign-up form must not betray that an account exists, so this returns the
+  exact same `{:ok, conn}` — same pin cookie, same PIN-entry screen — as a fresh
+  sign-up:
   the response is byte-identical, which closes the enumeration oracle the
   inline "has already been taken" error used to be. The truth reaches only the
   address owner's inbox, where `Emailer.registration_attempt_email/2` tells
   them someone tried to register and links them to the login page. No PIN is
   sent, so the notice carries nothing a non-owner could act on.
   """
-  def notify_registration_attempt(conn, email) do
-    advance_to_pin_screen(conn, email, &send_registration_attempt_notice/2)
+  def notify_registration_attempt(conn, email, pin_allowed?) when is_boolean(pin_allowed?) do
+    notify = fn user, address ->
+      if pin_allowed? and incomplete_registration?(user) do
+        send_login_pin(user, address)
+      else
+        send_registration_attempt_notice(user, address)
+      end
+    end
+
+    advance_to_pin_screen(conn, email, notify, :registration)
   end
 
   # The shared, enumeration-safe step 1 behind both flows above: look the
   # address up, hand a found account to `notify` (a login PIN, or the
   # registration-attempt notice), and advance to the PIN screen the same way
   # whether or not it was found — the response never depends on existence.
-  defp advance_to_pin_screen(conn, email, notify) do
+  defp advance_to_pin_screen(conn, email, notify, flow) do
     email = String.downcase(email)
 
     if user = user_by_email(email), do: notify.(user, email)
 
-    {:ok, put_pin_cookie(reset_login_session(conn), email)}
+    {:ok, put_pin_cookie(reset_login_session(conn), email, flow)}
   end
 
   # The account owning `email` (case-insensitive), or nil. The one email->user
@@ -438,8 +463,16 @@ defmodule Vutuv.Accounts do
   # the email step). Both resolve to the same `secret_key_base`.
   @token_context VutuvWeb.Endpoint
 
-  defp put_pin_cookie(conn, email) do
-    payload = Phoenix.Token.sign(@token_context, pin_cookie_salt(), email)
+  # The payload carries the flow beside the address, so a visitor who opens "/"
+  # while a PIN is in flight gets the screen belonging to the flow they are in
+  # rather than always the login one. It must be signed rather than derived at
+  # read time: deciding it from "does this address have an unconfirmed account"
+  # would answer that question to anyone who types someone else's address, which
+  # is the enumeration oracle the whole flow is built to avoid. Both registration
+  # branches (fresh address and already-taken address) pass :registration, so the
+  # cookie stays byte-indistinguishable between them.
+  defp put_pin_cookie(conn, email, flow) do
+    payload = Phoenix.Token.sign(@token_context, pin_cookie_salt(), {email, flow})
 
     conn
     |> Conn.delete_resp_cookie(@pin_cookie, pin_cookie_opts())
@@ -464,16 +497,47 @@ defmodule Vutuv.Accounts do
   Reads and verifies the signed login-identity cookie, returning the email it
   carries or `nil` when the cookie is absent, tampered with, or expired.
   """
-  def read_pin_cookie(%{cookies: %{@pin_cookie => payload}}) do
-    case Phoenix.Token.verify(@token_context, pin_cookie_salt(), payload,
-           max_age: @pin_cookie_max_age
-         ) do
-      {:ok, email} -> email
-      _ -> nil
+  def read_pin_cookie(conn) do
+    case pending_pin_identity(conn) do
+      {email, _flow} -> email
+      nil -> nil
     end
   end
 
-  def read_pin_cookie(_conn), do: nil
+  @doc """
+  The pending identity as `{email, flow}`, or `nil` when there is none.
+
+  One verification for both halves, and the only way to get them as a pair: a
+  caller that needs the flow almost always needs the address too, and reading
+  them through two separate verifies would let it pair a flow from one read with
+  an address from another.
+
+  `flow` is `:registration` or `:login`, and `:login` is also the answer for a
+  cookie minted before the flow was recorded — the shape this must keep
+  accepting for as long as one of those can still be in a browser
+  (`@pin_cookie_max_age`, 30 minutes). That legacy clause covers a new release
+  meeting an old cookie. It cannot cover the mirror case, an old release meeting
+  a new cookie, where the old code binds the whole tuple as the address: that
+  needs no shim during a normal blue/green switch, which moves traffic one way,
+  but it is what a **rollback** would hit for anyone holding a pending PIN.
+  Delete the clause, and this paragraph, once no such cookie can exist.
+  """
+  def pending_pin_identity(%{cookies: %{@pin_cookie => payload}}) do
+    case Phoenix.Token.verify(@token_context, pin_cookie_salt(), payload,
+           max_age: @pin_cookie_max_age
+         ) do
+      {:ok, {email, flow}} when is_binary(email) and flow in [:login, :registration] ->
+        {email, flow}
+
+      {:ok, email} when is_binary(email) ->
+        {email, :login}
+
+      _ ->
+        nil
+    end
+  end
+
+  def pending_pin_identity(_conn), do: nil
 
   @doc "Drops the login-identity cookie (after a successful login or lockout)."
   def delete_pin_cookie(conn) do
@@ -612,6 +676,32 @@ defmodule Vutuv.Accounts do
   # delete the latter. The window is generous against request latency yet still
   # astronomically smaller than the years-apart gap of any legacy account.
   @registration_pin_window_seconds 300
+
+  @doc """
+  Whether `user` is a sign-up that was started and never confirmed, as opposed
+  to an established member.
+
+  The same test `delete_unconfirmed_registrations/1` reaps by, asked about one
+  account instead of a batch: unconfirmed, **and** carrying a "login" PIN minted
+  alongside the account itself (`@registration_pin_window_seconds`). That second
+  half is what tells an abandoned sign-up apart from a legacy member who merely
+  never confirmed, and it is the reason this can be trusted to decide who gets a
+  fresh PIN rather than a "somebody tried to register" notice.
+  """
+  def incomplete_registration?(%User{email_confirmed?: true}), do: false
+
+  def incomplete_registration?(%User{id: id, inserted_at: created_at}) do
+    window = @registration_pin_window_seconds
+
+    Repo.exists?(
+      from(p in LoginPin,
+        where:
+          p.user_id == ^id and p.type == "login" and
+            p.inserted_at >= datetime_add(^created_at, ^(-window), "second") and
+            p.inserted_at <= datetime_add(^created_at, ^window, "second")
+      )
+    )
+  end
 
   @doc """
   Deletes `user` and everything that belongs to them — a clean, complete
@@ -1495,7 +1585,7 @@ defmodule Vutuv.Accounts do
   # on it.
   @profile_fields ~w(headline first_name last_name middle_name nickname
                      honorific_prefix honorific_suffix name_pronunciation
-                     gender birthdate locale noindex? noai?)
+                     salutation birthdate locale noindex? noai?)
 
   @doc """
   Updates only the plain profile fields (see `@profile_fields`) — the
