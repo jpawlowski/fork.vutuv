@@ -46,6 +46,7 @@ defmodule VutuvWeb.FediverseLookupLive do
   alias Vutuv.Fediverse
   alias Vutuv.Fediverse.RemoteAccount
   alias Vutuv.Posts
+  alias VutuvWeb.Live.RemotePostActions
 
   # The origin's like/repost figures on a card from another network tick
   # while this page is open (issue #1283). One line, no handler.
@@ -107,24 +108,7 @@ defmodule VutuvWeb.FediverseLookupLive do
   end
 
   def handle_event("report-remote-post", _params, socket) do
-    case Fediverse.report_remote_post(socket.assigns.post.id, socket.assigns.current_user) do
-      :ok ->
-        {:noreply,
-         socket
-         |> put_flash(:info, gettext("Thank you. Our copy was deleted right away."))
-         |> clear_result()}
-
-      {:error, :rate_limited} ->
-        {:noreply,
-         put_flash(
-           socket,
-           :error,
-           gettext("You have reported a lot today. Please try again tomorrow.")
-         )}
-
-      {:error, :not_found} ->
-        {:noreply, clear_result(socket)}
-    end
+    RemotePostActions.report(socket, socket.assigns.post.id, &clear_result/1)
   end
 
   def handle_event("follow", _params, %{assigns: %{post: nil}} = socket), do: {:noreply, socket}
@@ -157,14 +141,13 @@ defmodule VutuvWeb.FediverseLookupLive do
     viewer = socket.assigns.current_user
     ids = [post.id]
 
+    # No like/repost marks are read here: the card embeds `RemoteActionsComponent`,
+    # which loads its own. Assigning them cost two queries per lookup for values
+    # nothing rendered — and `clear_result/1` never set them, so no template
+    # could have read them without crashing on the empty state.
     socket
     |> assign(:post, post)
     |> assign(:images, Map.get(Fediverse.list_remote_images(ids), post.id, []))
-    |> assign(:liked?, MapSet.member?(Fediverse.liked_remote_post_ids(viewer, ids), post.id))
-    |> assign(
-      :reposted?,
-      MapSet.member?(Fediverse.reposted_remote_post_ids(viewer, ids), post.id)
-    )
     |> assign(:follow, Fediverse.remote_follow_for(viewer, post.remote_account))
   end
 
