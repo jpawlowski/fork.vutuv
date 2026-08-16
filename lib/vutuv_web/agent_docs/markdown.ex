@@ -666,6 +666,11 @@ defmodule VutuvWeb.AgentDocs.Markdown do
   The facts inside a code-forge account line's parentheses — every fact the
   forge exposed, dot-separated. Shared with the text renderer so the two
   human-readable formats read the same.
+
+  The counts stay **exact** here, where the card shows `compact_count/1`'s
+  `2K`. These formats are written for agents (the frontmatter is the
+  "markdown for agents" shape), and a reader that came for the figure is worse
+  served by a rounded one — `user_profile_code_stats_test.exs` pins it.
   """
   def code_stats_facts(account) do
     [
