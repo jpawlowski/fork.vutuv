@@ -375,6 +375,10 @@ defmodule VutuvWeb.PageController do
     name; the organization is the author, so there is no member behind it to look up
   - `/jobs` — the public job board: open positions, filterable, newest first
   - `/jobs/<slug>` — a job posting: role, location, pay range, tags and how to apply
+  - `/system/media-kit` — press material: boilerplate in three lengths, logo files,
+    colours, screenshots and the press contact (English only, whatever `?lang=` says)
+  - `/system/investors` — who to contact about investing, and how many members,
+    posts and Fediverse accounts this installation has (English only)
   {{ads}}
 
   List pages paginate with `?page=N`.

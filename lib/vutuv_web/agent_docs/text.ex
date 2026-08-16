@@ -317,6 +317,69 @@ defmodule VutuvWeb.AgentDocs.Text do
     |> join_blocks()
   end
 
+  # The two company pages are English in every locale (see
+  # VutuvWeb.CompanyController), so their renderings carry no gettext either.
+  def render(%{type: "investors"} = doc) do
+    [
+      heading(doc.title),
+      doc.description,
+      "Contact",
+      [
+        "#{doc.operator.name}, #{doc.contact}",
+        doc.contact_profile_url && "More contact information: #{doc.contact_profile_url}"
+      ]
+      |> Enum.filter(&is_binary/1),
+      "Figures",
+      [
+        "- Members: #{doc.figures.members}",
+        "- Active this month: #{doc.figures.active_month}",
+        "- Active this half year: #{doc.figures.active_halfyear}",
+        "- Posts: #{doc.figures.posts}",
+        "- Replies: #{doc.figures.replies}",
+        "- Fediverse accounts: #{doc.figures.fediverse_accounts}",
+        "- Fediverse servers: #{doc.figures.fediverse_servers}"
+      ],
+      "Press material: #{doc.media_kit_url}",
+      footer(doc)
+    ]
+    |> join_blocks()
+  end
+
+  def render(%{type: "media_kit"} = doc) do
+    [
+      heading(doc.title),
+      doc.description,
+      "About vutuv (short)",
+      doc.boilerplate.short,
+      "About vutuv (medium)",
+      doc.boilerplate.medium,
+      "About vutuv (long)",
+      doc.boilerplate.long,
+      "Key facts",
+      doc.facts |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(fn {k, v} -> "- #{k}: #{v}" end),
+      "Brand assets",
+      Enum.map(doc.assets, &"- #{&1.name} (#{&1.kind}): #{&1.url}"),
+      "Colours",
+      Enum.map(doc.colors, &"- #{&1.name} #{&1.hex}: #{&1.note}"),
+      "Typography",
+      Enum.map(doc.typography, &"- #{&1.role}: #{&1.name}. #{&1.note}"),
+      "Screenshots",
+      Enum.map(doc.screenshots, &"- #{&1.name}: #{&1.url}"),
+      "Using all this",
+      Enum.map(doc.usage, &("- " <> &1)),
+      "Press contact",
+      [
+        "- #{doc.press_contact.name}, #{doc.operator.name}",
+        "- #{doc.press_contact.email}",
+        doc.press_contact.profile_url &&
+          "- Profile (further contact details): #{doc.press_contact.profile_url}"
+      ]
+      |> Enum.filter(&is_binary/1),
+      footer(doc)
+    ]
+    |> join_blocks()
+  end
+
   # The pages this member follows (issue #1336) — the plain-text twin of the
   # Markdown block, under their own heading so a reader can tell a person from
   # an organization. Absent on every other people list.

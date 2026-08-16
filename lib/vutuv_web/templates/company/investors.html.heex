@@ -1,0 +1,56 @@
+<%!-- English in every locale (see VutuvWeb.CompanyController), so the block
+carries its own lang and nothing here goes through gettext. --%>
+<div lang="en" class="mx-auto max-w-3xl space-y-6 py-6">
+  <%!-- The contact card carries the page's h1: it is the first heading, and an
+        investor page whose whole job is to start a conversation should open
+        with the way to start it. --%>
+  <.card>
+    <h1 class="text-2xl font-bold text-slate-900 dark:text-white">
+      Contact {@press_contact_name}
+    </h1>
+    <p class="mt-3 text-lg text-slate-700 dark:text-slate-300">
+      Send me an email:
+      <a
+        href={"mailto:#{@facts_contact}"}
+        class="font-semibold break-all text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+      >{@facts_contact}</a>
+    </p>
+    <%!-- Rendered only where the configured handle resolves to a member of this
+          installation, so a third-party page links its own operator or nobody.
+          The address is the link text, as on the media kit. --%>
+    <p :if={@contact_profile_url} class="mt-2 text-slate-700 dark:text-slate-300">
+      More contact information on my profile
+      <a
+        href={@contact_profile_url}
+        class="font-semibold break-all text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+      >{@contact_profile_url}</a>
+    </p>
+  </.card>
+
+  <.card>
+    <h2 class="text-xl font-bold text-slate-900 dark:text-white">Where we are</h2>
+    <p class="mt-2 text-sm text-slate-600 dark:text-slate-400">
+      Read from the live database on every request, and published in the same figures at
+      <.link href={~p"/system/nodeinfo/2.1"} class="underline">/system/nodeinfo/2.1</.link>.
+    </p>
+    <div class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <.figure_tile label="Members" value={en_count(@facts.members)} />
+      <.figure_tile
+        label="Active this month"
+        value={en_count(@facts.active_month)}
+        note="Signed in within 30 days"
+      />
+      <.figure_tile
+        label="Active this half year"
+        value={en_count(@facts.active_halfyear)}
+      />
+      <.figure_tile label="Posts" value={en_count(@facts.posts)} />
+      <.figure_tile label="Replies" value={en_count(@facts.replies)} />
+      <.figure_tile
+        label="Fediverse accounts"
+        value={en_count(@facts.fediverse_accounts)}
+        note={"From #{en_count(@facts.fediverse_servers)} servers"}
+      />
+    </div>
+  </.card>
+</div>
