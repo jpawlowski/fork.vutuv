@@ -63,6 +63,23 @@ text + HTML bodies, bounce handling) is described in
 
 [Tidewave](https://tidewave.ai) runs in the dev server (dev-only dependency): AI coding agents can connect to the MCP endpoint at http://localhost:4000/tidewave/mcp to eval code in the running app, query Ecto and read logs.
 
+Agent instructions live in `CLAUDE.md`, with the framework conventions split
+into `.claude/rules/` (loaded only when a matching file is edited). Three
+hooks in `.claude/settings.json` enforce what an instruction alone tends to
+lose over a long session:
+
+| hook | when | what it does |
+| --- | --- | --- |
+| `precommit-before-push.sh` | before a `git push` | runs the full `mix precommit` in the pushing worktree and blocks on red |
+| `fork-sync.sh status` | session start | in a **fork**, reports how far it and the branch have drifted from `upstream/main` |
+| `fork-sync.sh push-gate` | before a `git push` / `gh pr create` | in a **fork**, blocks a branch that was never rebased onto `upstream/main`, or a fork that never ran `scripts/fork-setup.sh` |
+| `remind-design-sync.sh` | after an edit | reminds you to keep `.claude/rules/design.md` in sync with the design sources |
+
+Both `fork-sync.sh` modes exit silently when `origin` is this repository, so
+working on it directly is unaffected — and the hook only ever reads; the one
+thing that changes your git config is `scripts/fork-setup.sh`, run
+deliberately. See [Working from a fork](../CONTRIBUTING.md#working-from-a-fork).
+
 ### Admin access
 
 Grant your account admin rights (the `admin?` flag is deliberately never

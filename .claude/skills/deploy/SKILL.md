@@ -16,6 +16,24 @@ commit is the deploy trigger.
 This project skill overrides the personal `deploy` skill in
 `~/.claude/skills/deploy/`. When both are offered, use this one.
 
+**Working from a fork.** Every `origin/main` below means **the canonical
+repository's `main`** — the repo the PR is opened against. Establish once, at
+the start, which one that is:
+
+```bash
+git remote get-url upstream 2>/dev/null && echo "fork → canonical is upstream/main" || echo "canonical repo → origin/main"
+```
+
+In a fork, `origin/main` is a mirror and answers the version question **wrong**,
+not merely late: it hands out a number the canonical `main` has already spent,
+and that collision lands without a merge conflict or a warning. So read
+`upstream/main` for the bump (step 4) and for the pre-merge re-check (step 11),
+rebase onto `upstream/main`, push only to `origin`, and keep the mirror
+fast-forwarded with `gh repo sync <fork> --source <upstream> --branch main`
+(server-side, so it also works while `main` is checked out in another worktree).
+The fork bullet in `CLAUDE.md` has the two silent traps — `gh repo set-default`,
+and re-bumping after a rebase.
+
 **Token/latency discipline.** The expensive part is `mix precommit` over the
 test suite, and the naive loop ingests its full output once per iteration:
 
@@ -68,20 +86,24 @@ test suite, and the naive loop ingests its full output once per iteration:
    Do not proceed unless the subagent reports the full `mix precommit` exited 0.
    If it can't get to green, stop and tell the user what's still failing.
 
-4. **Bump the version from current `origin/main`** (deterministic — no
+4. **Bump the version from the current canonical `main`** (deterministic — no
    hand-editing `mix.exs`). Fetch first so the bump can't collide with a version
-   another branch already landed:
+   another branch already landed — from a fork that fetch is `upstream`, and
+   fetching `origin` instead is the mistake, not a shortcut:
 
    ```bash
-   git fetch origin main
+   git fetch origin main        # fork: git fetch upstream main
    elixir scripts/bump_version.exs patch "kurz, woran du arbeitest"
    elixir scripts/bump_version.exs list    # wer hält gerade welche Nummer
    ```
 
    Default `patch`; `minor` for a new backward-compatible user-facing feature;
-   never `major` without Stefan's agreement. If `origin/main` has moved ahead,
-   rebase onto it **before** bumping (or re-bump after the rebase) so the number
-   is monotonic.
+   never `major` without Stefan's agreement. If the canonical `main` has moved
+   ahead, rebase onto it **before** bumping (or re-bump after the rebase) so the
+   number is monotonic. From a fork, the `PreToolUse` hook
+   `.claude/hooks/fork-sync.sh` blocks the push when that rebase was skipped,
+   but it fires four steps later — in parallel with `mix precommit`, so after
+   that time is already spent — so do the check here, where it is still cheap.
 
    The script also **asks `gh` which numbers the open pull requests already
    claim** and bumps past the highest of them, because `origin/main` alone does
@@ -135,12 +157,37 @@ test suite, and the naive loop ingests its full output once per iteration:
    git push -u origin HEAD
    ```
 
-9. **Open the PR.** Body: what changed and why, hot vs cold deploy, the new
-   version, plus the agent-authorship footer in italics.
+9. **Open the PR — written for one minute of attention, ~200 words.** The
+   reviewer does not have the code in their head. **Your own setup's format
+   wins if it has one**; otherwise use the shape the maintainer's own PRs use:
+
+   - **First line:** the issue reference (`Behebt #123.`, `Closes #123`) or a
+     bold `TL;DR` of one or two sentences. Never background.
+   - **Then bold sentence-openers**, not headings: `**Was war.** / **Was
+     jetzt.**`, `**Ursache:** / **Jetzt:** / **Dazu:**`. Documentation-only
+     changes spell the entry point out: `**Wo:**` file and paragraph,
+     `**Vorher:** / **Jetzt:**`.
+   - **Named evidence**, never a bare "getestet": *"gegen fünf Szenarien, gegen
+     den ungefixten Stand kalibriert"*, *"im Browser geprüft: Upload,
+     Trefferliste, Suche, Filter"*.
+   - **A screenshot is a judgement call, not a routine.** Driving the browser
+     costs minutes and a large slice of context, so attach one only where the
+     change is visual in a way a sentence cannot carry — a layout, a spacing, a
+     state that has to be seen, a before/after whose difference is the point.
+     Otherwise describe it; the reviewer can ask.
+   - **`**Deploy:** hot`/`cold` and why**, and what was **not** exercised.
+   - The agent-authorship footer in italics.
+
+   **The ~200 words are a budget, not a limit** — a big feature may need 400.
+   But the first forty must carry it, and anything visible in the diff does not
+   belong in the body. Write the body to a file and pass `--body-file`, so
+   quoting cannot mangle it:
 
    ```bash
-   gh pr create --fill-first --title "…" --body "…"
+   gh pr create --title "…" --body-file /tmp/pr-body.md
    ```
+
+   From a fork, add `--repo <canonical> --base main --head <you>:<branch>`.
 
 10. **Wait for CI to go green** — this is the point of the whole flow, so
     actually wait, don't fire and forget:
@@ -154,13 +201,19 @@ test suite, and the naive loop ingests its full output once per iteration:
       fix to the branch, and watch again. If it stays red or the failure isn't
       yours to fix, stop and report; leave the PR open.
 
-11. **Merge** — but re-read `origin/main`'s version first, then squash and
+11. **Merge** — but re-read the canonical `main`'s version first, then squash and
     delete the branch (the repo convention, same as `/issues`):
 
     ```bash
     git fetch origin && git show origin/main:mix.exs | grep -m1 version
     gh pr merge <nr> --squash --delete-branch
     ```
+
+    From a fork, read `upstream` here (`git fetch upstream && git show
+    upstream/main:mix.exs | grep -m1 version`). The mirror cannot answer this
+    question: it only moves when somebody syncs it, so it will still show the
+    number you bumped from long after upstream has spent it — the check would
+    pass and mean nothing.
 
     Another PR can merge while yours sits in CI, and if it took your number
     there is no conflict to notice: the squash lands your work without moving
@@ -183,6 +236,11 @@ test suite, and the naive loop ingests its full output once per iteration:
     git branch -D <branch>
     git fetch --prune origin
     ```
+
+    From a fork, `git pull --ff-only` on `main` pulls the *mirror*, which is not
+    where your merge landed: sync the mirror first
+    (`gh repo sync <fork> --source <upstream> --branch main`), then
+    `git fetch --all --prune`.
 
     Run it from the checkout that owns the branch. In a **worktree** session the
     branch is checked out there, and git refuses to delete a branch checked out
