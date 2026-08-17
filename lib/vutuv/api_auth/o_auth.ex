@@ -39,7 +39,7 @@ defmodule Vutuv.ApiAuth.OAuth do
   import Ecto.Query
 
   alias Vutuv.ApiAuth
-  alias Vutuv.ApiAuth.{App, AuthCode, Grant, Scopes, Token}
+  alias Vutuv.ApiAuth.{App, AppToken, AuthCode, Grant, Scopes, Token}
   alias Vutuv.MastodonApi.Access
   alias Vutuv.MastodonApi.Scopes, as: MastodonScopes
   alias Vutuv.Repo
@@ -264,21 +264,162 @@ defmodule Vutuv.ApiAuth.OAuth do
   end
 
   @doc """
+  `grant_type=client_credentials`: a token for the **app itself**, with no
+  member behind it (RFC 6749 §4.4).
+
+  Mastodon's token endpoint answers this grant, and a client asks for it right
+  after registering through `POST /api/v1/apps` — before it sends anybody to a
+  browser. Refusing it is not a missing extra: Ivory on a real phone gave up at
+  that request with `unsupported_grant_type` and never reached the consent
+  screen at all.
+
+  **Mastodon clients only.** A native vutuv OAuth app is a user-facing thing
+  with mandatory PKCE, and nothing in that flow asked for an app-level
+  credential; answering the grant there would widen `/api/2.0`'s surface for
+  nobody's benefit. So a non-Mastodon client gets the same
+  `unsupported_grant_type` it gets today.
+
+  The token lands in `oauth_app_tokens`, not beside the member tokens — see
+  `Vutuv.ApiAuth.AppToken` for why that is the security property rather than a
+  filing decision. A requested `scope` is honoured when the app registered it and
+  refused as `invalid_scope` when it did not; omitting it keeps the app's own
+  registered scopes. (Mastodon narrows an omitted scope to `read`. We do not,
+  because this token grants nothing here and the echoed `scope` is the only thing
+  a client can read off it, so the app's own answer is the less surprising one.)
+  """
+  def client_credentials(params) do
+    with {:ok, app} <- authenticate_client(params),
+         {:ok, app} <- check_mastodon_client(app),
+         {:ok, scopes} <- app_token_scopes(app, params["scope"]) do
+      token = @access_prefix <> ApiAuth.random_token()
+
+      Repo.insert!(%AppToken{
+        app_id: app.id,
+        token_hash: ApiAuth.hash_token(token),
+        scopes: scopes
+      })
+
+      prune_app_tokens(app)
+
+      {:ok,
+       %{
+         access_token: token,
+         token_type: "Bearer",
+         scope: Enum.join(scopes, " "),
+         created_at: System.system_time(:second)
+       }}
+    end
+  end
+
+  defp check_mastodon_client(%App{protocol: "mastodon"} = app), do: {:ok, app}
+  defp check_mastodon_client(%App{}), do: {:error, :unsupported_grant_type}
+
+  defp app_token_scopes(%App{} = app, nil), do: {:ok, app.registered_scopes}
+  defp app_token_scopes(%App{} = app, ""), do: {:ok, app.registered_scopes}
+
+  defp app_token_scopes(%App{} = app, requested),
+    do: MastodonScopes.authorize(requested, app.registered_scopes)
+
+  # Only the hash is stored, so a live token cannot be handed back a second time
+  # the way Doorkeeper's `reuse_access_token` does — every call has to mint a new
+  # row. That makes this grant the one place where an unattended caller can grow
+  # a table on its own: app registration is public (rate limited) and the token
+  # endpoint is not, so without a bound one client could insert without end. A
+  # client asks for an app token about once per install, so keeping the newest
+  # few per app costs nobody anything and turns unbounded growth into a constant.
+  @app_token_keep 10
+
+  defp prune_app_tokens(%App{} = app) do
+    keep =
+      from(t in AppToken,
+        where: t.app_id == ^app.id,
+        order_by: [desc: t.id],
+        limit: @app_token_keep,
+        select: t.id
+      )
+
+    Repo.delete_all(
+      from(t in AppToken, where: t.app_id == ^app.id and t.id not in subquery(keep))
+    )
+  end
+
+  @doc """
+  The app behind a `client_credentials` token, or `nil`.
+
+  Reads `oauth_app_tokens` and nothing else, which is the point: a member token
+  cannot arrive here and an app token cannot arrive at `ApiAuth.verify_token/1`.
+  """
+  def verify_app_token(plaintext) when is_binary(plaintext) do
+    AppToken
+    |> Repo.get_by(token_hash: ApiAuth.hash_token(plaintext))
+    |> case do
+      %AppToken{} = token -> live_app_token(token)
+      nil -> nil
+    end
+  end
+
+  def verify_app_token(_other), do: nil
+
+  defp live_app_token(token) do
+    if AppToken.live?(token) do
+      token = Repo.preload(token, :app)
+
+      # A suspended app's credential stops working, the same as its member
+      # tokens do (`ApiAuth.check_app/2`).
+      case token.app do
+        %App{suspended_at: nil} = app ->
+          touch_app_token(token)
+          app
+
+        _suspended_or_gone ->
+          nil
+      end
+    end
+  end
+
+  # The same throttle the member tokens use (`ApiAuth.touch_last_used/1`):
+  # `last_used_at` is an audit trail, not a counter, so a hot row is not written
+  # on every request.
+  defp touch_app_token(token) do
+    Repo.touch_throttled(token, :last_used_at, ApiAuth.last_used_resolution_seconds())
+  end
+
+  @doc """
   RFC 7009 revocation: kills the presented token (and, for a refresh
   token, the whole pair via the grant). Always `:ok` for valid client
   credentials — unknown tokens are not an error, per spec.
+
+  An app's own `client_credentials` token is revocable here too. The spec lets
+  this endpoint answer 200 for a token it does not know, which is exactly why the
+  app-token table has to be searched as well: without it a client revoking its own
+  live credential is told the truthful-looking 200 while nothing happens.
   """
   def revoke(params) do
     with {:ok, app} <- authenticate_client(params) do
       case lookup_app_token(app, params["token"]) do
         %Token{kind: "refresh"} = token -> ApiAuth.revoke_grant_tokens!(token.grant_id)
         %Token{revoked_at: nil} = token -> ApiAuth.revoke_token!(token)
-        _unknown_or_revoked -> :noop
+        _unknown_or_revoked -> revoke_app_token(app, params["token"])
       end
 
       :ok
     end
   end
+
+  defp revoke_app_token(%App{} = app, plaintext) when is_binary(plaintext) do
+    Repo.update_all(
+      from(t in AppToken,
+        where:
+          t.app_id == ^app.id and t.token_hash == ^ApiAuth.hash_token(plaintext) and
+            is_nil(t.revoked_at)
+      ),
+      set: [revoked_at: DateTime.utc_now(:second)]
+    )
+
+    :ok
+  end
+
+  defp revoke_app_token(%App{}, _missing), do: :noop
 
   # ── Internals ──
 
