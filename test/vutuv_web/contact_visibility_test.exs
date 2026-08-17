@@ -431,20 +431,39 @@ defmodule VutuvWeb.ContactVisibilityTest do
       refute json_ld =~ "Vernetztgasse 3"
     end
 
-    test "the ort: search filter is not an oracle for a restricted address" do
-      # A member whose ONLY address is restricted must not be findable by city:
-      # a hit would confirm they live there. `Vutuv.Search` needs three chars and
-      # a signed-in viewer is irrelevant here — the filter itself must be strict.
-      hidden = signed_up_member()
-      insert(:address, user: hidden, city: "Flensburg", visibility: "connected")
+    test "the ort: filter answers at the searcher's rung, not at the widest one" do
+      # Four members in one city, one per rung. Who shows up in `ort:flensburg`
+      # has to be exactly who could open the profile and read the address there:
+      # the filter is not allowed to be stricter than the profile (it would hide
+      # a member from the people they chose to be findable by) nor wider than it
+      # (a hit confirms that they live there).
+      viewer = signed_up_member()
 
-      assert Search.instant("ort:flensburg").exact_people == []
+      owners =
+        Map.new(~w(everyone members connected private), fn level ->
+          owner = signed_up_member()
+          insert(:address, user: owner, city: "Flensburg", visibility: level)
+          {level, owner}
+        end)
 
-      public = signed_up_member()
-      insert(:address, user: public, city: "Flensburg", visibility: "everyone")
+      insert(:follow, follower: owners["connected"], followee: viewer)
+      insert(:follow, follower: viewer, followee: owners["connected"])
 
-      found = Search.instant("ort:flensburg").exact_people
-      assert Enum.map(found, & &1.id) == [public.id]
+      found = fn opts ->
+        Search.instant("ort:flensburg", opts).exact_people |> Enum.map(& &1.id)
+      end
+
+      assert found.([]) == [owners["everyone"].id]
+
+      assert Enum.sort(found.(viewer: viewer)) ==
+               Enum.sort([owners["everyone"].id, owners["members"].id, owners["connected"].id])
+
+      # Never the private one, and never for a viewer the owner excluded: the
+      # exclusion list (#938) drops them back to the anonymous answer.
+      refute owners["private"].id in found.(viewer: viewer)
+
+      insert(:viewer_exclusion, user: owners["members"], excluded_user: viewer, domain: nil)
+      refute owners["members"].id in found.(viewer: viewer)
     end
 
     test "the owner's /settings editor shows every rung", %{owner: owner} do
@@ -499,19 +518,56 @@ defmodule VutuvWeb.ContactVisibilityTest do
   end
 
   describe "email search" do
-    test "finds only an address on the widest rung" do
+    setup do
       owner = insert(:user, email_confirmed?: true)
       insert(:email, user: owner, value: "offen@example.com", visibility: "everyone")
       insert(:email, user: owner, value: "mitglieder@example.com", visibility: "members")
       insert(:email, user: owner, value: "vernetzt@example.com", visibility: "connected")
+      insert(:email, user: owner, value: "geheim@example.com", visibility: "private")
 
+      %{owner: owner}
+    end
+
+    test "confirms to a visitor only what the owner published" do
+      # A hit *is* the confirmation that an account holds this address, so for
+      # somebody who is not signed in nothing but the published rung may answer.
       assert Search.search_by_email("offen@example.com") != []
-
-      # A hit confirms that an account holds this address, so anything narrower
-      # than public must not be findable by whoever can type it — searching is
-      # not standing.
       assert Search.search_by_email("mitglieder@example.com") == []
       assert Search.search_by_email("vernetzt@example.com") == []
+      assert Search.search_by_email("geheim@example.com") == []
+    end
+
+    test "finds a member by an address they opened to the searcher", %{owner: owner} do
+      # The other half of the same promise: an address opened to signed-in
+      # members makes its owner findable by signed-in members. Anything else
+      # would mean the setting says one thing on the profile — where this viewer
+      # can simply read the address — and another in the search box.
+      member = signed_up_member()
+      contact = signed_up_member()
+      insert(:follow, follower: owner, followee: contact)
+      insert(:follow, follower: contact, followee: owner)
+
+      for viewer <- [member, contact] do
+        assert [%{id: found}] = Search.search_by_email("mitglieder@example.com", viewer)
+        assert found == owner.id
+      end
+
+      assert Search.search_by_email("vernetzt@example.com", member) == []
+      assert [%{id: connected_hit}] = Search.search_by_email("vernetzt@example.com", contact)
+      assert connected_hit == owner.id
+
+      # The private address answers to nobody but its owner.
+      assert Search.search_by_email("geheim@example.com", contact) == []
+      assert Search.search_by_email("geheim@example.com", member) == []
+      assert [_] = Search.search_by_email("geheim@example.com", owner)
+    end
+
+    test "stays at the public answer for a viewer the owner excluded", %{owner: owner} do
+      excluded = signed_up_member()
+      insert(:viewer_exclusion, user: owner, excluded_user: excluded, domain: nil)
+
+      assert Search.search_by_email("mitglieder@example.com", excluded) == []
+      assert Search.search_by_email("offen@example.com", excluded) != []
     end
   end
 

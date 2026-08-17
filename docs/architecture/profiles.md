@@ -87,14 +87,31 @@ viewer's rung and 404s (never 403 — a refusal would confirm the row exists) fo
 number they may not see, while the `.md`/`.txt`/`.json` sibling serves the
 anonymous view only.
 
-**Two search paths stay stricter than all of this**, and both for the same
-reason: a hit confirms a fact about the member, so only the `"everyone"` rung may
-answer, and neither is scoped to the searcher (that would turn the lookup into an
-oracle rather than closing one). `Vutuv.Search.search_by_email/1` finds a member
-by an exact address; the `ort:` / `stadt:` / `city:` operator (`filter_city/3`)
-finds members by the city of an address. Without that second filter,
-`ort:koblenz` would confirm that somebody lives there even when they keep the
-address for their connections.
+**Three paths ask the same question across many owners at once**, and they
+cannot resolve a scope per member without resolving a query per member:
+`Vutuv.Search.search_by_email/2` (find a member by an exact address), the `ort:`
+/ `stadt:` / `city:` operator (`filter_city/4`, find members by the city of an
+address), and the LinkedIn contact match (`Vutuv.Imports.ConnectionMatch`, the
+same question in bulk from an uploaded file). All three filter with
+**`Accounts.contact_visible/2`**, the same rule as a WHERE clause.
+
+So a search answers differently depending on who is searching — that is the
+point, and it cuts both ways. A visitor who is not signed in gets the `"everyone"`
+rung alone, so `ort:koblenz` cannot confirm that somebody lives there when they
+kept the address for their connections, and a typed address cannot confirm that
+an account holds it. A signed-in member additionally reaches what was opened to
+members, a connection what was opened to connections — because a member who
+opened a detail to an audience expects to be *findable* by that audience, and a
+search that stayed at the public rung would quietly overrule them while the
+profile page next to it showed the very same detail. Bulk guessing is a
+rate-limit problem, not a reason to narrow what the owner decided.
+
+One rule written twice is a drift risk, so the exclusion query is literally
+shared between `contact_scope/2` and `contact_visible/2`, and
+`test/vutuv/contact_visibility_rule_test.exs` walks every rung against every kind
+of viewer (owner, visitor, stranger, connection, one-way follower in both
+directions, excluded member, excluded domain, blocked) asserting the two halves
+agree.
 
 The **structured data** on the profile is the other place the page's own scope is
 deliberately not used: `JsonLd.person/5` is written for crawlers, so

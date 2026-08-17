@@ -16,23 +16,31 @@ defmodule Vutuv.Imports.ConnectionMatch do
   "people you already know" list is not neutral: acting on it means following
   the wrong person, publicly, and telling them so.
 
-  ## Why the email half is restricted to public addresses
+  ## Why the email half asks about the audience, not the address
 
-  `email.public?` is false by default, and `Vutuv.Search.search_by_email/1`
-  already holds the line that follows from it: *a private address must not even
-  confirm that an account exists.* This asks the same question in bulk, from a
-  file the member wrote, so it holds the same line. What is matched here is
-  therefore only what the matched member's own profile already shows — the
-  address they published, or the LinkedIn account they linked — and the answer
-  discloses nothing that was not public before.
+  An address matches only if it is visible **to this member** — the rule of
+  `Vutuv.Accounts.contact_visible/2`, the same one their profile page resolves
+  through (issue #1521). So this discloses nothing they could not have read by
+  opening the profile of everyone they uploaded, one by one; it only saves them
+  from doing that. A private address stays unmatched and therefore unconfirmed,
+  which is the line that matters: *a private address must not even confirm that
+  an account exists.*
 
-  The consequence is honest and worth knowing: roughly half the member base
-  publishes an address, so roughly half of it can be found this way.
+  Note what this deliberately does not do: it does not fall back to the widest
+  rung "because it is a bulk question". A member who opened their address to
+  signed-in members expects to be found by them, and being found by a contact
+  who already has the address in their own address book is the least surprising
+  form of that.
+
+  The consequence is honest and worth knowing: only a part of the member base
+  can be matched this way at all, and which part depends on what each of them
+  chose.
   """
 
   import Ecto.Query
   import Vutuv.Moderation.Query, only: [account_confirmed_row: 1, account_hidden_row: 1]
 
+  alias Vutuv.Accounts
   alias Vutuv.Accounts.User
   alias Vutuv.Profiles.SocialMediaAccount
   alias Vutuv.Repo
@@ -62,7 +70,7 @@ defmodule Vutuv.Imports.ConnectionMatch do
 
       # Email first, so `uniq_by` keeps that label for a member matched by both:
       # an address is the stronger evidence, and the one the member can check.
-      (tag(users_by_email(emails), :email) ++ tag(users_by_linkedin(linkedin), :linkedin))
+      (tag(users_by_email(emails, viewer), :email) ++ tag(users_by_linkedin(linkedin), :linkedin))
       |> Enum.uniq_by(& &1.user.id)
       |> Enum.reject(&excluded?(&1, viewer, blocked))
       |> Enum.sort_by(&sort_key/1)
@@ -86,16 +94,20 @@ defmodule Vutuv.Imports.ConnectionMatch do
   defp downcase(nil), do: ""
   defp downcase(value), do: String.downcase(value)
 
-  defp users_by_email([]), do: []
+  defp users_by_email([], _viewer), do: []
 
-  defp users_by_email(values) do
+  defp users_by_email(values, viewer) do
+    audience = Accounts.contact_visible(viewer, :email)
+
     in_chunks(values, fn chunk ->
       from(u in User,
         join: e in assoc(u, :emails),
-        where: e.public? == true and e.value in ^chunk,
+        as: :contact,
+        where: e.value in ^chunk,
         where: account_confirmed_row(u) and not account_hidden_row(u),
         distinct: u.id
       )
+      |> where(^audience)
     end)
   end
 

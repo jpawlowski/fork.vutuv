@@ -39,6 +39,7 @@ defmodule Vutuv.Accounts do
   alias Vutuv.Profiles.WorkExperience
   alias Vutuv.Repo
   alias Vutuv.Social.Block
+  alias Vutuv.Social.Follow
   alias Vutuv.Uploads.Crop
   alias Vutuv.Visibility
 
@@ -2047,21 +2048,28 @@ defmodule Vutuv.Accounts do
   # listed `example.com` matches `eu.example.com` but never `notexample.com`;
   # validated domains carry no LIKE wildcards, so no escaping is needed.
   defp on_exclusion_list?(owner_id, viewer_id) do
-    Repo.exists?(
-      from(x in ViewerExclusion,
-        left_join: e in Email,
-        on:
-          e.user_id == ^viewer_id and
-            fragment(
-              "(lower(split_part(?, '@', 2)) = ? OR lower(split_part(?, '@', 2)) LIKE '%.' || ?)",
-              e.value,
-              x.domain,
-              e.value,
-              x.domain
-            ),
-        where: x.user_id == ^owner_id,
-        where: x.excluded_user_id == ^viewer_id or not is_nil(e.id)
-      )
+    Repo.exists?(exclusion_rows(dynamic([x], x.user_id == ^owner_id), viewer_id))
+  end
+
+  # Built once and asked twice: this predicate pins the owner's id, while the
+  # SQL half of the rule (`contact_visible/2`) correlates the same query against
+  # whatever contact row it is filtering. Which owner we mean is therefore the
+  # only difference, and it is the argument — so the domain-suffix rule cannot
+  # come to differ between the two.
+  defp exclusion_rows(owner_match, viewer_id) do
+    from(x in ViewerExclusion,
+      left_join: e in Email,
+      on:
+        e.user_id == ^viewer_id and
+          fragment(
+            "(lower(split_part(?, '@', 2)) = ? OR lower(split_part(?, '@', 2)) LIKE '%.' || ?)",
+            e.value,
+            x.domain,
+            e.value,
+            x.domain
+          ),
+      where: ^owner_match,
+      where: x.excluded_user_id == ^viewer_id or not is_nil(e.id)
     )
   end
 
@@ -2115,6 +2123,101 @@ defmodule Vutuv.Accounts do
       scope ->
         if viewer_excluded?(owner, viewer), do: ["everyone"], else: scope
     end
+  end
+
+  @doc """
+  The same rule as `contact_scope/2`, expressed as a WHERE clause: an
+  `Ecto.Query.dynamic` that keeps exactly the contact rows `viewer` is allowed
+  to see.
+
+  `contact_scope/2` resolves one scope for one owner, which is what a profile
+  render needs. The two paths that search *across* owners cannot use it — the
+  search page and the LinkedIn contact match ask about thousands of members in a
+  single query, and a scope per member would be a query per member. They filter
+  with this instead, so that a member who opened a detail to signed-in members
+  or to their connections is **findable by exactly those people** (issue #1521):
+  a visibility setting that held on the profile but not in the search would be
+  two different promises.
+
+  The row must carry the named binding `:contact` and name its owner in
+  `user_id` — true of emails, phone numbers and addresses alike. `source` is
+  `:plain` for the tables that only have `visibility`, and `:email` for the
+  email table, whose rows may still carry the previous release's audience in
+  `public?` (see the migration, and the expand/contract note in CLAUDE.md).
+
+  Expressing one rule twice is a drift risk, so the exclusion query is literally
+  shared with the predicate above, and
+  `test/vutuv/contact_visibility_rule_test.exs` walks every rung against every
+  kind of viewer and fails the build if the two halves ever disagree.
+  """
+  def contact_visible(viewer, source \\ :plain)
+
+  def contact_visible(nil, source) do
+    level = level_expr(source)
+    dynamic([contact: _c], ^level == "everyone")
+  end
+
+  def contact_visible(%User{id: viewer_id}, source) do
+    level = level_expr(source)
+    excluded = excluded_by_owner(viewer_id)
+    connected = mutual_follow(viewer_id)
+
+    dynamic(
+      [contact: c],
+      ^level == "everyone" or c.user_id == ^viewer_id or
+        (not (^excluded) and
+           (^level == "members" or (^level == "connected" and ^connected)))
+    )
+  end
+
+  # The audience the row carries. Emails keep answering out of the retired
+  # boolean while both columns are written (one release only).
+  defp level_expr(:plain), do: dynamic([contact: c], c.visibility)
+
+  defp level_expr(:email) do
+    dynamic(
+      [contact: c],
+      fragment(
+        "coalesce(?, CASE WHEN ? THEN 'everyone' ELSE 'private' END)",
+        c.visibility,
+        c.public?
+      )
+    )
+  end
+
+  # Both halves of `viewer_excluded?/2`, correlated against the contact row's
+  # owner: a full block implies the lighter exclusion, so neither alone is the
+  # answer.
+  defp excluded_by_owner(viewer_id) do
+    blocks =
+      from(b in Block,
+        where: b.blocker_id == parent_as(:contact).user_id and b.blocked_id == ^viewer_id
+      )
+
+    exclusions =
+      exclusion_rows(dynamic([x], x.user_id == parent_as(:contact).user_id), viewer_id)
+
+    dynamic([contact: _c], exists(subquery(blocks)) or exists(subquery(exclusions)))
+  end
+
+  # Vernetzt is a follow in both directions and nothing else (`Social.connected?`),
+  # so it is two EXISTS rather than one join — a single row can only ever prove
+  # one of the two directions.
+  defp mutual_follow(viewer_id) do
+    owner_follows_viewer =
+      from(f in Follow,
+        where: f.follower_id == parent_as(:contact).user_id and f.followee_id == ^viewer_id
+      )
+
+    viewer_follows_owner =
+      from(f in Follow,
+        where: f.follower_id == ^viewer_id and f.followee_id == parent_as(:contact).user_id
+      )
+
+    dynamic(
+      [contact: _c],
+      exists(subquery(owner_follows_viewer)) and exists(subquery(viewer_follows_owner))
+    )
   end
 
   # Avatar/cover files are written to disk only AFTER the row commits, so a

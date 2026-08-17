@@ -20,6 +20,22 @@ honored only for a signed-in viewer, logged-out search ignores it and a
 (`scope_pinned?`); `tag:` leaves the scope free, so its chips still narrow to
 just people or just posts.
 
+## The same query answers differently per searcher
+
+Search needs no account — `/search` is open to visitors, `noindex` but crawlable.
+What it *answers* still depends on who is asking, in two different ways.
+
+`status:` is gated coarsely: signed in or not (issue #928/#935). The two
+operators that read a contact detail — the email lookup and `ort:`/`stadt:`/`city:`
+— are gated by the audience its owner picked, through
+`Vutuv.Accounts.contact_visible/2` (issue #1521): a visitor matches the published
+rung only, a signed-in member also what was opened to members, a connection also
+what was opened to connections, and a viewer on the owner's exclusion list drops
+back to the public answer. The rule is the one the profile page resolves through,
+which is the whole point — a setting that hid an address from strangers on the
+profile but also hid its owner from the colleagues they opened it to would be two
+promises, not one. See `docs/architecture/profiles.md` for the ladder itself.
+
 ## Nothing about a query is stored
 
 A search is answered and forgotten. Until v7.306.0 every settled query was

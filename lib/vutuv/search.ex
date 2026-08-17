@@ -8,7 +8,14 @@ defmodule Vutuv.Search do
   and `nachname:`/`last:` search one name field, `tag:`/`skill:` filters both
   people and posts carrying that tag (issue #946), `@handle` the username, and
   a fully quoted query (or `exact: true`) turns off prefix and phonetic
-  matching. `search_by_email/1` stays as the low-level email matcher.
+  matching. `search_by_email/2` stays as the low-level email matcher.
+
+  Two operators answer out of contact details a member controls the audience of
+  (issue #1521): the email lookup and `ort:`/`stadt:`/`city:`. Both resolve
+  through `Vutuv.Accounts.contact_visible/2`, so results differ per searcher —
+  a visitor sees the published rung only, a signed-in member also what was
+  opened to members, a connection also what was opened to connections. `status:`
+  is gated more coarsely (signed in or not, issue #935).
   """
 
   import Ecto.Query
@@ -18,6 +25,7 @@ defmodule Vutuv.Search do
   alias Vutuv.Accounts
   alias Vutuv.Accounts.SearchTerm
   alias Vutuv.Accounts.User
+  alias Vutuv.Profiles.Address
   alias Vutuv.Repo
   alias Vutuv.Tags.Tag
 
@@ -180,7 +188,7 @@ defmodule Vutuv.Search do
     parsed = Map.put(parse(value, opts), :logged_in?, opts[:viewer] != nil)
 
     if runnable?(parsed) do
-      {exact, similar} = people(parsed)
+      {exact, similar} = people(parsed, opts[:viewer])
       tags = tags(parsed)
 
       %{
@@ -225,7 +233,7 @@ defmodule Vutuv.Search do
 
     if alertable?(parsed) do
       parsed
-      |> filtered_users()
+      |> filtered_users(viewer)
       |> exclude_blocked(blocked)
       |> where(
         [user: u],
@@ -270,50 +278,50 @@ defmodule Vutuv.Search do
 
   defp honor_status_exclusion(people, _parsed, _viewer), do: people
 
-  defp people(%{scope: scope}) when scope not in [:all, :people], do: {[], []}
+  defp people(%{scope: scope}, _viewer) when scope not in [:all, :people], do: {[], []}
 
-  defp people(parsed) do
+  defp people(parsed, viewer) do
     cond do
       is_binary(parsed.slug) ->
         {parsed
-         |> filtered_users()
+         |> filtered_users(viewer)
          |> by_field(:username, parsed.slug, parsed.exact?)
          |> list_people(), []}
 
       is_binary(parsed.first_name) or is_binary(parsed.last_name) ->
-        {people_by_name(parsed), []}
+        {people_by_name(parsed, viewer), []}
 
       # Pure filter search: "tag:php" / "ort:koblenz" without a name lists
       # everyone matching the filter(s).
       parsed.text == "" ->
-        {people_by_filter(parsed), []}
+        {people_by_filter(parsed, viewer), []}
 
       String.length(parsed.text) < @min_chars ->
         {[], []}
 
       email?(parsed.text) ->
-        {search_by_email(parsed.text), []}
+        {search_by_email(parsed.text, viewer), []}
 
       parsed.exact? ->
-        {exact_people(parsed), []}
+        {exact_people(parsed, viewer), []}
 
       true ->
-        substring_and_phonetic_people(parsed)
+        substring_and_phonetic_people(parsed, viewer)
     end
   end
 
-  defp people_by_name(parsed) do
+  defp people_by_name(parsed, viewer) do
     [first_name: parsed.first_name, last_name: parsed.last_name]
     |> Enum.filter(fn {_field, value} -> is_binary(value) end)
-    |> Enum.reduce(filtered_users(parsed), fn {field, value}, query ->
+    |> Enum.reduce(filtered_users(parsed, viewer), fn {field, value}, query ->
       by_field(query, field, value, parsed.exact?)
     end)
     |> list_people()
   end
 
-  defp people_by_filter(parsed) do
+  defp people_by_filter(parsed, viewer) do
     if parsed.tag || parsed.city || status_filter(parsed) do
-      parsed |> filtered_users() |> list_people()
+      parsed |> filtered_users(viewer) |> list_people()
     else
       []
     end
@@ -323,18 +331,18 @@ defmodule Vutuv.Search do
   # subqueries (tag/city) or a scalar predicate (status) against whatever query
   # carries a named :user binding - the users table for field searches, the
   # search_terms join for name searches.
-  defp filtered_users(parsed) do
+  defp filtered_users(parsed, viewer) do
     visible_users()
-    |> apply_people_filters(parsed)
+    |> apply_people_filters(parsed, viewer)
   end
 
   # Applies the tag: / ort: / status: people filters to any query that
   # carries a named :user binding (users table for field searches, the
   # search_terms join for name searches).
-  defp apply_people_filters(query, parsed) do
+  defp apply_people_filters(query, parsed, viewer) do
     query
     |> filter_tag(parsed.tag, parsed.exact?)
-    |> filter_city(parsed.city, parsed.exact?)
+    |> filter_city(parsed.city, parsed.exact?, viewer)
     |> filter_status(status_filter(parsed))
   end
 
@@ -384,32 +392,33 @@ defmodule Vutuv.Search do
     where(query, [], exists(subquery(sub)))
   end
 
-  defp filter_city(query, nil, _exact?), do: query
+  defp filter_city(query, nil, _exact?, _viewer), do: query
 
-  # Only an address on the widest rung ("everyone") may answer this filter (issue
-  # #1521). Otherwise `ort:koblenz` is an oracle: a hit would confirm that the
-  # member has an address in that city even when they keep it for their
-  # connections — the same reasoning as `search_by_email/1`, and deliberately not
-  # scoped to the searcher for the same reason.
-  defp filter_city(query, city, exact?) do
+  # An address answers this filter only for somebody it is visible to (issue
+  # #1521), which is the whole rule and not a stricter one: a logged-out visitor
+  # matches the "everyone" rung alone, a signed-in member additionally matches
+  # what was opened to members, and a connection what was opened to
+  # connections. Anything narrower would make `ort:` disagree with the profile
+  # the searcher can simply open — the setting has to mean the same thing in
+  # both places, in both directions: it hides the address from strangers *and*
+  # it makes the member findable by the people they chose.
+  defp filter_city(query, city, exact?, viewer) do
     sub =
       if exact? do
-        from(a in Vutuv.Profiles.Address,
-          where:
-            a.user_id == parent_as(:user).id and a.visibility == "everyone" and
-              fragment("lower(?)", a.city) == ^city
+        from(a in Address,
+          as: :contact,
+          where: a.user_id == parent_as(:user).id and fragment("lower(?)", a.city) == ^city
         )
       else
         infix = contains(city)
 
-        from(a in Vutuv.Profiles.Address,
-          where:
-            a.user_id == parent_as(:user).id and a.visibility == "everyone" and
-              ilike(a.city, ^infix)
+        from(a in Address,
+          as: :contact,
+          where: a.user_id == parent_as(:user).id and ilike(a.city, ^infix)
         )
       end
 
-    where(query, [], exists(subquery(sub)))
+    where(query, [], exists(subquery(where(sub, ^Accounts.contact_visible(viewer)))))
   end
 
   # Field search (vorname:/nachname:/@handle) straight on the users table:
@@ -438,7 +447,7 @@ defmodule Vutuv.Search do
 
   # "Exact matches only" free text: the query must equal a real-name term
   # (first, last or a full-name combination) - no substring, no phonetics.
-  defp exact_people(parsed) do
+  defp exact_people(parsed, viewer) do
     from(t in SearchTerm,
       join: u in assoc(t, :user),
       as: :user,
@@ -449,7 +458,7 @@ defmodule Vutuv.Search do
       select: struct(u, ^people_fields())
     )
     |> exclude_moderated()
-    |> apply_people_filters(parsed)
+    |> apply_people_filters(parsed, viewer)
     |> Repo.all()
     |> Enum.uniq_by(& &1.id)
   end
@@ -458,7 +467,7 @@ defmodule Vutuv.Search do
   # term that literally contains the query ("üller" in "müller") is an exact
   # hit; everything else got in through the phonetic encodings and counts as
   # "similar". A user with any exact term never repeats in the similar group.
-  defp substring_and_phonetic_people(parsed) do
+  defp substring_and_phonetic_people(parsed, viewer) do
     value = parsed.text
 
     terms =
@@ -471,7 +480,7 @@ defmodule Vutuv.Search do
       )
       |> phonetic_term_match(value)
       |> exclude_moderated()
-      |> apply_people_filters(parsed)
+      |> apply_people_filters(parsed, viewer)
       |> Repo.all()
 
     {exact_terms, similar_terms} =
@@ -601,34 +610,33 @@ defmodule Vutuv.Search do
   end
 
   @doc """
-  The member with exactly that email address, or `[]`.
+  The member with exactly that email address, or `[]` — as far as `viewer` is
+  allowed to see it (issue #1521).
 
-  Only addresses on the widest rung of the contact ladder ("everyone") are
-  findable: a hit here confirms that an account holds this address, so a member
-  who opened their address to signed-in members or to their connections must not
-  be findable by anybody who can type it — searching is not standing (issue
-  #1521).
+  An address answers this lookup for the audience its owner chose and for nobody
+  else: a logged-out visitor finds only a published address, a signed-in member
+  also one opened to members, a connection also one opened to connections. That
+  cuts both ways on purpose. A member who keeps their address private cannot be
+  confirmed to hold it by anybody who can type it — a hit here *is* that
+  confirmation. But a member who did open it to signed-in members expects to be
+  reachable by exactly those people, and a lookup that stayed at the public rung
+  would quietly overrule them. Bulk guessing is bounded by rate limits, not by
+  narrowing what the owner decided.
 
-  Deliberately NOT scoped to the searcher, which would turn this lookup into an
-  oracle ("is this address on a profile I am connected to"); the search box has
-  no owner to resolve a scope against either. The `coalesce` reads the rows the
-  previous release wrote, whose audience still lives in `public?`.
+  The audience test is `Accounts.contact_visible/2`, the same rule the profile
+  resolves through, so the two can never drift apart.
   """
-  def search_by_email(value) do
+  def search_by_email(value, viewer \\ nil) do
     value = String.downcase(value)
 
     Repo.all(
       from(u in User,
         as: :user,
         join: e in assoc(u, :emails),
-        where:
-          account_confirmed_row(u) and ^value == e.value and
-            fragment(
-              "coalesce(?, CASE WHEN ? THEN 'everyone' ELSE 'private' END) = 'everyone'",
-              e.visibility,
-              e.public?
-            )
+        as: :contact,
+        where: account_confirmed_row(u) and ^value == e.value
       )
+      |> where(^Accounts.contact_visible(viewer, :email))
       |> exclude_moderated()
     )
     # Filters duplicates

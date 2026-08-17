@@ -1,9 +1,12 @@
 defmodule Vutuv.Imports.ConnectionMatchTest do
   @moduledoc """
   Which vutuv members a LinkedIn contact list resolves to (issue #1476). Only
-  exact identifiers count, and the email half deliberately reaches **public**
-  addresses only — the same line `Vutuv.Search.search_by_email/1` holds, because
-  a private address must not even confirm that an account exists.
+  exact identifiers count, and the email half reaches exactly the addresses the
+  uploading member could have read on the profiles themselves — the audience rule
+  of `Vutuv.Accounts.contact_visible/2` (issue #1521), the same line
+  `Vutuv.Search.search_by_email/2` holds. A private address must not even confirm
+  that an account exists; an address opened to signed-in members must not hide
+  its owner from them.
   """
   use Vutuv.DataCase
 
@@ -49,6 +52,26 @@ defmodule Vutuv.Imports.ConnectionMatchTest do
       _target = member() |> with_email("secret@example.com", public?: false)
 
       assert [] = ConnectionMatch.find(viewer, [email_contact("secret@example.com")])
+    end
+
+    test "finds a member whose address is open to signed-in members" do
+      # The uploading member is signed in, so this address is one they could
+      # have read by opening the profile — matching it discloses nothing new,
+      # and refusing to would hide the owner from the very audience they chose.
+      viewer = member()
+      target = member()
+
+      insert(:email,
+        user: target,
+        value: "kollegin@example.com",
+        visibility: "members",
+        public?: false
+      )
+
+      assert [%{user: found, via: :email}] =
+               ConnectionMatch.find(viewer, [email_contact("kollegin@example.com")])
+
+      assert found.id == target.id
     end
 
     test "an unconfirmed account is not a member yet" do
