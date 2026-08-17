@@ -47,6 +47,10 @@ defmodule VutuvWeb.AccountEventText do
   def event_label("notifications_changed"), do: gettext("Notification settings changed")
   def event_label("preferences_changed"), do: gettext("Language & display settings changed")
   def event_label("fediverse_changed"), do: gettext("Fediverse settings changed")
+
+  def event_label("mastodon_clients_changed"),
+    do: gettext("Mastodon app access changed")
+
   def event_label("member_blocked"), do: gettext("Member blocked")
   def event_label("member_unblocked"), do: gettext("Member unblocked")
   def event_label("filter_added"), do: gettext("Filter added")
@@ -166,12 +170,18 @@ defmodule VutuvWeb.AccountEventText do
     end
   end
 
+  defp detail("mastodon_clients_changed", %{"enabled" => enabled}) when is_boolean(enabled),
+    do: client_access_label(enabled)
+
   defp detail(_kind, details), do: field_list(details)
 
   defp field_list(%{"fields" => fields}) when is_list(fields) and fields != [],
     do: Enum.map_join(fields, ", ", &field_label/1)
 
   defp field_list(_details), do: nil
+
+  defp client_access_label(true), do: gettext("apps allowed")
+  defp client_access_label(false), do: gettext("apps not allowed")
 
   defp participation_label(true), do: gettext("taking part in the Fediverse")
   defp participation_label(false), do: gettext("not taking part in the Fediverse")
@@ -222,6 +232,7 @@ defmodule VutuvWeb.AccountEventText do
   def field_label("noai?"), do: gettext("AI agents")
   def field_label("show_online_status?"), do: gettext("Online status")
   def field_label("show_mastodon_feed?"), do: gettext("Mastodon posts")
+  def field_label("mastodon_clients?"), do: gettext("Mastodon-compatible apps")
   def field_label("show_code_stats?"), do: gettext("Code statistics")
   def field_label("notification_emails?"), do: gettext("Notification emails")
   def field_label("newsletter_emails?"), do: gettext("Newsletter")

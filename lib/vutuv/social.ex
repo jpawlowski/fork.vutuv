@@ -16,6 +16,7 @@ defmodule Vutuv.Social do
 
   alias Vutuv.AccountEvents
   alias Vutuv.Accounts.User
+  alias Vutuv.Keyset
   alias Vutuv.Organizations.Organization
   alias Vutuv.Pages
   alias Vutuv.Repo
@@ -257,6 +258,12 @@ defmodule Vutuv.Social do
     organization_follow_edge(page.id, column, followee_id) != nil
   end
 
+  @doc "The page's follow edge to a local member or organization, or nil."
+  def organization_follow_as_organization(%Organization{} = page, followee) do
+    {column, followee_id} = followee_column(followee)
+    organization_follow_edge(page.id, column, followee_id)
+  end
+
   defp notify_new_page_follower(%Organization{} = page, %User{id: id}),
     do: Vutuv.Activity.notify_new_follower(id, page)
 
@@ -275,6 +282,24 @@ defmodule Vutuv.Social do
   a member's list applies to each kind.
   """
   def organization_followees(%Organization{id: page_id}, limit \\ 100) do
+    page_id
+    |> organization_followee_entries_query(limit)
+    |> Enum.map(fn {follow, followee} -> {follow.id, followee} end)
+  end
+
+  @doc """
+  The page's visible local follows with their edge, as
+  `[{%Follow{}, member_or_page}]`. The management UI needs the edge's mute flag;
+  callers that only render accounts should keep using
+  `organization_followees/2`.
+  """
+  def organization_followee_entries(%Organization{id: page_id}, limit),
+    do: organization_followee_entries_query(page_id, limit)
+
+  def organization_followee_entries(%Organization{id: page_id}),
+    do: organization_followee_entries_query(page_id, 100)
+
+  defp organization_followee_entries_query(page_id, limit) do
     Repo.all(
       from(f in Follow,
         left_join: u in assoc(f, :followee),
@@ -284,10 +309,10 @@ defmodule Vutuv.Social do
         where: visible_member(u) or visible_page(o),
         order_by: [desc: f.inserted_at, desc: f.id],
         limit: ^limit,
-        select: {f.id, u, o}
+        select: {f, u, o}
       )
     )
-    |> Enum.map(fn {id, user, organization} -> {id, user || organization} end)
+    |> Enum.map(fn {follow, user, organization} -> {follow, user || organization} end)
   end
 
   @doc "How many things `page` follows."
@@ -344,6 +369,50 @@ defmodule Vutuv.Social do
     follow
     |> Follow.mute_changeset(%{muted: not follow.muted})
     |> Repo.update!()
+  end
+
+  @doc "Sets the mute flag on a member's existing local follow."
+  def set_follow_mute(%User{id: follower_id}, followee, muted?) when is_boolean(muted?) do
+    {column, followee_id} = followee_column(followee)
+
+    set_follow_mute(
+      %{column => followee_id, follower_id: follower_id},
+      muted?
+    )
+  end
+
+  @doc "Sets the mute flag on an organization's existing local follow."
+  def set_follow_mute_as_organization(%Organization{id: page_id}, followee, muted?)
+      when is_boolean(muted?) do
+    {column, followee_id} = followee_column(followee)
+
+    set_follow_mute(
+      %{column => followee_id, follower_organization_id: page_id},
+      muted?
+    )
+  end
+
+  @doc "Sets mute on one of a page's own local follow edges, scoped by edge id."
+  def set_follow_edge_mute_as_organization(
+        %Organization{id: page_id},
+        follow_id,
+        muted?
+      )
+      when is_boolean(muted?) do
+    with id when not is_nil(id) <- UUIDv7.cast_or_nil(follow_id),
+         %Follow{} = follow <-
+           Repo.get_by(Follow, id: id, follower_organization_id: page_id) do
+      follow |> Follow.mute_changeset(%{muted: muted?}) |> Repo.update()
+    else
+      _missing_or_invalid -> {:error, :not_following}
+    end
+  end
+
+  defp set_follow_mute(filters, muted?) do
+    case Repo.get_by(Follow, filters) do
+      %Follow{} = follow -> follow |> Follow.mute_changeset(%{muted: muted?}) |> Repo.update()
+      nil -> {:error, :not_following}
+    end
   end
 
   # The public pages only count/show follows from activated accounts (nil
@@ -521,6 +590,121 @@ defmodule Vutuv.Social do
       users: user |> Map.fetch!(assoc) |> Enum.map(&Map.fetch!(&1, person)),
       total: total
     }
+  end
+
+  @doc """
+  One side of `user`'s follow list as a list a client can walk
+  (`Vutuv.Keyset`): `:followers` or `:followees`, members only, the same
+  activated and non-hidden population `follows_page/3` and the counts already
+  use.
+
+  Its own function rather than another arm of `follows_page/3`, and for a
+  reason worth stating: this one is ordered and bounded by the **member's** id,
+  while the website's pager is ordered by when the follow was made. A caller
+  that pages by an id has to be given a list ordered by that same id — page it
+  by one column while ordering by another and the walk both repeats rows and
+  skips others, quietly. `follows_page/3` keeps its order, its total and its
+  numbered pages for the browse pages.
+  """
+  def follow_accounts(%User{} = user, side, opts \\ []) when side in [:followers, :followees] do
+    user.id
+    |> follow_accounts_query(side)
+    |> Keyset.scope(opts, {:account, :id})
+    |> Repo.all()
+    |> Keyset.restore(opts)
+  end
+
+  defp follow_accounts_query(user_id, :followers) do
+    from(c in Follow,
+      join: u in assoc(c, :follower),
+      as: :account,
+      where: c.followee_id == ^user_id,
+      where: visible_member(u),
+      select: u
+    )
+  end
+
+  defp follow_accounts_query(user_id, :followees) do
+    from(c in Follow,
+      join: u in assoc(c, :followee),
+      as: :account,
+      where: c.follower_id == ^user_id,
+      where: visible_member(u),
+      select: u
+    )
+  end
+
+  @doc """
+  The members `user` muted, as a walkable list — a mute lives on the follow
+  edge, so only somebody `user` follows can be on it.
+
+  Read from the edge in one query rather than by fetching the follow list and
+  asking `follow_edge/2` per row, which is a query per person on the page.
+  """
+  def muted_accounts(%User{id: user_id}, opts \\ []) do
+    from(c in Follow,
+      join: u in assoc(c, :followee),
+      as: :account,
+      where: c.follower_id == ^user_id and c.muted,
+      where: visible_member(u),
+      select: u
+    )
+    |> Keyset.scope(opts, {:account, :id})
+    |> Repo.all()
+    |> Keyset.restore(opts)
+  end
+
+  @doc """
+  The pages `user` follows, as a walkable list of `%Organization{}` — the
+  companion to `follow_accounts/3` for the other kind of account a member can
+  follow. See `followed_organizations/2` for the website's version, which keeps
+  the follow id so a row can offer "unfollow".
+  """
+  def followed_organization_accounts(%User{id: user_id}, opts \\ []) do
+    from(c in Follow,
+      join: o in Organization,
+      as: :account,
+      on: o.id == c.followee_organization_id,
+      where: c.follower_id == ^user_id,
+      where: visible_page(o),
+      select: o
+    )
+    |> Keyset.scope(opts, {:account, :id})
+    |> Repo.all()
+    |> Keyset.restore(opts)
+  end
+
+  @doc """
+  The members a page follows, as a walkable list — the member half of
+  `organization_followees/2`, which returns both kinds interleaved and so
+  cannot be ordered by a single id column.
+  """
+  def organization_followed_members(%Organization{id: page_id}, opts \\ []) do
+    from(f in Follow,
+      join: u in assoc(f, :followee),
+      as: :account,
+      where: f.follower_organization_id == ^page_id,
+      where: visible_member(u),
+      select: u
+    )
+    |> Keyset.scope(opts, {:account, :id})
+    |> Repo.all()
+    |> Keyset.restore(opts)
+  end
+
+  @doc "The pages a page follows, as a walkable list — see `organization_followed_members/2`."
+  def organization_followed_pages(%Organization{id: page_id}, opts \\ []) do
+    from(f in Follow,
+      join: o in Organization,
+      as: :account,
+      on: o.id == f.followee_organization_id,
+      where: f.follower_organization_id == ^page_id,
+      where: visible_page(o),
+      select: o
+    )
+    |> Keyset.scope(opts, {:account, :id})
+    |> Repo.all()
+    |> Keyset.restore(opts)
   end
 
   @doc """
