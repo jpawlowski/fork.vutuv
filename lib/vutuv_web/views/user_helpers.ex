@@ -16,7 +16,9 @@ defmodule VutuvWeb.UserHelpers do
 
   alias PhoenixHTMLHelpers.Format, as: HTMLFormat
   alias PhoenixHTMLHelpers.Link, as: HTMLLink
+  alias Vutuv.Accounts
   alias Vutuv.Accounts.User
+  alias Vutuv.Ordering
   alias Vutuv.Posts
   alias Vutuv.Posts.Post
   alias Vutuv.Profiles.Address
@@ -235,28 +237,100 @@ defmodule VutuvWeb.UserHelpers do
     |> String.replace("  ", " ")
   end
 
+  @doc """
+  The email addresses `visitor` may see, on the owner's chosen order (issue
+  #1521). Resolves the audience scope itself; a caller that already holds one —
+  because it is loading phone numbers from the same scope too — should call
+  `emails_for_scope/2` instead so the mutual-follow lookup runs once per render.
+  """
   def emails_for_display(user, visitor),
-    do: emails_for_permission(user, user_has_permissions?(user, visitor))
+    do: emails_for_scope(user, Accounts.contact_scope(user, visitor))
 
   @doc """
-  The emails to show given an already-resolved permission verdict, so a caller
-  that has already decided whether the visitor may see private addresses doesn't
-  re-run the follow check. `true` = every address, falsy = public only.
+  The email addresses on one of the rungs in `scope` (see
+  `Vutuv.Accounts.contact_scope/2`).
+
+  Filters on the **column**, so the audience test is one indexed comparison
+  rather than a per-row callback — and never a `NOT IN`, which one NULL would
+  turn into "no rows at all" (the trap CLAUDE.md documents). The `coalesce`
+  reads a row the previous release wrote, whose `visibility` is NULL and whose
+  audience therefore lives in `public?`; it is the query-side twin of
+  `Vutuv.Accounts.Email.visibility_of/1` and goes away with that column.
   """
-  def emails_for_permission(user, allowed?) do
-    if allowed? do
-      Repo.all(Vutuv.Ordering.by_position(assoc(user, :emails)))
-    else
-      Repo.all(Vutuv.Ordering.by_position(from(e in assoc(user, :emails), where: e.public?)))
-    end
+  def emails_for_scope(user, scope) do
+    from(e in assoc(user, :emails),
+      where:
+        fragment(
+          "coalesce(?, CASE WHEN ? THEN 'everyone' ELSE 'private' END)",
+          e.visibility,
+          e.public?
+        ) in ^scope
+    )
+    |> Ordering.by_position()
+    |> Repo.all()
   end
 
   @doc """
-  Whether `visitor` may see `user`'s private (`public?: false`) email addresses.
-  A private address is **owner-only**: visible to the member themselves and to
-  nobody else. (It previously also granted access to everyone the owner
-  *followed* — one-directional, no follow-back required — which silently exposed
-  a "private" address to every account the owner subscribed to.)
+  The phone numbers `visitor` may see, on the owner's chosen order (issue
+  #1521). The twin of `emails_for_display/2`; see `phone_numbers_for_scope/2`
+  when a scope is already resolved.
+  """
+  def phone_numbers_for_display(user, visitor),
+    do: phone_numbers_for_scope(user, Accounts.contact_scope(user, visitor))
+
+  @doc """
+  The phone numbers on one of the rungs in `scope`. `phone_numbers.visibility`
+  is NOT NULL with a database default, so this needs no legacy fallback — and a
+  value outside the ladder fails the `in` test, which hides the row rather than
+  exposing it.
+  """
+  def phone_numbers_for_scope(user, scope) do
+    from(p in assoc(user, :phone_numbers), where: p.visibility in ^scope)
+    |> Ordering.by_position()
+    |> Repo.all()
+  end
+
+  @doc """
+  The postal addresses `visitor` may see, on the owner's chosen order (issue
+  #1521). The third contact channel on the same ladder; see
+  `addresses_for_scope/2` when a scope is already resolved.
+  """
+  def addresses_for_display(user, visitor),
+    do: addresses_for_scope(user, Accounts.contact_scope(user, visitor))
+
+  @doc """
+  The postal addresses on one of the rungs in `scope`. Like
+  `phone_numbers_for_scope/2` this needs no legacy fallback: `addresses.visibility`
+  is NOT NULL with a database default, and a value outside the ladder fails the
+  `in` test, which hides the row rather than exposing it.
+  """
+  def addresses_for_scope(user, scope) do
+    from(a in assoc(user, :addresses), where: a.visibility in ^scope)
+    |> Ordering.by_position()
+    |> Repo.all()
+  end
+
+  @doc """
+  The scope for a **public showcase page** (`/:slug/emails`,
+  `/:slug/phone_numbers` and their agent-format siblings): the viewer's own
+  scope with `"private"` removed.
+
+  That subtraction is what keeps the section pages' existing promise (see
+  `section_view_as_test.exs`) intact while the ladder widens everything above
+  it: a `"private"` entry renders **only** in the owner's `/settings` editor,
+  not on the public page — not even for the owner, who would otherwise be shown
+  a page that no visitor of any standing can see and be left guessing which
+  half of it is public. The profile itself is the deliberate exception: there the
+  owner does see their private rows, each marked as private.
+  """
+  def showcase_scope(user, viewer), do: Accounts.contact_scope(user, viewer) -- ["private"]
+
+  @doc """
+  Whether `visitor` is the owner of `user`'s data, i.e. the only party who sees
+  every rung of the contact ladder including `"private"` (issue #1521). Kept as
+  its own predicate because two places ask exactly the owner question rather
+  than a per-row audience question: the session-aware vCard route and the
+  owner's editor.
   """
   def user_has_permissions?(user, visitor), do: same_user?(user, visitor)
 

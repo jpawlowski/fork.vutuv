@@ -11,23 +11,44 @@ defmodule VutuvWeb.AddressController do
 
   # Index and show are also served as Markdown / text / JSON via
   # VutuvWeb.AgentDocs.SectionDocs (see agent_docs_drift_test.exs).
+  #
+  # The two halves answer to different audiences on purpose (issue #1521), the
+  # same split the phone-number and email controllers carry: the HTML page shows
+  # the rung this viewer stands on minus "private", while the agent documents stay
+  # strictly the anonymous view because those URLs are publicly cacheable and
+  # crawlable. A viewer who may see more gets it from the page and from the
+  # session-aware vCard.
   def index(conn, _params) do
-    user = user_with_addresses(conn)
+    user = conn.assigns[:user]
 
     AgentDocs.respond(conn,
       html: fn conn ->
         render(conn, "index.html",
           as_owner?: false,
           user: user,
-          addresses: user.addresses,
+          addresses: showcase_addresses(conn),
           page_title: VutuvWeb.UserHelpers.member_page_title(user, gettext("Addresses"))
         )
       end,
-      doc: fn -> SectionDocs.build_index(user, :addresses, user.addresses) end
+      doc: fn ->
+        SectionDocs.build_index(
+          user,
+          :addresses,
+          VutuvWeb.UserHelpers.addresses_for_scope(user, ["everyone"])
+        )
+      end
     )
   end
 
-  # The owner's editor (GET /settings/addresses).
+  # The addresses the HTML showcase page lists for whoever is asking.
+  defp showcase_addresses(conn) do
+    VutuvWeb.UserHelpers.addresses_for_scope(
+      conn.assigns[:user],
+      VutuvWeb.UserHelpers.showcase_scope(conn.assigns[:user], conn.assigns[:current_user])
+    )
+  end
+
+  # The owner's editor (GET /settings/addresses): every rung.
   def manage(conn, _params) do
     user = user_with_addresses(conn)
 
@@ -67,17 +88,65 @@ defmodule VutuvWeb.AddressController do
     render(conn, "new.html", changeset: changeset, country: get_template(conn))
   end
 
+  # `get_owned!/3` scopes to the **profile owner**, not to the viewer, so this page
+  # used to hand any address to anybody — right while every address was public, a
+  # leak now. A viewer who may not see this address gets a 404, exactly like an
+  # address that does not exist: a "you are not allowed to see this" page would
+  # confirm that the member has one on file. The doc half serves the anonymous
+  # view only (see `index/2`).
   def show(conn, %{"id" => id}) do
-    address = ControllerHelpers.get_owned!(conn, :addresses, id)
+    case AgentDocs.negotiate(conn) do
+      :html ->
+        scope =
+          VutuvWeb.UserHelpers.showcase_scope(conn.assigns[:user], conn.assigns[:current_user])
 
-    AgentDocs.respond(conn,
-      html:
-        &render(&1, "show.html",
-          address: address,
-          page_title: entry_page_title(conn.assigns[:user], address)
-        ),
-      doc: fn -> SectionDocs.build_show(conn.assigns[:user], :addresses, address) end
-    )
+        show_html(conn, id, scope)
+
+      format ->
+        show_doc(conn, format, id)
+    end
+  end
+
+  defp show_html(conn, id, scope) do
+    user = conn.assigns[:user]
+
+    case scoped_address(user, id, scope) do
+      nil ->
+        ControllerHelpers.render_error(conn, 404)
+
+      address ->
+        conn
+        |> maybe_put_alternates(address)
+        |> render("show.html", address: address, page_title: entry_page_title(user, address))
+    end
+  end
+
+  defp show_doc(conn, format, id) do
+    user = conn.assigns[:user]
+
+    case scoped_address(user, id, ["everyone"]) do
+      nil ->
+        ControllerHelpers.render_error(conn, 404)
+
+      address ->
+        AgentDocs.send_doc(conn, format, SectionDocs.build_show(user, :addresses, address))
+    end
+  end
+
+  # One address, but only if it sits on a rung in `scope`.
+  defp scoped_address(user, id, scope) do
+    case ControllerHelpers.get_owned(user, :addresses, id) do
+      nil -> nil
+      address -> if Address.visibility_of(address) in scope, do: address
+    end
+  end
+
+  # Advertise the agent-format siblings only for an "everyone" address: anything
+  # narrower has no document, so linking one would advertise a 404.
+  defp maybe_put_alternates(conn, address) do
+    if Address.visibility_of(address) == "everyone",
+      do: AgentDocs.put_html_alternates(conn),
+      else: conn
   end
 
   defp entry_page_title(user, address) do

@@ -429,7 +429,7 @@ defmodule VutuvWeb.UserProfileLiveTest do
         render(
           element(
             view,
-            ~s(#profile-contact a[data-email-visibility="public"][href="mailto:shown@example.com"])
+            ~s(#profile-contact a[data-email-visibility="everyone"][href="mailto:shown@example.com"])
           )
         )
 

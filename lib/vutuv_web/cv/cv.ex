@@ -6,11 +6,12 @@ defmodule VutuvWeb.CV do
   (issue #841).
 
   Built through a viewer's eyes: anyone may download the CV of data they can
-  already see — work, education, tags, links, phone numbers and addresses
-  are public profile sections, and the email resolves per viewer
-  (`UserHelpers.emails_for_display/2`), so a private address only ever
-  appears in the owner's own download. Pass the `:viewer` option; nil is
-  the anonymous public view.
+  already see — work, education, tags, links and addresses are public profile
+  sections, while the **email address, the phone number and the postal address**
+  resolve per viewer
+  through the contact ladder (`Vutuv.Accounts.contact_scope/2`, issue #1521), so
+  a number the member keeps for their connections never lands in a stranger's
+  download. Pass the `:viewer` option; nil is the anonymous public view.
 
   **Every part carries a stable key** so the builder can offer per-item
   include/exclude and encode the choice in the download URLs — a recruiter
@@ -37,13 +38,12 @@ defmodule VutuvWeb.CV do
 
   use Gettext, backend: VutuvWeb.Gettext
 
+  alias Vutuv.Accounts
   alias Vutuv.Accounts.User
   alias Vutuv.Languages
   alias Vutuv.Phone
-  alias Vutuv.Profiles.Address
   alias Vutuv.Profiles.Education
   alias Vutuv.Profiles.Language
-  alias Vutuv.Profiles.PhoneNumber
   alias Vutuv.Profiles.Qualification
   alias Vutuv.Profiles.SocialMediaAccount
   alias Vutuv.Profiles.Url
@@ -94,13 +94,21 @@ defmodule VutuvWeb.CV do
   Options:
 
     * `:viewer` — the user whose eyes the CV is built through (default nil,
-      the anonymous public view). Only the email is viewer-sensitive.
+      the anonymous public view). The three contact fields — email address, phone
+      number and postal address — are the viewer-sensitive parts (issue #1521).
     * `:photo` — also derive the avatar as a JPEG data URI (used by the
       HTML/print rendering only, so the text formats skip the image work).
   """
   def build(user, opts \\ []) do
     user = preload(user)
-    emails = UserHelpers.emails_for_display(user, Keyword.get(opts, :viewer))
+    viewer = Keyword.get(opts, :viewer)
+
+    # One scope resolution for both contact fields (issue #1521), so a CV build
+    # pays for the mutual-follow lookup once.
+    contact_scope = Accounts.contact_scope(user, viewer)
+    emails = UserHelpers.emails_for_scope(user, contact_scope)
+    phone_numbers = UserHelpers.phone_numbers_for_scope(user, contact_scope)
+    addresses = UserHelpers.addresses_for_scope(user, contact_scope)
 
     %{
       name: UserHelpers.full_name(user),
@@ -108,8 +116,8 @@ defmodule VutuvWeb.CV do
       username: user.username,
       profile_url: VutuvWeb.Endpoint.url() <> "/" <> user.username,
       email: first_value(emails),
-      phone: phone_display(first_value(user.phone_numbers)),
-      address_lines: address_lines(List.first(user.addresses)),
+      phone: phone_display(first_value(phone_numbers)),
+      address_lines: address_lines(List.first(addresses)),
       birthdate: birthdate(user),
       links: Enum.map(user.urls, &%{id: &1.id, label: presence(&1.description), url: &1.value}),
       social_media: Enum.map(user.social_media_accounts, &social_media_entry/1),
@@ -209,9 +217,7 @@ defmodule VutuvWeb.CV do
       qualifications: Qualification.visible_to(false) |> Qualification.ordered(),
       languages: Language.ordered(),
       social_media_accounts: SocialMediaAccount.ordered(),
-      phone_numbers: PhoneNumber.ordered(),
-      urls: Url.ordered(),
-      addresses: Address.ordered()
+      urls: Url.ordered()
     )
   end
 

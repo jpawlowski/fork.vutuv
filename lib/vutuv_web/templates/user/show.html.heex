@@ -96,7 +96,13 @@ the resulting ~200px rail width. --%>
       <div class="px-6 pb-6">
         <% member_since = member_since(@user) %>
         <% can_act? = @current_user != nil and not same_user?(@user, @current_user) %>
-        <% vcard_path = if @vcard_full?, do: ~p"/#{@user}/vcard", else: "/#{@user.username}.vcf" %>
+        <%!-- Every signed-in viewer downloads through the session-aware route
+        (issue #1521): the contact details a vCard exists for are audience-scoped,
+        so the file has to be built for whoever is asking. A logged-out visitor
+        gets `.vcf`, which is the same anonymous document and is cacheable and
+        crawlable, so the public path stays the cheap one. --%>
+        <% vcard_path =
+          if @vcard_scoped?, do: ~p"/#{@user}/vcard", else: "/#{@user.username}.vcf" %>
         <% bookmarked? = @user_saved && @user_saved.bookmarked? %>
         <% liked? = @user_saved && @user_saved.liked? %>
         <% saved_present? = not is_nil(@user_saved) %>
@@ -1151,27 +1157,33 @@ the resulting ~200px rail width. --%>
             {contact_group_label(label)}
           </h3>
           <ul class="-my-1 text-sm">
-            <%!-- The owner is the only viewer who ever sees a private
-            (public?: false) address — a visitor's @emails is public-only — so
-            fade those rows and tag them with a lock: the owner reads every
-            address yet sees at a glance which are public and which only they
-            can see. --%>
+            <%!-- The restriction markers are for the OWNER only (issue #1521):
+            they read every rung of their own ladder, so the fade and the lock
+            are how they tell at a glance which rows the public sees and which
+            they have kept back — and the lock's label names the audience, not
+            just "restricted". Another viewer is shown no marker at all: the
+            sentence is written in the owner's voice ("you"), and which rung a
+            row sits on is the owner's setting rather than a fact about the
+            address, so a connected viewer has no business reading it off the
+            page. --%>
             <li :for={email <- group_emails}>
+              <% email_rung = Vutuv.Accounts.Email.visibility_of(email) %>
+              <% email_restricted? = @as_owner? and email_rung != "everyone" %>
               <a
                 href={"mailto:#{email.value}"}
-                data-email-visibility={if(email.public?, do: "public", else: "private")}
+                data-email-visibility={email_rung}
                 class={[
                   "group flex items-center gap-2.5 py-1.5 text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300",
-                  not email.public? && "opacity-55 transition-opacity hover:opacity-100"
+                  email_restricted? && "opacity-55 transition-opacity hover:opacity-100"
                 ]}
               >
                 <.detail_icon name="envelope" class="h-4 w-4 shrink-0 text-slate-400 transition group-hover:text-brand-600 dark:text-slate-500" />
                 <span class="min-w-0 break-all font-medium">{email.value}</span>
                 <span
-                  :if={not email.public?}
+                  :if={email_restricted?}
                   class="shrink-0 text-slate-400 dark:text-slate-500"
-                  title={gettext("Only visible to you")}
-                  aria-label={gettext("Only visible to you")}
+                  title={visibility_note(email_rung)}
+                  aria-label={visibility_note(email_rung)}
                 >
                   <.detail_icon name="lock" class="h-3.5 w-3.5" />
                 </span>
@@ -1183,9 +1195,15 @@ the resulting ~200px rail width. --%>
               (Vutuv.Phone.country_flag gates on national/2). The tooltip names
               the calling code and its ISO region. --%>
               <% flag = Vutuv.Phone.country_flag(number.value, @locale) %>
+              <% phone_rung = Vutuv.Profiles.PhoneNumber.visibility_of(number) %>
+              <% phone_restricted? = @as_owner? and phone_rung != "everyone" %>
               <a
                 href={"tel:" <> Vutuv.Phone.tel(number.value)}
-                class="group flex items-center gap-2.5 py-1.5 text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+                data-phone-visibility={phone_rung}
+                class={[
+                  "group flex items-center gap-2.5 py-1.5 text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300",
+                  phone_restricted? && "opacity-55 transition-opacity hover:opacity-100"
+                ]}
               >
                 <.detail_icon name="phone" class="h-4 w-4 shrink-0 text-slate-400 transition group-hover:text-brand-600 dark:text-slate-500" />
                 <span
@@ -1196,6 +1214,14 @@ the resulting ~200px rail width. --%>
                   aria-label={gettext("+%{code} is the calling code of %{region}", code: elem(flag, 2), region: elem(flag, 1))}
                 >{elem(flag, 0)}</span>
                 <span class="font-medium">{Vutuv.Phone.national(number.value, @locale)}</span>
+                <span
+                  :if={phone_restricted?}
+                  class="shrink-0 text-slate-400 dark:text-slate-500"
+                  title={visibility_note(phone_rung)}
+                  aria-label={visibility_note(phone_rung)}
+                >
+                  <.detail_icon name="lock" class="h-3.5 w-3.5" />
+                </span>
               </a>
             </li>
           </ul>
@@ -1223,13 +1249,23 @@ the resulting ~200px rail width. --%>
         <span :if={show_email_manage and show_phone_link} aria-hidden="true" class="text-slate-300 dark:text-slate-600">·</span>
         <.link
           :if={show_phone_link}
-          href={if @totals.numbers > phone_preview, do: ~p"/#{@user}/phone_numbers", else: ~p"/settings/phone_numbers"}
+          href={
+            if @as_owner?,
+              do: ~p"/settings/phone_numbers",
+              else: ~p"/#{@user}/phone_numbers"
+          }
           class="text-slate-500 transition hover:text-brand-600 dark:text-slate-400 dark:hover:text-brand-400"
         >
-          <%= if @totals.numbers > phone_preview do %>
-            {gettext("View all phone numbers")} ({compact_count(@totals.numbers)})
-          <% else %>
+          <%!-- The owner always goes to their editor, whatever the count (issue
+          #1521). The public page deliberately leaves a "private" number out, so
+          sending the owner there past the preview threshold offered them "View
+          all phone numbers (4)" and then showed three — and the one it dropped
+          was the one they most likely came to check. Their editor is also where
+          they can act. A visitor keeps the public page and its honest count. --%>
+          <%= if @as_owner? do %>
             {gettext("Manage phone numbers")}
+          <% else %>
+            {gettext("View all phone numbers")} ({compact_count(@totals.numbers)})
           <% end %>
         </.link>
       </div>
@@ -1593,7 +1629,13 @@ member's profile carries no Person entity. --%>
       educations: @education,
       languages: @languages,
       qualifications: @qualifications,
-      addresses: @user.addresses,
+      # Only the public rung reaches the structured data (issue #1521): JSON-LD is
+      # written for crawlers, and @user.addresses is scoped to THIS viewer, so a
+      # connected viewer's page would otherwise emit an address meant for
+      # connections into schema.org markup. Filtered in memory from the list that
+      # is already loaded (every scope contains "everyone"), so it costs no query.
+      addresses:
+        Enum.filter(@user.addresses, &(Vutuv.Profiles.Address.visibility_of(&1) == "everyone")),
       urls: @user.urls
     })
   }

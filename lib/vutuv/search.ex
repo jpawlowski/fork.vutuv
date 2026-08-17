@@ -386,17 +386,26 @@ defmodule Vutuv.Search do
 
   defp filter_city(query, nil, _exact?), do: query
 
+  # Only an address on the widest rung ("everyone") may answer this filter (issue
+  # #1521). Otherwise `ort:koblenz` is an oracle: a hit would confirm that the
+  # member has an address in that city even when they keep it for their
+  # connections — the same reasoning as `search_by_email/1`, and deliberately not
+  # scoped to the searcher for the same reason.
   defp filter_city(query, city, exact?) do
     sub =
       if exact? do
         from(a in Vutuv.Profiles.Address,
-          where: a.user_id == parent_as(:user).id and fragment("lower(?)", a.city) == ^city
+          where:
+            a.user_id == parent_as(:user).id and a.visibility == "everyone" and
+              fragment("lower(?)", a.city) == ^city
         )
       else
         infix = contains(city)
 
         from(a in Vutuv.Profiles.Address,
-          where: a.user_id == parent_as(:user).id and ilike(a.city, ^infix)
+          where:
+            a.user_id == parent_as(:user).id and a.visibility == "everyone" and
+              ilike(a.city, ^infix)
         )
       end
 
@@ -594,8 +603,16 @@ defmodule Vutuv.Search do
   @doc """
   The member with exactly that email address, or `[]`.
 
-  Only addresses the owner flagged public are findable (`public?` defaults to
-  false): a private address must not even confirm that an account exists.
+  Only addresses on the widest rung of the contact ladder ("everyone") are
+  findable: a hit here confirms that an account holds this address, so a member
+  who opened their address to signed-in members or to their connections must not
+  be findable by anybody who can type it — searching is not standing (issue
+  #1521).
+
+  Deliberately NOT scoped to the searcher, which would turn this lookup into an
+  oracle ("is this address on a profile I am connected to"); the search box has
+  no owner to resolve a scope against either. The `coalesce` reads the rows the
+  previous release wrote, whose audience still lives in `public?`.
   """
   def search_by_email(value) do
     value = String.downcase(value)
@@ -606,7 +623,11 @@ defmodule Vutuv.Search do
         join: e in assoc(u, :emails),
         where:
           account_confirmed_row(u) and ^value == e.value and
-            e.public? == true
+            fragment(
+              "coalesce(?, CASE WHEN ? THEN 'everyone' ELSE 'private' END) = 'everyone'",
+              e.visibility,
+              e.public?
+            )
       )
       |> exclude_moderated()
     )

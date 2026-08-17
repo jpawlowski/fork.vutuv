@@ -43,9 +43,10 @@ defmodule VutuvWeb.DesignConsistencyTest do
       assert html =~ "/ Emails\n</div>"
     end
 
-    test "the email visibility select is translated", %{conn: conn, user: user} do
-      # The select moved off the profile form when email editing was reduced
-      # to the public? flag; it now lives only on the email edit page.
+    test "the email audience picker is translated", %{conn: conn, user: user} do
+      # The audience control moved off the profile form when email editing was
+      # reduced to the visibility flag; it now lives only on the email edit page,
+      # as the four-rung radio group of issue #1521.
       %{emails: [email]} = Repo.preload(user, :emails)
 
       conn =
@@ -55,13 +56,17 @@ defmodule VutuvWeb.DesignConsistencyTest do
         |> get(~p"/settings/emails/#{email}/edit")
 
       html = html_response(conn, 200)
-      # The options say who can see the address rather than naming a privacy
+      # Every rung says who can see the address rather than naming a privacy
       # mode ("Public" / "Private"), which read as jargon for the one thing the
-      # member actually wants to know.
+      # member actually wants to know — and each carries its explaining line, so
+      # a German render missing one of those is a bug, not a nuance.
       assert html =~ "Alle"
-      assert html =~ "Nur Sie"
+      assert html =~ "Angemeldete Mitglieder"
+      assert html =~ "Mit mir vernetzte Personen"
+      assert html =~ "Nur ich"
+      assert html =~ "Nur für Personen, denen Sie folgen und die Ihnen zurückfolgen."
       refute html =~ ~s(>Everyone<)
-      refute html =~ ~s(>Only you<)
+      refute html =~ "Signed-in members"
     end
   end
 

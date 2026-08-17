@@ -99,7 +99,10 @@ defmodule Vutuv.AccountEvents do
     "username_changed" => ["from", "to"],
     "email_added" => ["email"],
     "email_removed" => ["email"],
-    "email_updated" => ["email", "public"],
+    # "visibility" is the four-rung audience the address now sits on (issue
+    # #1521); "public" is its retired boolean predecessor, still declared because
+    # the log is append-only and rows written before that change carry it.
+    "email_updated" => ["email", "visibility", "public"],
     "profile_updated" => ["fields"],
 
     # Privacy and reach

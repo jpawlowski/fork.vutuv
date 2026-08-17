@@ -21,7 +21,7 @@
   <h2 class="card__label"><%= gettext("Type") %></h2>
   <p><%= email_type_label(@email.email_type) %></p>
   <%= if same_user?(@user, @current_user) do %>
-    <h2 class="card__label"><%= gettext("Visibility") %></h2>
-    <p><%= if @email.public?, do: gettext("Public"), else: gettext("Private") %></p>
+    <h2 class="card__label"><%= gettext("Who can see it") %></h2>
+    <p><%= visibility_label(@email) %></p>
   <% end %>
 </.card_section>

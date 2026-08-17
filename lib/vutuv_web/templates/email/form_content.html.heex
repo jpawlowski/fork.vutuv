@@ -10,11 +10,7 @@
       <p><%= gettext "The address itself cannot be changed. To use a different one, add it as a new email address and delete this one." %></p>
     </div>
 
-    <.editform_field form={f} field={:public?}>
-      <%= label f, :public?, gettext("Who can see it") %>
-      <%= select f, :public?, [{gettext("Everyone"), true}, {gettext("Only you"), false}], err_attrs(f, :public?) %>
-      <%= error_tag f, :public? %>
-    </.editform_field>
+    <.visibility_field form={f} />
   <% else %>
     <.editform_field form={f} field={:value}>
       <%= label f, :value, gettext("Email Address") %>

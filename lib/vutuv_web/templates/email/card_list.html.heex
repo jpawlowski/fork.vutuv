@@ -4,7 +4,11 @@
     <tr>
       <th><%= gettext "Email" %></th>
       <th><%= gettext "Type" %></th>
-      <th><%= gettext "Visibility" %></th>
+      <%!-- The audience is the owner's own setting (issue #1521). On the public
+            page it told a visitor nothing (every listed address was public) and
+            with four rungs it would report the member's sharing choices to
+            strangers, so the column is owner-only now. --%>
+      <th :if={@as_owner?}><%= gettext "Visibility" %></th>
       <th></th>
     </tr>
   </thead>
@@ -22,7 +26,7 @@
       >{gettext("Undeliverable")}</span>
       </td>
       <td><%= email_type_label(email.email_type) %></td>
-      <td><%= if email.public?, do: gettext("Public"), else: gettext("Private") %></td>
+      <td :if={@as_owner?}><%= visibility_label(email) %></td>
       <td class="text-right">
         <.row_actions
           :if={@as_owner?}

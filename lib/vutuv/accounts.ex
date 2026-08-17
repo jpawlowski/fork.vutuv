@@ -40,6 +40,7 @@ defmodule Vutuv.Accounts do
   alias Vutuv.Repo
   alias Vutuv.Social.Block
   alias Vutuv.Uploads.Crop
+  alias Vutuv.Visibility
 
   # ── Registration ──
 
@@ -2084,6 +2085,36 @@ defmodule Vutuv.Accounts do
       employment_status: status_base and not hidden?,
       salary: salary_base and not hidden?
     }
+  end
+
+  @doc """
+  The visibility rungs `viewer` may see of `owner`'s contact details (issue
+  #1521) — the single seam every phone-number and email display path resolves
+  through, so the profile, the section pages, the CV, the API and the agent
+  formats can never disagree about who sees a number.
+
+  Composes the ladder's own maths (`Vutuv.Visibility.scope/2`) with the
+  subtractive exclusion list (issue #938): a viewer the owner has excluded — or
+  blocked — is dropped back to the anonymous scope, so they see exactly what the
+  logged-out public sees and nothing that was opened up to members or to
+  connections. Narrowing only, never widening, matching how the exclusion
+  behaves for the job-search fields.
+
+  Costs at most two indexed lookups (the mutual-follow check, then the
+  exclusion) and none at all for the two common cases, the anonymous visitor and
+  the owner themselves.
+  """
+  def contact_scope(%User{} = owner, viewer) do
+    case Visibility.scope(owner, viewer) do
+      # Nothing above "everyone" is on the table, so the exclusion could not
+      # narrow anything: skip the query. (Excluding somebody from a genuinely
+      # public address would be theatre anyway — they need only sign out.)
+      ["everyone"] = anonymous ->
+        anonymous
+
+      scope ->
+        if viewer_excluded?(owner, viewer), do: ["everyone"], else: scope
+    end
   end
 
   # Avatar/cover files are written to disk only AFTER the row commits, so a

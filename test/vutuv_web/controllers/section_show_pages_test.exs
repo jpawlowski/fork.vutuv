@@ -67,16 +67,24 @@ defmodule VutuvWeb.SectionShowPagesTest do
       html = get(conn, ~p"/#{user}/emails/#{email}") |> html_response(200)
 
       assert html =~ ~s(href="mailto:greta@example.com")
-      refute html =~ "Visibility"
+      refute html =~ "Who can see it"
     end
 
-    test "the owner still sees the visibility row", %{conn: conn} do
+    test "the owner sees the audience row, naming the rung the address sits on",
+         %{conn: conn} do
       {conn, owner} = create_and_login_user(conn)
-      %{emails: [email]} = Repo.preload(owner, :emails)
+
+      email =
+        insert(:email, user: owner, visibility: "connected", value: "vernetzt@example.com")
 
       html = get(conn, ~p"/#{owner}/emails/#{email}") |> html_response(200)
 
-      assert html =~ "Visibility"
+      # The row names the rung of the contact ladder (issue #1521), not a
+      # "Public"/"Private" mode — so a middle rung has to read as itself rather
+      # than collapsing into one of the two old words.
+      assert html =~ "Who can see it"
+      assert html =~ "People I am connected with"
+      refute html =~ ~s(<p>Everyone</p>)
     end
   end
 

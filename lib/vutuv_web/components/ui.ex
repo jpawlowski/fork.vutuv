@@ -24,17 +24,22 @@ defmodule VutuvWeb.UI do
   # `<.announce_to_followers_field>` is shared by the three CV section forms
   # (different view modules), so it lives here and needs the form helper the
   # legacy templates get from `use PhoenixHTMLHelpers`.
-  import PhoenixHTMLHelpers.Form, only: [checkbox: 3]
+  import PhoenixHTMLHelpers.Form, only: [checkbox: 3, radio_button: 4]
 
+  alias Vutuv.Accounts.Email
   alias Vutuv.Accounts.User
   alias Vutuv.DateRegions
   alias Vutuv.Organizations.Organization
   alias Vutuv.Organizations.OrganizationImage
   alias Vutuv.Posts
+  alias Vutuv.Profiles.Address
+  alias Vutuv.Profiles.PhoneNumber
   alias Vutuv.Tags.UserTag
   alias Vutuv.Uploads.Spec
   alias Vutuv.ViewerClock
+  alias Vutuv.Visibility
   alias VutuvWeb.CodeHighlight.Languages
+  alias VutuvWeb.ErrorHelpers
   alias VutuvWeb.JsonLd
   alias VutuvWeb.Markdown
 
@@ -3558,6 +3563,82 @@ defmodule VutuvWeb.UI do
           "They see one notification linking to this entry. No email is sent, and it only ever happens for a new entry."
         )}
       </.setting_toggle>
+    </div>
+    """
+  end
+
+  @doc """
+  The owner-facing name of the rung a contact entry sits on, for a status column
+  or detail line (issue #1521). Takes an email, a phone number, a postal address,
+  or a bare rung string, so a template never has to know which schema resolves the
+  legacy NULL.
+  """
+  def visibility_label(%Email{} = email), do: Visibility.label(Email.visibility_of(email))
+
+  def visibility_label(%PhoneNumber{} = number),
+    do: Visibility.label(PhoneNumber.visibility_of(number))
+
+  def visibility_label(%Address{} = address),
+    do: Visibility.label(Address.visibility_of(address))
+
+  def visibility_label(level) when is_binary(level), do: Visibility.label(level)
+
+  @doc """
+  The owner-facing sentence for the lock glyph on a restricted contact row
+  ("Only visible to people you are connected with"), or nil for an unrestricted
+  one. Delegates to `Vutuv.Visibility.visibility_note/1` so templates reach it
+  through the same import as every other UI helper.
+  """
+  defdelegate visibility_note(level), to: Visibility
+
+  @doc """
+  The audience picker for one piece of contact information (issue #1521): four
+  radio rows, one per rung of `Vutuv.Visibility`, each naming **who that is** on
+  its own second line.
+
+  Deliberately radios and not a `<select>`, which is what this replaced on the
+  email form. A dropdown shows one option at a time, so "Signed-in members" is a
+  phrase the member has to interpret, and the four possibilities can only be
+  compared by opening the list and reading them one by one. Four rows cost some
+  vertical space and in exchange the whole ladder — and what each rung means —
+  is legible at a glance, without a tap and without JavaScript. That was Stefan's
+  first condition on the issue: it has to be obvious what a change *means*.
+
+  Sits inside a legacy `.editform` page (both contact forms are classic pages),
+  so it wraps a `<fieldset>` in an `.editform__field` and leans on the existing
+  `.editform input[type="radio"]:focus-visible` ring in `components.css`; the row
+  layout reuses `<.setting_toggle>`'s label-over-hint shape in utilities, the way
+  `<.announce_to_followers_field>` does.
+  """
+  attr(:form, :any, required: true, doc: "the entry form (`:let={f}`)")
+  attr(:field, :atom, default: :visibility, doc: "the form field holding the rung")
+
+  attr(:label, :string,
+    default: nil,
+    doc: "the fieldset's legend; defaults to \"Who can see it\""
+  )
+
+  def visibility_field(assigns) do
+    ~H"""
+    <div class="editform__field">
+      <fieldset>
+        <legend>{@label || gettext("Who can see it")}</legend>
+        <div class="mt-2 space-y-2.5">
+          <label
+            :for={level <- Visibility.levels()}
+            class="flex items-start gap-3 text-sm text-slate-600 dark:text-slate-300"
+          >
+            {radio_button(@form, @field, level, class: "mt-1 h-4 w-4")}
+            <span>
+              <span class="block font-medium text-slate-900 dark:text-white">
+                {Visibility.label(level)}
+              </span>
+              <span class="block font-normal">{Visibility.hint(level)}</span>
+            </span>
+          </label>
+        </div>
+        {ErrorHelpers.error_tag(@form, @field)}
+      </fieldset>
     </div>
     """
   end

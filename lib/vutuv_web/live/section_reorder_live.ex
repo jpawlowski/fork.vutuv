@@ -35,7 +35,10 @@ defmodule VutuvWeb.SectionReorderLive do
   use Gettext, backend: VutuvWeb.Gettext
 
   import Ecto.Query, only: [from: 2]
-  import VutuvWeb.UI, only: [link_thumb: 1, row_actions: 1, verified_mark: 1]
+
+  import VutuvWeb.UI,
+    only: [link_thumb: 1, row_actions: 1, verified_mark: 1, visibility_label: 1]
+
   import VutuvWeb.UrlHTML, only: [linkable_url: 1, display_url: 1]
   import VutuvWeb.EmailHTML, only: [email_type_label: 1]
   import VutuvWeb.PhoneNumberHTML, only: [phone_type_label: 1]
@@ -223,7 +226,9 @@ defmodule VutuvWeb.SectionReorderLive do
     ~H"""
     <div class="reorder__text">
       <div class="reorder__title">{@entry.value}</div>
-      <div class="reorder__sub">{phone_type_label(@entry.number_type)}</div>
+      <div class="reorder__sub">
+        {phone_type_label(@entry.number_type)} · {visibility_label(@entry)}
+      </div>
     </div>
     """
   end
@@ -232,7 +237,9 @@ defmodule VutuvWeb.SectionReorderLive do
     ~H"""
     <div class="reorder__text">
       <div class="reorder__title">{@entry.description}</div>
-      <div class="reorder__sub">{format_address(@entry, @locale)}</div>
+      <div class="reorder__sub">
+        {format_address(@entry, @locale)} · {visibility_label(@entry)}
+      </div>
     </div>
     """
   end
@@ -267,9 +274,7 @@ defmodule VutuvWeb.SectionReorderLive do
         >{gettext("Undeliverable")}</span>
       </div>
       <div class="reorder__sub">
-        {email_type_label(@entry.email_type)} · {if @entry.public?,
-          do: gettext("Public"),
-          else: gettext("Private")}
+        {email_type_label(@entry.email_type)} · {visibility_label(@entry)}
       </div>
     </div>
     """

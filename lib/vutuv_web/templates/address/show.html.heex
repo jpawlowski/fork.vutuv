@@ -17,4 +17,10 @@
   />
 
   <p><%= format_address @address, @conn.assigns[:locale] %></p>
+  <%!-- Owner-only: who this address reaches is the owner's setting (issue #1521),
+        and a visitor only ever lands here for an address they may already see. --%>
+  <%= if same_user?(@user, @current_user) do %>
+    <h2 class="card__label"><%= gettext("Who can see it") %></h2>
+    <p><%= visibility_label(@address) %></p>
+  <% end %>
 </.card_section>

@@ -231,7 +231,22 @@ defmodule Vutuv.Deliverability do
   """
   def repair_misclassified_bounces do
     cleared =
-      Repo.all(from(e in Email, where: not is_nil(e.undeliverable_at)))
+      Repo.all(
+        from(e in Email,
+          where: not is_nil(e.undeliverable_at),
+          # An explicit two-column select, NOT the whole struct, because a
+          # migration calls this (`RepairMisclassifiedBounceFreezes`) and a
+          # migration runs against the schema **as it was at its own point in
+          # history**. Selecting the struct emits every field the Email module
+          # currently declares, so the first column added afterwards makes that
+          # historical migration fail with `42703 undefined_column` — on a fresh
+          # database only, i.e. in CI and for every new contributor, never for
+          # anyone whose database is already past it. That is exactly what the
+          # contact-visibility column did (issue #1521). Two columns are all the
+          # repair needs, and they have both existed since the table did.
+          select: %{value: e.value, user_id: e.user_id}
+        )
+      )
       |> Enum.filter(&only_misclassified_bounces?/1)
 
     Enum.each(cleared, fn email ->
@@ -259,7 +274,8 @@ defmodule Vutuv.Deliverability do
   # An address qualifies for the repair only when there is ledger evidence and
   # none of it survives the vetted classifier. No evidence at all means the
   # mark came from elsewhere - leave it alone.
-  defp only_misclassified_bounces?(%Email{value: value}) do
+  # Takes the narrow map the query above selects (an `%Email{}` matches it too).
+  defp only_misclassified_bounces?(%{value: value}) do
     case Repo.all(
            from(b in EmailBounce, where: b.email_value == ^value, select: {b.status, b.raw})
          ) do

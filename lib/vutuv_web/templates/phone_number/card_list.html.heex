@@ -4,6 +4,9 @@
     <tr>
       <th><%= gettext "Number type" %></th>
       <th><%= gettext "Phone number" %></th>
+      <%!-- Owner-only, like the email list's: it is the owner's own setting
+            (issue #1521), not a fact about the number. --%>
+      <th :if={@as_owner?}><%= gettext "Visibility" %></th>
       <th></th>
     </tr>
   </thead>
@@ -14,6 +17,7 @@
       <%= link phone_type_label(number.number_type), to: ~p"/#{@user}/phone_numbers/#{number}" %>
       </td>
       <td><%= display_number(number.value) %></td>
+      <td :if={@as_owner?}><%= visibility_label(number) %></td>
       <td class="text-right">
         <.row_actions
           :if={@as_owner?}

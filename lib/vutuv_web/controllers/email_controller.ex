@@ -13,14 +13,18 @@ defmodule VutuvWeb.EmailController do
   plug(:scrub_params, "email" when action in [:create, :update])
 
   # Index and show are also served as Markdown / text / JSON via
-  # VutuvWeb.AgentDocs.SectionDocs. The agent formats render strictly the
-  # anonymous view: public addresses only, whoever asks.
+  # VutuvWeb.AgentDocs.SectionDocs.
   def index(conn, _params) do
     AgentDocs.respond(conn,
       html: fn conn ->
-        # The public showcase view for everyone, the owner included: public
-        # addresses only. Private addresses show solely on /settings/emails.
-        emails = VutuvWeb.UserHelpers.emails_for_display(conn.assigns[:user], nil)
+        # The showcase view: whatever rung this viewer stands on (issue #1521),
+        # minus "private" — a private address shows solely on /settings/emails,
+        # for the owner too. See UserHelpers.showcase_scope/2.
+        emails =
+          VutuvWeb.UserHelpers.emails_for_scope(
+            conn.assigns[:user],
+            VutuvWeb.UserHelpers.showcase_scope(conn.assigns[:user], conn.assigns[:current_user])
+          )
 
         render(conn, "index.html",
           emails: emails,
@@ -39,10 +43,11 @@ defmodule VutuvWeb.EmailController do
     )
   end
 
-  # The owner's editor (GET /settings/emails): every address, private ones
-  # included, with the add tile, reorder tool and per-row actions.
+  # The owner's editor (GET /settings/emails): every address on every rung of
+  # the ladder, with the add tile, reorder tool and per-row actions.
   def manage(conn, _params) do
-    emails = VutuvWeb.UserHelpers.emails_for_permission(conn.assigns[:user], true)
+    emails =
+      VutuvWeb.UserHelpers.emails_for_scope(conn.assigns[:user], Vutuv.Visibility.levels())
 
     render(conn, "manage.html",
       emails: emails,
@@ -184,7 +189,11 @@ defmodule VutuvWeb.EmailController do
          ) do
         ControllerHelpers.get_owned(conn.assigns[:user], :emails, id)
       else
-        public_email(conn, id)
+        scoped_email(
+          conn,
+          id,
+          VutuvWeb.UserHelpers.showcase_scope(conn.assigns[:user], conn.assigns[:current_user])
+        )
       end
 
     case email do
@@ -205,16 +214,20 @@ defmodule VutuvWeb.EmailController do
     end
   end
 
-  # Advertise the agent-format siblings only for a public address — show_doc
-  # serves the anonymous view, so a private email's .md/.txt/.json would 404.
-  defp maybe_put_alternates(conn, %{public?: true}), do: AgentDocs.put_html_alternates(conn)
-  defp maybe_put_alternates(conn, _email), do: conn
+  # Advertise the agent-format siblings only for an "everyone" address: those
+  # URLs are cached and crawlable, so anything narrower 404s there whoever asks.
+  defp maybe_put_alternates(conn, email) do
+    if Email.visibility_of(email) == "everyone",
+      do: AgentDocs.put_html_alternates(conn),
+      else: conn
+  end
 
-  # The anonymous view: a private address has no agent documents, even for a
-  # permitted viewer's session — only the public-scoped query runs here, no
-  # permission check.
+  # The single-address agent documents stay strictly the anonymous view: they are
+  # publicly cacheable URLs, so an address opened up to members or connections
+  # has no .md/.txt/.json sibling even for a viewer who may see it on the page.
+  # The viewer-scoped download is the profile's vCard.
   defp show_doc(conn, format, id) do
-    case public_email(conn, id) do
+    case scoped_email(conn, id, ["everyone"]) do
       nil ->
         ControllerHelpers.render_error(conn, 404)
 
@@ -224,9 +237,22 @@ defmodule VutuvWeb.EmailController do
     end
   end
 
-  defp public_email(conn, id) do
+  # One address, but only if it sits on a rung in `scope` — the single-entry twin
+  # of UserHelpers.emails_for_scope/2, carrying the same legacy `public?`
+  # fallback for a row the previous release wrote (issue #1521).
+  defp scoped_email(conn, id, scope) do
     Vutuv.UUIDv7.with_cast(id, fn uuid ->
-      Repo.one(from(e in assoc(conn.assigns[:user], :emails), where: e.public? and e.id == ^uuid))
+      Repo.one(
+        from(e in assoc(conn.assigns[:user], :emails),
+          where:
+            e.id == ^uuid and
+              fragment(
+                "coalesce(?, CASE WHEN ? THEN 'everyone' ELSE 'private' END)",
+                e.visibility,
+                e.public?
+              ) in ^scope
+        )
+      )
     end)
   end
 
@@ -245,11 +271,16 @@ defmodule VutuvWeb.EmailController do
 
     case result do
       {:ok, updated} ->
-        # Whether an address is publicly visible is a privacy decision, so the
-        # log records the new state — with the address itself masked, as always.
+        # Who can see an address is a privacy decision, so the log records the
+        # new rung — with the address itself masked, as always. Events stored
+        # before issue #1521 carry a `public` boolean instead; the renderer
+        # (`VutuvWeb.AccountEventText`) reads both.
         AccountEvents.record(conn.assigns.current_user, "email_updated",
           conn: conn,
-          details: %{email: AccountEvents.mask_email(updated.value), public: updated.public?}
+          details: %{
+            email: AccountEvents.mask_email(updated.value),
+            visibility: Email.visibility_of(updated)
+          }
         )
 
       _error ->

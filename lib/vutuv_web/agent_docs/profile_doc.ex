@@ -2,9 +2,16 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
   @moduledoc """
   The profile page (`/:slug`) as one data map — the single source the
   Markdown / text / JSON / vCard renderers share. Mirrors the **anonymous
-  public view** of `user/show.html.heex`; unlike the page it does not cut
-  the lists off after a few entries (the full lists are public on the
-  sub-pages anyway, and the vCard always exported them all).
+  public view** of `user/show.html.heex` unless a `:viewer` is passed; unlike the
+  page it does not cut the lists off after a few entries (the full lists are
+  public on the sub-pages anyway, and the vCard always exported them all).
+
+  The three **contact** sections are the viewer-sensitive ones (issue #1521): each
+  email address, phone number and postal address carries its own audience rung, so
+  all three are loaded through `Vutuv.Accounts.contact_scope/2`. Every extension URL builds
+  with no viewer and therefore stays the anonymous, publicly cacheable document;
+  the authenticated `/api/2.0` read and the session-aware `/:slug/vcard` pass a
+  viewer, and both must send their answer uncacheable.
 
   Changed what the profile page shows? Update this builder too — the drift
   test (`agent_docs_drift_test.exs`) will remind you.
@@ -18,11 +25,9 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
   alias Vutuv.Fediverse
   alias Vutuv.Fediverse.RemoteAccount
   alias Vutuv.Fediverse.RemotePost
-  alias Vutuv.Profiles.Address
   alias Vutuv.Profiles.Education
   alias Vutuv.Profiles.Language
   alias Vutuv.Profiles.Messenger
-  alias Vutuv.Profiles.PhoneNumber
   alias Vutuv.Profiles.Qualification
   alias Vutuv.Profiles.SocialMediaAccount
   alias Vutuv.Profiles.Url
@@ -41,8 +46,9 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
       authenticated `/api/2.0` reads). Default `nil` = the anonymous public
       view the extension URLs serve; never pass a viewer for those, they
       must stay cache-safe.
-    * `:emails` — override the email list (the legacy session-aware vCard
-      route passes the viewer-visible set; default is what `:viewer` sees).
+    * `:emails` — override the email list (default is what `:viewer` sees).
+      The session-aware vCard route no longer needs it: it passes `:viewer` and
+      gets both contact lists scoped by the ladder (issue #1521).
     * `:include_photo` — embed the avatar as a base64 data URI for the
       vCard renderer (skipped for md/txt/json, where it would be dead weight).
   """
@@ -78,10 +84,19 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
     # applies, so those formats stay the plain public view.
     job_search = Accounts.job_search_visibility(user, viewer)
 
-    # Without a viewer: the anonymous public view, the same addresses the
-    # page shows a logged-out visitor.
+    # The contact ladder (issue #1521), resolved once for both channels. Without
+    # a viewer this is the anonymous public view — the same addresses and numbers
+    # the page shows a logged-out visitor — which is what every extension URL
+    # (`.md`/`.txt`/`.json`/`.xml`/`.vcf`) serves, so those stay cache-safe. A
+    # viewer is passed by the authenticated `/api/2.0` read and by the
+    # session-aware vCard route, and both send their answer uncacheable.
+    contact_scope = Accounts.contact_scope(user, viewer)
+
     emails =
-      Keyword.get_lazy(opts, :emails, fn -> UserHelpers.emails_for_display(user, viewer) end)
+      Keyword.get_lazy(opts, :emails, fn -> UserHelpers.emails_for_scope(user, contact_scope) end)
+
+    phone_numbers = UserHelpers.phone_numbers_for_scope(user, contact_scope)
+    addresses = UserHelpers.addresses_for_scope(user, contact_scope)
 
     AgentDocs.doc_meta("profile", path,
       noindex: user.noindex?,
@@ -145,8 +160,8 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
       languages: SectionDocs.language_entries(user.languages),
       links: Enum.map(user.urls, &SectionDocs.link_entry/1),
       emails: Enum.map(emails, &SectionDocs.email_entry/1),
-      phone_numbers: Enum.map(user.phone_numbers, &SectionDocs.phone_entry/1),
-      addresses: Enum.map(user.addresses, &SectionDocs.address_entry/1),
+      phone_numbers: Enum.map(phone_numbers, &SectionDocs.phone_entry/1),
+      addresses: Enum.map(addresses, &SectionDocs.address_entry/1),
       # The inline Mastodon/Bluesky posts (Vutuv.SocialFeed) are deliberately
       # absent: they are connected-only dynamic external content, fetched
       # after the LiveView connects, so neither the crawler-visible
@@ -238,10 +253,12 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
       languages: Language.ordered(),
       # The owner's chosen order (see Vutuv.Ordering), so the profile's agent
       # documents list these contact sections the same way the HTML pages do.
-      phone_numbers: PhoneNumber.ordered(),
+      # Phone numbers are deliberately absent: they are audience-scoped per
+      # viewer (issue #1521) and loaded through
+      # `UserHelpers.phone_numbers_for_scope/2` in `build/2`, so that one rule
+      # has a single implementation rather than a preload that has to remember it.
       messengers: Messenger.ordered(),
-      urls: Url.ordered(),
-      addresses: Address.ordered()
+      urls: Url.ordered()
     )
   end
 

@@ -41,7 +41,14 @@ defmodule VutuvWeb.PageController do
     changeset =
       %User{fediverse_followers?: Fediverse.enabled?()}
       |> User.changeset()
-      |> Ecto.Changeset.put_assoc(:emails, [%Email{public?: true, email_type: "Personal"}])
+      # `visibility` is primed to match the ticked checkbox (issue #1521): the
+      # sign-up page keeps its single "show it on my profile" box rather than
+      # growing the four-way select, and `Email.changeset/2` maps the boolean
+      # onto the rung on submit. Both are set here so the struct the form
+      # renders from is not internally contradictory.
+      |> Ecto.Changeset.put_assoc(:emails, [
+        %Email{public?: true, visibility: "everyone", email_type: "Personal"}
+      ])
 
     prefetch = "/listings/most_followed_users"
 

@@ -11,13 +11,119 @@ members edit all of it from the settings hub
 A signed-in member always sees their **own** view of any profile (their own or
 someone else's). There is no owner "view as public" toggle: to see the public
 view a member logs out. The anonymous public view — the same one search engines
-and the agent-format siblings get — hides owner chrome and private data (private
-emails are owner-only) and enforces post visibility server-side, so restricted
-content never reaches the anonymous HTML. A stale `?view_as=` query string is
-inert (the profile ignores it).
+and the agent-format siblings get — hides owner chrome and private data and
+enforces post visibility server-side, so restricted content never reaches the
+anonymous HTML. A stale `?view_as=` query string is inert (the profile ignores
+it).
 
 The profile-section pages behave the same way: `/:slug/<section>` IS the public
-view for everyone, and editing happens at `/settings/<section>`.
+view for everyone, and editing happens at `/settings/<section>`. What differs per
+viewer on those pages is the **contact ladder** below.
+
+## The contact ladder (issue #1521)
+
+Every **email address**, **phone number** and **postal address** carries its own
+audience, one of four rungs in `Vutuv.Visibility`:
+
+    "everyone"   the public profile and its crawlable siblings
+    "members"    anyone signed in to this installation
+    "connected"  the people the owner is vernetzt with (a mutual follow)
+    "private"    the owner alone
+
+The ladder is **monotone** — each rung is a strict subset of the one above — so
+"narrower" always means "fewer people", and a member never has to reason about
+two audiences that merely overlap.
+
+**There is deliberately no "my followers" rung.** A one-directional follow is not
+a mutual decision: anybody can create one by clicking a button, so such a rung
+would let a stranger *grant themselves* a member's phone number — the exact
+scam-call problem the ladder exists to prevent. `"connected"` requires a follow
+from both sides, so the owner has always taken part. That is the "contract" vutuv
+has, and it needs no LinkedIn-style confirmation dialog because both people
+already clicked.
+
+### One chokepoint
+
+`Vutuv.Accounts.contact_scope/2` is the single seam: it resolves which rungs a
+viewer may see, composing `Visibility.scope/2`'s level maths with the subtractive
+issue #938 exclusion list (an excluded — or blocked — viewer drops back to the
+anonymous scope; subtracting never adds). It is resolved **once per render** and
+every call site then filters on the **column** (`visibility in ^scope`), never by
+pattern-matching a preloaded association and never with a `NOT IN`.
+
+The loaders are `VutuvWeb.UserHelpers.emails_for_scope/2`,
+`phone_numbers_for_scope/2` and `addresses_for_scope/2` (plus the
+`*_for_display/2` wrappers that resolve the scope themselves for a single-list
+caller). Readers: the profile LiveView (which
+also scopes the `numbers` count in its union query, so the card's footer can
+never promise more rows than it shows), the section pages, `VutuvWeb.CV`,
+`VutuvWeb.AgentDocs.ProfileDoc`, the `/api/2.0` section read and the vCard route.
+
+`UserHelpers.showcase_scope/2` is the ladder **minus `"private"`**, used by the
+public section pages: a private row appears only in the owner's `/settings`
+editor, not on `/:slug/emails` — not even for the owner, who would otherwise read
+a page and be unable to tell which half of it anybody else gets. The profile
+itself is the deliberate exception: there the owner does see their private rows,
+each marked with a lock naming the audience
+(`Vutuv.Visibility.visibility_note/1`). Those markers are **owner-only** — the
+sentence is in the owner's voice, and which rung a row sits on is the owner's
+setting rather than a fact about the address.
+
+### Formats, caching and the vCard
+
+The extension URLs (`.md` / `.txt` / `.json` / `.xml` / `.vcf`) build with **no
+viewer** and therefore stay the anonymous, publicly cacheable document. That is a
+cache-safety decision, not an oversight: those URLs sit behind a shared cache
+(nginx in production), so answering one signed-in viewer more widely there could
+hand a connections-only number to the next person who asks.
+
+The viewer-scoped export is the session-aware **`/:slug/vcard`**, which the
+profile's own download link points at for every signed-in viewer (a logged-out
+visitor keeps the cacheable `.vcf`). It passes `:viewer` to `ProfileDoc` and sends
+`Cache-Control: private, no-store` plus `Vary: cookie`. So if a member grants you
+their number, the vCard you download carries it — while no cache can pass that
+file on. The single-entry pages behave the same way: the HTML answers at the
+viewer's rung and 404s (never 403 — a refusal would confirm the row exists) for a
+number they may not see, while the `.md`/`.txt`/`.json` sibling serves the
+anonymous view only.
+
+**Two search paths stay stricter than all of this**, and both for the same
+reason: a hit confirms a fact about the member, so only the `"everyone"` rung may
+answer, and neither is scoped to the searcher (that would turn the lookup into an
+oracle rather than closing one). `Vutuv.Search.search_by_email/1` finds a member
+by an exact address; the `ort:` / `stadt:` / `city:` operator (`filter_city/3`)
+finds members by the city of an address. Without that second filter,
+`ort:koblenz` would confirm that somebody lives there even when they keep the
+address for their connections.
+
+The **structured data** on the profile is the other place the page's own scope is
+deliberately not used: `JsonLd.person/5` is written for crawlers, so
+`user/show.html.heex` hands it only the `"everyone"` addresses — filtered in
+memory out of the list already loaded for this viewer (every scope contains
+`"everyone"`), so it costs no query.
+
+### Migration and defaults
+
+Neither `phone_numbers` nor `addresses` had **a visibility column at all** before
+this, so every stored number and address was public — and that was never a decision anybody made, because the form
+offered no choice. Members arrive with the expectation other platforms set (a
+number is shared with contacts, not with crawlers) and vutuv did not meet it, so
+the backfill is treated as a **mitigation under GDPR Art. 25** (data protection by
+default) and a scam-call countermeasure rather than a product preference: every
+existing row of both kinds was moved to `"private"`, and becomes visible again
+only through an explicit choice by its owner. The schema default is `"private"`
+for the same reason, so a newly added entry reaches nobody until the member says
+otherwise. (A postal address is if anything the most sensitive of the three, so
+the argument only gets stronger there.)
+
+`emails` are the opposite case: `public?` already was a deliberate, member-set
+flag, so it maps straight across (`true` → `"everyone"`, `false` → `"private"`)
+and nobody's address changes audience. That column is **kept and written in step**
+by `Email.changeset/2` for one release (expand/contract, the N-1 rule): the
+previous release still reads it. A NULL `visibility` therefore means "written by
+that release", which `Email.visibility_of/1` and a `coalesce` in the query resolve
+through `public?`. Dropping `public?` and making the column NOT NULL is a separate,
+later deploy.
 
 ## Name pronunciation (issue #1112)
 

@@ -19,17 +19,43 @@ defmodule Vutuv.Factory do
     struct!(user_factory(), email_confirmed?: true)
   end
 
-  def email_factory do
-    %Vutuv.Accounts.Email{
+  # Arity 1 (so ExMachina hands the attrs over instead of merging them itself),
+  # because the two audience columns have to agree: `visibility` is the four-rung
+  # ladder (issue #1521) and `public?` its legacy mirror, kept until the
+  # follow-up deploy drops it. A factory writes the struct straight to the
+  # database, bypassing `Email.changeset/2` — which is the one place that keeps
+  # the pair in sync — so a test saying `public?: false` would otherwise get a
+  # row claiming "not public" in one column and whatever the schema default said
+  # in the other, and every audience assertion would be about the wrong value.
+  #
+  # Derive here: `public?` alone still means what it always did, an explicit
+  # `visibility:` wins and sets the mirror, and passing both is the caller's
+  # business.
+  def email_factory(attrs) do
+    email = %Vutuv.Accounts.Email{
       value: sequence(:email_value, &"user#{&1}@example.com"),
-      public?: true,
       md5sum:
         sequence(
           :md5sum,
           &(:crypto.hash(:md5, "user#{&1}@example.com") |> Base.encode16() |> String.downcase())
         )
     }
+
+    email
+    |> merge_attributes(audience_attrs(attrs))
+    |> merge_attributes(attrs)
+    |> evaluate_lazy_attributes()
   end
+
+  # Public by default, as this factory always was. Whichever audience column the
+  # caller set decides, and the other is derived from it.
+  defp audience_attrs(%{visibility: level}),
+    do: %{visibility: level, public?: level == "everyone"}
+
+  defp audience_attrs(%{public?: public?}),
+    do: %{public?: public?, visibility: if(public?, do: "everyone", else: "private")}
+
+  defp audience_attrs(_attrs), do: %{public?: true, visibility: "everyone"}
 
   # One entry on a member's job-search viewer-exclusion list (issue #938).
   # Pass either `excluded_user:` (a member) or `domain:` (a lowercase host);
@@ -132,19 +158,32 @@ defmodule Vutuv.Factory do
     }
   end
 
+  # `visibility: "everyone"` for the same reason as `phone_number_factory` below:
+  # a bare `insert(:address)` is the plain public address the rest of the suite
+  # has always assumed (issue #1521). The narrower rungs are asserted explicitly
+  # where they are the subject.
   def address_factory do
     %Vutuv.Profiles.Address{
       description: "Home",
       country: "Germany",
       city: "Berlin",
-      zip_code: "10115"
+      zip_code: "10115",
+      visibility: "everyone"
     }
   end
 
+  # `visibility: "everyone"` (issue #1521) so a bare `insert(:phone_number)` is
+  # the plain public number the rest of the suite has always assumed, and every
+  # rendering/ordering/agent-format test keeps testing what it was written to
+  # test. The narrower rungs — and the schema's own privacy-by-default, which is
+  # what a member's *form* starts from — are asserted explicitly where they are
+  # the subject (`test/vutuv/visibility_test.exs`,
+  # `test/vutuv_web/contact_visibility_test.exs`).
   def phone_number_factory do
     %Vutuv.Profiles.PhoneNumber{
       value: sequence(:phone_value, &"+49 30 #{&1}00000"),
-      number_type: "Cell"
+      number_type: "Cell",
+      visibility: "everyone"
     }
   end
 

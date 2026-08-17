@@ -4,6 +4,9 @@
     <tr>
       <th><%= gettext "Description" %></th>
       <th><%= gettext "Address" %></th>
+      <%!-- Owner-only, like the email and phone lists': the rung is the owner's
+            own setting (issue #1521), not a fact about the address. --%>
+      <th :if={@as_owner?}><%= gettext "Visibility" %></th>
       <th></th>
     </tr>
   </thead>
@@ -16,6 +19,7 @@
       <%= link address.description || gettext("Address"), to: ~p"/#{@user}/addresses/#{address}" %>
       </td>
       <td><%= format_address address, @conn.assigns[:locale] %></td>
+      <td :if={@as_owner?}><%= visibility_label(address) %></td>
       <td class="text-right">
         <.row_actions
           :if={@as_owner?}

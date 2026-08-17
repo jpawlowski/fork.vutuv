@@ -3,9 +3,10 @@ defmodule VutuvWeb.ApiV2.SectionController do
   The profile sections over the API.
 
   Reads: `GET /api/2.0/users/:slug/<section>` — the same doc maps the public
-  `.json` section pages serve, with one viewer-dependent exception: the
-  email list shows what the viewer would see on the page (public addresses,
-  or all of them for the owner / when the owner follows the viewer).
+  `.json` section pages serve, with three viewer-dependent exceptions: the **email
+  addresses**, the **phone numbers** and the **postal addresses**, each of which
+  carries its own audience rung (issue #1521), so all three lists show what this
+  token's member would see on the page and nothing wider.
 
   Writes: `POST /api/2.0/me/<section>`, `PATCH`/`DELETE
   /api/2.0/me/<section>/:id` — always on the authorized user's own entries,
@@ -116,8 +117,15 @@ defmodule VutuvWeb.ApiV2.SectionController do
   defp after_delete(:qualifications, record), do: QualificationDocument.delete(record.id)
   defp after_delete(_section, _record), do: :ok
 
-  # The email list is the one viewer-dependent section (see moduledoc).
+  # Emails and phone numbers are the viewer-dependent sections (see moduledoc):
+  # each row carries its own rung of the contact ladder (issue #1521), so the API
+  # answers with what this token's member would see on the page.
   defp entries(user, :emails, viewer), do: UserHelpers.emails_for_display(user, viewer)
+
+  defp entries(user, :phone_numbers, viewer),
+    do: UserHelpers.phone_numbers_for_display(user, viewer)
+
+  defp entries(user, :addresses, viewer), do: UserHelpers.addresses_for_display(user, viewer)
 
   defp entries(user, :tags, _viewer) do
     Repo.all(from(ut in UserTag.ordered_by_endorsements(), where: ut.user_id == ^user.id))

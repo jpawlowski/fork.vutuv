@@ -23,6 +23,7 @@ defmodule VutuvWeb.AccountEventText do
 
   alias Vutuv.AccountEvents.AccountEvent
   alias Vutuv.Prefs
+  alias Vutuv.Visibility
   alias VutuvWeb.UI
 
   @doc "What happened, as a short heading. Also the kind filter's option text."
@@ -102,6 +103,17 @@ defmodule VutuvWeb.AccountEventText do
 
   defp detail(kind, %{"email" => email}) when kind in ~w(email_added email_removed),
     do: email
+
+  # Two shapes, because the account log is append-only and outlives a schema
+  # change: since issue #1521 the event carries the four-rung `visibility`, while
+  # everything logged before it carries the old `public` boolean.
+  defp detail("email_updated", %{"email" => email, "visibility" => level})
+       when is_binary(level) do
+    gettext("%{email}, now visible to: %{audience}",
+      email: email,
+      audience: Visibility.label(level)
+    )
+  end
 
   defp detail("email_updated", %{"email" => email} = details) do
     case details["public"] do

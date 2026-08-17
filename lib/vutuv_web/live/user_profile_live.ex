@@ -745,10 +745,20 @@ defmodule VutuvWeb.UserProfileLive do
 
     owner? = !!(current_user && current_user.id == base_user.id)
 
+    # The contact-detail audience for this viewer (issue #1521), resolved ONCE
+    # per mount: the phone-number preload, the numbers count and the email load
+    # all read it, so the mutual-follow lookup happens a single time rather than
+    # three times, and the card's rows can never disagree with its own total.
+    #
+    # The full ladder, `"private"` included, because the profile is the one page
+    # where the owner does see their private rows — each marked as private. The
+    # public section pages use `UserHelpers.showcase_scope/2` instead.
+    contact_scope = Accounts.contact_scope(base_user, current_user)
+
     # Every count the page renders — the nine section totals, the three social
     # counts and the posts total — in ONE union query per mount (they were
     # three separate round trips, the three most expensive queries on the page).
-    counts = profile_counts(base_user, current_user)
+    counts = profile_counts(base_user, current_user, contact_scope)
     totals = section_totals(counts)
     posts_total = Map.get(counts, "posts_total", 0)
 
@@ -758,9 +768,7 @@ defmodule VutuvWeb.UserProfileLive do
       connections: Map.get(counts, "connections", 0)
     }
 
-    user = preload_user_for_show(base_user, owner?)
-
-    private_emails? = private_emails?(current_user, user)
+    user = preload_user_for_show(base_user, owner?, contact_scope)
 
     # preload_user_for_show loaded ALL work experiences (date-ordered for the
     # Experience card); resolve the header's current job from the id-sorted
@@ -804,10 +812,13 @@ defmodule VutuvWeb.UserProfileLive do
 
     socket
     |> assign(:as_owner?, owner?)
-    |> assign(:vcard_full?, private_emails?)
+    # Whether the header's vCard link goes to the session-aware download rather
+    # than the cacheable `.vcf` (issue #1521): true for any signed-in viewer,
+    # since the rung they stand on decides which contact rows the file carries.
+    |> assign(:vcard_scoped?, not is_nil(current_user))
     |> assign(:viewer_block, viewer_block(current_user, user))
     |> assign(:user_saved, header_user_saved(current_user, user))
-    |> assign(:emails, profile_emails(private_emails?, current_user, user))
+    |> assign(:emails, emails_for_scope(user, contact_scope))
     |> assign(:pinned_post, pinned_post)
     |> assign(:pinned_engagement, pinned_engagement)
     |> assign(:posts, post_entries)
@@ -1108,16 +1119,6 @@ defmodule VutuvWeb.UserProfileLive do
 
   # ── Viewer-scoping helpers ──
 
-  # A private address is owner-only: only the owner's own view (resolved through
-  # user_has_permissions?/2, which is now same_user?/2) reveals it.
-  defp private_emails?(current_user, user),
-    do: !!user_has_permissions?(user, current_user)
-
-  # private_emails? already resolved whether the viewer may see private
-  # addresses, so hand that verdict straight to the loader instead of having
-  # emails_for_display/2 re-run the follow permission check.
-  defp profile_emails(allowed?, _current_user, user), do: emails_for_permission(user, allowed?)
-
   # The viewer's header follow relationship, resolved from at most the two
   # directional follow edges — the viewer's outbound edge to the owner and the
   # owner's inbound edge back — read together in one query
@@ -1197,7 +1198,7 @@ defmodule VutuvWeb.UserProfileLive do
   """
   def preview_limit(section), do: Map.fetch!(@preview_limits, section)
 
-  defp preload_user_for_show(user, owner?) do
+  defp preload_user_for_show(user, owner?, contact_scope) do
     user
     |> Repo.preload(
       social_media_accounts: SocialMediaAccount.ordered(),
@@ -1230,9 +1231,22 @@ defmodule VutuvWeb.UserProfileLive do
       # Zeugnis documents — and so the CV entries can name their Zeugnis back,
       # from the same rows, without a query per entry.
       job_references: {JobReference.public_scope(), :links},
-      phone_numbers: PhoneNumber.ordered() |> limit(^preview_limit(:phone_numbers)),
+      # Scoped to this viewer's rung in SQL (issue #1521), like the
+      # qualifications above: the card renders exactly what is loaded, so the
+      # limit applies after the audience filter and never spends its three slots
+      # on numbers this viewer may not see.
+      phone_numbers:
+        from(p in PhoneNumber, where: p.visibility in ^contact_scope)
+        |> PhoneNumber.ordered()
+        |> limit(^preview_limit(:phone_numbers)),
       urls: Url.ordered() |> limit(^preview_limit(:links)),
-      addresses: Address.ordered() |> limit(^preview_limit(:addresses)),
+      # Scoped to this viewer's rung in SQL (issue #1521), like the phone numbers
+      # above: the card renders exactly what is loaded, so the limit applies after
+      # the audience filter.
+      addresses:
+        from(a in Address, where: a.visibility in ^contact_scope)
+        |> Address.ordered()
+        |> limit(^preview_limit(:addresses)),
       inbound_follows: {Follow.latest(preview_limit(:followers), :follower), [:follower]},
       outbound_follows: {Follow.latest(preview_limit(:following), :followee), [:followee]}
     )
@@ -1259,7 +1273,7 @@ defmodule VutuvWeb.UserProfileLive do
   # before that, as sixteen), which made counting the most expensive thing on
   # the page after the preloads. Each arm returns exactly one row (0 when
   # empty), so every kind is always present.
-  defp profile_counts(%User{id: uid} = user, viewer) do
+  defp profile_counts(%User{id: uid} = user, viewer, contact_scope) do
     [first | rest] =
       [
         section_count(UserTag, uid, "user_tags"),
@@ -1267,10 +1281,16 @@ defmodule VutuvWeb.UserProfileLive do
         section_count(Education, uid, "educations"),
         section_count(Language, uid, "languages"),
         section_count(Qualification, uid, "qualifications"),
-        section_count(PhoneNumber, uid, "numbers"),
+        # Viewer-scoped (issue #1521), because this total is what the card's
+        # footer promises ("View all phone numbers (N)") and what decides whether
+        # the card renders at all. Counting every row would offer a visitor a
+        # link to five numbers and then show them none.
+        numbers_count(uid, contact_scope),
         section_count(Messenger, uid, "messengers"),
         section_count(Url, uid, "links"),
-        section_count(Address, uid, "addresses")
+        # Viewer-scoped for the same reason as the numbers arm: this total drives
+        # the card's footer and whether the card renders at all.
+        addresses_count(uid, contact_scope)
       ] ++
         Social.profile_count_queries(uid) ++
         [Vutuv.Posts.author_timeline_count_query(user, viewer)]
@@ -1300,6 +1320,22 @@ defmodule VutuvWeb.UserProfileLive do
     from(r in schema,
       where: r.user_id == ^uid,
       select: %{kind: type(^kind, :string), total: count()}
+    )
+  end
+
+  # The address arm of that union, filtered to the viewer's rungs.
+  defp addresses_count(uid, contact_scope) do
+    from(a in Address,
+      where: a.user_id == ^uid and a.visibility in ^contact_scope,
+      select: %{kind: type(^"addresses", :string), total: count()}
+    )
+  end
+
+  # The phone-number arm of that union, filtered to the viewer's rungs.
+  defp numbers_count(uid, contact_scope) do
+    from(p in PhoneNumber,
+      where: p.user_id == ^uid and p.visibility in ^contact_scope,
+      select: %{kind: type(^"numbers", :string), total: count()}
     )
   end
 
