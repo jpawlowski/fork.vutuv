@@ -79,7 +79,9 @@ Server discovery, login and the core social workflow:
   client's "Local" and "Federated" tabs — both used to be ignored, so the two
   tabs asked different questions and got one answer) and
   `/timelines/tag/:hashtag`
-- `GET /api/v1/notifications` (+ `/unread_count`, `/clear`, `/:id`)
+- `GET /api/v1/notifications` (+ `/unread_count`, `/clear`, `/:id`) and the
+  grouped `GET /api/v2/notifications` a 4.3+ client asks for
+- `GET` and `POST /api/v1/markers` — where a client left off reading
 - `GET /api/v1/bookmarks`, `/favourites`, `/blocks`, `/mutes`,
   `/accounts/:id/followers`, `/statuses/:id/favourited_by` and `/reblogged_by`
 - `PATCH /api/v1/accounts/update_credentials` and `POST /api/v1/reports`
@@ -425,6 +427,19 @@ answers when an instance has them switched off, because the difference between
 "off" and "not implemented" is the difference between an empty tab and an error
 a member is told to retry.
 
+**A reading position is stored now** (`Vutuv.MastodonApi.Markers`). `GET
+/api/v1/markers` answered a bare `{}` and there was no `POST` at all — which
+also meant the write fell through to the website's HTML error page — so the
+position was never kept and never restored, and relaunching an app dropped its
+timeline back to whatever it could fetch. It is the **client's** bookmark and
+deliberately not wired to vutuv's own unread marker
+(`users.notifications_read_at`): scrolling past a notification in a phone app is
+not having read it on the website, and one surface silently clearing another's
+badge is a worse answer than two honest ones. A page identity's position belongs
+to the page, the way its feed does. The stored id is kept exactly as the client
+sent it, prefix and all, because the ids this adapter mints are not all uuids
+and a bookmark whose entry is since gone must not fail a write.
+
 **`pinned=true` asks for the pinned post.** It was ignored on
 `/accounts/:id/statuses`, so a client rendering an account's pinned row got the
 whole timeline back and showed its newest entry as pinned — a member's only post
@@ -439,12 +454,11 @@ three reasons are spelled out in the 422 rather than collapsing into "The status
 is invalid", which sends a member looking for a mistake in their own text.
 
 - **Some startup stubs still answer empty.** `conversations`, `lists`,
-  `followed_tags`, `filters` and `markers` return `[]`/`{}`
-  (`MastodonApi.CompatibilityController`). Notifications no longer do. vutuv has
-  real filters (muted words and tags), real direct messages and real followed
-  tags behind three of those, so they are the next worthwhile ones. `markers` is
-  read-only: `POST /api/v1/markers` is not implemented, so a client's reading
-  position is not remembered across devices.
+  `followed_tags` and `filters` return `[]`
+  (`MastodonApi.CompatibilityController`). Notifications and markers no longer
+  do. vutuv has real filters (muted words and tags), real direct messages and
+  real followed tags behind three of those, so they are the next worthwhile
+  ones.
 - **A path this adapter does not implement answers JSON, on both hosts.** The
   subdomain always had a catch-all; the **main host** — the one a member types
   into a phone app, and so the one every client actually uses — did not, so an

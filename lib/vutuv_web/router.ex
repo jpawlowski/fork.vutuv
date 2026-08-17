@@ -344,6 +344,13 @@ defmodule VutuvWeb.Router do
       assigns: %{mastodon_scope: "read:statuses"}
     )
 
+    # The write half. Without it a client's reading position was never stored,
+    # so relaunching the app dropped its timeline back to whatever it could
+    # fetch — and the request itself fell through to the website's HTML 404.
+    post("/api/v1/markers", CompatibilityController, :put_markers,
+      assigns: %{mastodon_scope: "write:statuses"}
+    )
+
     # Trends, announcements and follow suggestions: served as the empty lists
     # Mastodon itself serves when an instance has them switched off. This site
     # has none of the three, and the difference between "off" and "not

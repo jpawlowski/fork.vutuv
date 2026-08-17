@@ -79,7 +79,7 @@ defmodule VutuvWeb.MastodonApi.ClientCompatibilityTest do
         conn
         |> Map.put(:host, "localhost")
         |> Plug.Conn.put_req_header("authorization", "Bearer " <> token)
-        |> post("/api/v1/markers", %{})
+        |> post("/api/v1/scheduled_statuses", %{})
 
       assert json_response(conn, 404) == %{"error" => "Record not found"}
     end
