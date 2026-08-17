@@ -12,6 +12,7 @@ defmodule Vutuv.MastodonApi.Presenter do
   alias Vutuv.Moderation.ImageScans
   alias Vutuv.Organizations
   alias Vutuv.Organizations.Organization
+  alias Vutuv.Organizations.OrganizationImage
   alias Vutuv.Posts
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostImage
@@ -54,7 +55,6 @@ defmodule Vutuv.MastodonApi.Presenter do
 
   def account(%Organization{} = organization, counts) do
     handle = organization.username || organization.slug
-    icon = fallback_avatar()
 
     base_account(%{
       id: organization.id,
@@ -64,8 +64,13 @@ defmodule Vutuv.MastodonApi.Presenter do
       note: note(organization.description),
       created_at: created_at(organization, organization.id),
       url: MastodonApi.main_url(Organizations.canonical_path(organization)),
-      avatar: icon,
+      avatar: organization_image(organization.logo),
       group: true
+    })
+    |> Map.merge(%{
+      header: organization_image(organization.cover),
+      header_static: organization_image(organization.cover),
+      avatar_static: organization_image(organization.logo)
     })
     |> Map.merge(count_fields(counts))
   end
@@ -282,6 +287,15 @@ defmodule Vutuv.MastodonApi.Presenter do
       absolute -> absolute
     end
   end
+
+  # A page's own logo and cover, which this used to skip entirely: every
+  # organization account was rendered with the installation's default icon, so a
+  # client showed the vutuv logo beside a page that has had a picture all along.
+  # `nil` (no picture stored) keeps the stand-in.
+  defp organization_image(nil), do: fallback_avatar()
+
+  defp organization_image(token),
+    do: MastodonApi.main_url(OrganizationImage.token_url(token, "large"))
 
   defp note_account(%Note{account_id: id} = note) when is_binary(id) do
     case Fediverse.get_remote_account(id) do

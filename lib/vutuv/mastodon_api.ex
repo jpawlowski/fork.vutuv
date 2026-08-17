@@ -61,6 +61,21 @@ defmodule Vutuv.MastodonApi do
   def main_url(path), do: absolute_url(local_domain(), path)
   def api_url(path), do: absolute_url(api_host(), path)
 
+  @doc """
+  The streaming endpoint as a client must dial it: the `ws(s)` form of
+  `client_url/2`, on the host this request arrived on.
+
+  Named on the caller's host for the same reason every other endpoint is — a
+  client that signed in on the main host would drop its bearer token crossing
+  to the subdomain, and the streaming socket authenticates with that token.
+  """
+  def streaming_url(host) do
+    host
+    |> client_url("/api/v1/streaming")
+    |> String.replace_prefix("https://", "wss://")
+    |> String.replace_prefix("http://", "ws://")
+  end
+
   defp absolute_url(host, path) do
     uri = URI.parse(Endpoint.url())
     URI.to_string(%{uri | host: host, path: path, query: nil, fragment: nil})

@@ -75,7 +75,10 @@ Server discovery, login and the core social workflow:
 - `GET /api/v2/search` — accounts, statuses and hashtags, plus exact
   `@user@host` resolution
 - `GET /api/v1/statuses/:id/context` and `/source`
-- `GET /api/v1/timelines/public` and `/timelines/tag/:hashtag`
+- `GET /api/v1/timelines/public` (honouring `local` / `remote`, which are a
+  client's "Local" and "Federated" tabs — both used to be ignored, so the two
+  tabs asked different questions and got one answer) and
+  `/timelines/tag/:hashtag`
 - `GET /api/v1/notifications` (+ `/unread_count`, `/clear`, `/:id`)
 - `GET /api/v1/bookmarks`, `/favourites`, `/blocks`, `/mutes`,
   `/accounts/:id/followers`, `/statuses/:id/favourited_by` and `/reblogged_by`
@@ -320,6 +323,32 @@ host test as the HTTP gate (`MastodonApi.client_host?/1`), so a client that
 signed in on the main host can open a stream there too — demanding the subdomain
 here let an app authenticate and then never connect.
 
+**That path is the whole address, and Phoenix does not serve it by default.**
+Mastodon's streaming endpoint *is* `wss://<host>/api/v1/streaming`, and
+`socket/3` appends the transport name unless told otherwise, so the socket
+answered only at `/api/v1/streaming/websocket` — a spelling no client has any
+reason to try. Measured 2026-08-17: 404 for the documented path against 101 for
+the suffixed one. It takes `websocket: [path: "/"]`, and the instance document
+has to *name* it (`configuration.urls.streaming`, v1's `urls.streaming_api`),
+which it answered as `nil`. Between the two, no client could open a stream at
+all, which an Ivory user reported as a home timeline that spun and then said
+"No Posts found" while Local and Federated — plain fetches, no stream — filled
+at once.
+
+**The instance document is read as a promise, so every figure in it is derived.**
+A client asks what this server can do *before* it does anything, and believes the
+answer: `configuration.media_attachments.supported_mime_types` is what a phone
+client converts a picture from the photo library **into**, and it was `[]`, so
+there was nothing to convert to and the camera's original HEIC went up and was
+refused with "Send a JPEG, PNG or WebP image". Beside it,
+`statuses.max_media_attachments` was `0` (posts take no pictures at all) and
+`media_attachments.image_size_limit` was `0`. All three now come from
+`Vutuv.Posts` and the uploader's own extension whitelist, so an installation
+whose libvips decodes HEIC advertises HEIC without anybody editing a list — and
+the media endpoint's refusal is written from the same whitelist, so the sentence
+a member reads after the upload has already gone up cannot contradict what the
+document promised.
+
 **A photo that has not cleared the AI scan holds the announcement, not the
 post.** `update` carries a finished status — an attachment list has no "still
 processing" state (only the media endpoint does, as a `null` url) and a client
@@ -374,7 +403,16 @@ than it asks for, or a decision that was left open on purpose.
   `followed_tags`, `filters` and `markers` return `[]`/`{}`
   (`MastodonApi.CompatibilityController`). Notifications no longer do. vutuv has
   real filters (muted words and tags), real direct messages and real followed
-  tags behind three of those, so they are the next worthwhile ones.
+  tags behind three of those, so they are the next worthwhile ones. `markers` is
+  read-only: `POST /api/v1/markers` is not implemented, so a client's reading
+  position is not remembered across devices.
+- **A path this adapter does not implement answers JSON, on both hosts.** The
+  subdomain always had a catch-all; the **main host** — the one a member types
+  into a phone app, and so the one every client actually uses — did not, so an
+  unrouted `/api/v1/…` fell through to the website and handed the client an HTML
+  error page where it expected an object. The catch-all names Mastodon's two
+  version prefixes only (`/api/v1/*`, `/api/v2/*`), so vutuv's own `/api/2.0` and
+  the site below it are untouched.
 - **vutuv's own notification kinds are not pushed or listed.** Tag
   endorsements, CV updates, moderation cases, role grants and handle changes
   have no Mastodon type; serving them under an invented one is worse than

@@ -440,6 +440,18 @@ defmodule VutuvWeb.Router do
     # `OauthController` handles a Mastodon-protocol app there — mirroring put
     # the subdomain's redirect-to-main-host controller in front of the consent
     # screen, which then pointed at itself.
+
+    # Everything under Mastodon's two version prefixes that this adapter does
+    # not implement, answered as JSON like the subdomain's catch-all — and only
+    # those two prefixes, so the website below is untouched (vutuv's own API is
+    # `/api/2.0`, a different word). A client decodes every body as JSON, and
+    # the main host is the one a member types into a phone app, so without this
+    # a startup call for something we simply do not have
+    # (`/api/v1/announcements`, `POST /api/v1/markers`, `/api/v1/trends/…`)
+    # handed the client the website's HTML error page. Last in the scope: a
+    # wildcard matches before any route defined after it.
+    match(:*, "/api/v1/*path", MastodonApi.DiscoveryController, :not_found)
+    match(:*, "/api/v2/*path", MastodonApi.DiscoveryController, :not_found)
   end
 
   scope "/", VutuvWeb.MastodonApi, host: "mastodon." do

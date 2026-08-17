@@ -76,6 +76,7 @@ defmodule Vutuv.Fediverse do
   alias Vutuv.Fediverse.RemoteImage
   alias Vutuv.Fediverse.RemotePost
   alias Vutuv.Handles
+  alias Vutuv.Keyset
   alias Vutuv.Organizations
   alias Vutuv.Organizations.Organization
   alias Vutuv.Pages
@@ -2473,6 +2474,39 @@ defmodule Vutuv.Fediverse do
       |> utc_at_or_before(cursor, :published_at)
       |> Repo.all()
       |> Enum.map(&remote_feed_entry/1)
+    else
+      []
+    end
+  end
+
+  @doc """
+  The public remote posts this installation holds, newest first — the federated
+  half of the Mastodon-compatible public timeline.
+
+  Viewer-independent, unlike every other reader here: a client's "Federated" tab
+  asks what the *instance* knows, not what one member follows. The gate is
+  therefore the strictest one, `audience == "public"` — not
+  `RemotePost.open_audiences/0`, which also lets a followers-only post through
+  for somebody who actually follows that account. Expired copies are left out
+  the way `Vutuv.Tags.Timeline.remote_posts_query/1` leaves them out.
+
+  Takes a `Vutuv.Keyset` window (`:max_id` / `:since_id` / `:min_id` / `:limit`),
+  so it walks by the same ids the local half does — every id here is a
+  `Vutuv.UUIDv7`, so ordering by id is ordering by when the post reached us,
+  which is what a federated timeline is ordered by anyway.
+  """
+  def recent_public_remote_posts(opts \\ []) do
+    if enabled?() do
+      from(p in RemotePost,
+        join: a in RemoteAccount,
+        on: a.id == p.remote_account_id,
+        where: p.audience == "public",
+        where: p.expires_at > ^DateTime.utc_now(:second),
+        preload: [:screenshot, remote_account: a]
+      )
+      |> Keyset.scope(opts)
+      |> Repo.all()
+      |> Keyset.restore(opts)
     else
       []
     end

@@ -78,12 +78,28 @@ defmodule VutuvWeb.MastodonApi.MediaController do
         |> json(%{error: "File exceeds #{Posts.max_image_filesize()} bytes"})
 
       {:error, _invalid} ->
-        validation_error(conn, "Send a JPEG, PNG or WebP image in the \"file\" field.")
+        validation_error(conn, "Send #{accepted_types()} in the \"file\" field.")
     end
   end
 
   defp upload(conn, _params, _ready_status),
     do: validation_error(conn, "Send multipart/form-data with the file in the \"file\" field.")
+
+  # Named from the uploader's own whitelist rather than typed out here. The
+  # fixed sentence said "a JPEG, PNG or WebP image" whatever the installation
+  # could really take, so an installation whose libvips decodes HEIC refused to
+  # admit it — and this is the message a member reads after the upload has
+  # already gone up, so it is the one place the answer has to be exact. What
+  # this endpoint accepts is also what `/api/v2/instance` advertises
+  # (`supported_mime_types`), which is where a client looks before it converts
+  # a picture out of the phone's photo library at all.
+  defp accepted_types do
+    Vutuv.PostImageStore.extension_whitelist()
+    |> Enum.map(&(&1 |> String.trim_leading(".") |> String.upcase()))
+    |> Enum.uniq()
+    |> Enum.join(", ")
+    |> then(&"an image (#{&1})")
+  end
 
   # Only the member's own, still-unattached uploads. An attached picture belongs
   # to its post from then on and is edited or removed through the status.

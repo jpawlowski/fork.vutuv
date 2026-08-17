@@ -9,7 +9,9 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
   alias Vutuv.MastodonApi
   alias Vutuv.MastodonApi.Scopes
   alias Vutuv.NodeInfo
+  alias Vutuv.Posts
   alias Vutuv.Posts.Post
+  alias Vutuv.Uploads.Spec
 
   @source_url "https://github.com/wintermeyer/vutuv"
   def instance_v2(conn, _params) do
@@ -31,7 +33,7 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
         }
       },
       languages: locales(),
-      configuration: configuration(),
+      configuration: configuration(conn),
       registrations: %{enabled: false, approval_required: false, message: nil},
       contact: %{email: "", account: nil},
       rules: []
@@ -48,7 +50,7 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
       description: node_description(),
       email: "",
       version: MastodonApi.compatibility_version(),
-      urls: %{streaming_api: nil},
+      urls: %{streaming_api: MastodonApi.streaming_url(conn.host)},
       stats: %{
         user_count: usage.users.total,
         status_count: usage.local_posts + usage.local_comments,
@@ -59,7 +61,7 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
       registrations: false,
       approval_required: false,
       invites_enabled: false,
-      configuration: configuration(),
+      configuration: configuration(conn),
       contact_account: nil,
       rules: [],
       max_toot_chars: Post.max_body_length()
@@ -90,21 +92,58 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
     })
   end
 
-  def not_found(conn, _params), do: send_resp(conn, 404, "")
+  @doc """
+  The answer for a Mastodon path this adapter does not implement.
 
-  defp configuration do
+  JSON, in Mastodon's own error shape, because a client decodes **every**
+  response body as JSON. On the main host — the one a member types into a phone
+  app, and so the one every client actually uses — an unrouted `/api/v1/…` used
+  to fall through to the website's HTML error page, so a startup call for a
+  resource we simply do not have (`/api/v1/announcements`, `/api/v1/trends/…`,
+  `POST /api/v1/markers`) handed the client a page of markup where it expected
+  an object. That is not a missing feature to a client, it is a broken server.
+  """
+  def not_found(conn, _params) do
+    conn |> put_status(404) |> json(%{error: "Record not found"})
+  end
+
+  # The MIME types the post-image uploader really accepts, from its own
+  # extension whitelist, so this cannot drift from what an upload does.
+  defp supported_mime_types do
+    Vutuv.PostImageStore.extension_whitelist()
+    |> Enum.map(&MIME.from_path("x" <> &1))
+    |> Enum.uniq()
+  end
+
+  # Mastodon states the pixel budget of an image, not its dimensions. Ours is
+  # the largest served version squared — a generous bound, since a picture is
+  # scaled down to that width anyway.
+  defp image_matrix_limit do
+    width = Spec.max_width(:post_image)
+    width * width
+  end
+
+  # What this installation can actually do. Every figure here used to be a zero
+  # or an empty list, and a client believes them: `supported_mime_types: []` is
+  # what a phone client reads before it converts a picture out of the photo
+  # library, so with nothing to convert *to* it uploads the camera's original
+  # HEIC, which the uploader then refuses — the "Send a JPEG, PNG or WebP image"
+  # a member saw after waiting for the upload. `max_media_attachments: 0` says
+  # posts take no pictures at all. They are derived now, so an installation
+  # whose libvips decodes HEIC advertises it without anybody editing this.
+  defp configuration(conn) do
     %{
-      urls: %{streaming: nil},
+      urls: %{streaming: MastodonApi.streaming_url(conn.host)},
       accounts: %{max_featured_tags: 10},
       statuses: %{
         max_characters: Post.max_body_length(),
-        max_media_attachments: 0,
+        max_media_attachments: Posts.max_images_per_post(),
         characters_reserved_per_url: 0
       },
       media_attachments: %{
-        supported_mime_types: [],
-        image_size_limit: 0,
-        image_matrix_limit: 0,
+        supported_mime_types: supported_mime_types(),
+        image_size_limit: Posts.max_image_filesize(),
+        image_matrix_limit: image_matrix_limit(),
         video_size_limit: 0,
         video_frame_rate_limit: 0,
         video_matrix_limit: 0

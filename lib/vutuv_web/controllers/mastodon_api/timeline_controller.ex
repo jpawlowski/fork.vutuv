@@ -13,6 +13,7 @@ defmodule VutuvWeb.MastodonApi.TimelineController do
 
   use VutuvWeb, :controller
 
+  alias Vutuv.Fediverse
   alias Vutuv.MastodonApi.Presenter
   alias Vutuv.Posts
   alias Vutuv.Tags
@@ -63,21 +64,62 @@ defmodule VutuvWeb.MastodonApi.TimelineController do
   # page identity engages as the page, a member as themselves.
   defp viewer(conn), do: conn.assigns.current_organization || conn.assigns.current_user
 
+  # `local=true` is this site's own posts, `remote=true` the ones that reached
+  # it from other networks, neither is both. Mastodon sends these as strings, and
+  # a client that means "off" may send `false` rather than leave the parameter
+  # out, so only a true-ish value narrows anything. Asking for both at once is
+  # the same request as asking for neither.
+  defp public_source(params) do
+    case {truthy?(params["local"]), truthy?(params["remote"])} do
+      {true, false} -> :vutuv
+      {false, true} -> :fediverse
+      _both_or_neither -> :all
+    end
+  end
+
+  defp truthy?(value), do: value in [true, "true", "1"]
+
+  defp public_items(:vutuv, page), do: Posts.recent_public_posts(:all, Pagination.opts(page))
+
+  defp public_items(:fediverse, page),
+    do: Fediverse.recent_public_remote_posts(Pagination.opts(page))
+
+  # Both halves, merged. They share no query but they do share an id space —
+  # every id here is a `Vutuv.UUIDv7`, so the same window bounds both and
+  # ordering by id orders the merge. Each side is asked for a full page, which
+  # is what keeps the merged page full however lopsided the two sources are.
+  defp public_items(:all, page) do
+    opts = Pagination.opts(page)
+
+    (Posts.recent_public_posts(:all, opts) ++ Fediverse.recent_public_remote_posts(opts))
+    |> Enum.sort_by(& &1.id, :desc)
+    |> then(fn merged -> if page.min_id, do: Enum.take(merged, -page.limit), else: merged end)
+    |> Enum.take(page.limit)
+  end
+
   @doc """
   The instance-wide public timeline.
 
-  Built on `Posts.recent_public_posts(:all, …)`, which is the site feed the RSS
+  Built on `Posts.recent_public_posts(source, …)`, which is the site feed the RSS
   aggregate already uses — and that matters: it lists only authors who opted out
   of **nothing**, neither of search engines nor of AI use. So this endpoint
   inherits vutuv's existing consent rule for aggregate surfaces rather than
   inventing a firehose the website does not offer.
+
+  **`local` and `remote` are what a client's "Local" and "Federated" tabs are.**
+  Both used to be ignored, so the two tabs asked different questions and got the
+  same answer — one list under two names, with the site's own posts and the
+  posts from other networks mixed into both. They map onto the `feed_sources`
+  split the website's own feed tabs use, so a tab means here what it means
+  there.
   """
   def public(conn, params) do
     page = Pagination.params(params)
 
     statuses =
-      :all
-      |> Posts.recent_public_posts(Pagination.opts(page))
+      params
+      |> public_source()
+      |> public_items(page)
       |> Presenter.statuses(viewer(conn))
 
     conn
