@@ -11,6 +11,7 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
 
   use Gettext, backend: VutuvWeb.Gettext
 
+  alias Vutuv.Accounts.User
   alias Vutuv.Fediverse
   alias Vutuv.Fediverse.Handle
   alias Vutuv.Fediverse.Note
@@ -137,20 +138,32 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
   @doc """
   A post published in an organization's name (issue #1334).
 
-  Deliberately a much smaller document than `build/3`, because the page it
-  describes is much smaller: an organization post carries no audience, so there
-  is nothing to say about restriction; it cannot be answered, so there is no
-  reply list and no thread; and it does not federate yet, so there are no remote
-  reactions. Every field that *is* here means the same thing it does on a
-  member's post, so a reader can treat the two alike.
+  A smaller document than `build/3`, because the page it describes is smaller:
+  an organization post carries no audience, so there is nothing to say about
+  restriction, and the member who pressed publish is **not** in this document
+  and must never be — that split is the whole point of `acting_user_id`, and a
+  `.json` sibling that leaked it would undo it. Everything else means exactly
+  what it does on a member's post, so a reader can treat the two alike.
 
-  The author is the organization. The member who pressed publish is **not** in
-  this document and must never be: that split is the whole point of
-  `acting_user_id`, and a `.json` sibling that leaked it would undo it.
+  **The conversation is one of those things** (issue #1336). This used to say a
+  page's post could not be answered and therefore had no reply list and no
+  thread, which stopped being true the moment answering was allowed — and the
+  remote half was never true at all, since the HTML page has rendered replies
+  from other networks since #1334. That is the drift `agent_docs_drift_test.exs`
+  exists to catch and does not cover here, so it has to be watched by hand: the
+  permalink hosts the same `VutuvWeb.PostLive.Thread` the member permalink does,
+  and these fields are what that thread shows.
+
+  Anonymous throughout, like every doc here — `nil` viewer to `list_replies/2`,
+  `list_thread/2` and `list_notes/2` alike, so a reply addressed to the page
+  alone (issue #1071) never leaves the page it was sent to.
   """
   def build_organization_post(%Organization{} = organization, %Post{} = post) do
     engagement = Posts.engagement_counts(post.id)
     counts = Posts.shown_counts(engagement)
+    replies = Posts.list_replies(post, nil)
+    %{posts: thread, truncated?: thread_truncated?} = Posts.list_thread(post, nil)
+    remote_replies = [post.id] |> Fediverse.list_notes(nil) |> remote_entries(post.id)
 
     AgentDocs.doc_meta("organization_post", Posts.path(post),
       noindex: not organization.seo?,
@@ -167,10 +180,22 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       tags: Enum.map(post.tags, & &1.name),
       images: post |> Posts.released_images() |> Enum.map(&image_entry/1),
       license: license_entry(post),
+      # Counted off the two loaded lists rather than re-queried, the same way
+      # `build/3` does it, so the figure and the entries under it cannot drift.
+      reply_count: length(replies) + length(remote_replies),
+      replies: Enum.map(replies, &reply_entry/1),
+      thread: thread_entries(thread),
+      thread_truncated: thread_truncated?,
       like_count: counts.likes,
       likers: Enum.map(Posts.post_likers(post.id), &AgentDocs.person_ref/1),
       repost_count: counts.reposts,
-      bookmark_count: engagement.bookmarks
+      bookmark_count: engagement.bookmarks,
+      fediverse_like_count: engagement.fediverse_likes,
+      fediverse_repost_count: engagement.fediverse_reposts,
+      fediverse_reaction_count: Posts.fediverse_reaction_count(engagement),
+      fediverse_reactions: reaction_entries(engagement),
+      fediverse_reply_count: engagement.fediverse_replies,
+      fediverse_replies: remote_replies
     })
   end
 
@@ -297,7 +322,11 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
   # hangs in the thread — the nesting the HTML page draws, as a number the
   # other formats can indent by.
   defp thread_entries(posts) do
-    authors = Map.new(posts, &{&1.id, UserHelpers.full_name(&1.user)})
+    # `UserHelpers.author_name/1`, not `full_name/1`: a conversation can hold a
+    # post published in a page's name (issue #1336 — a member may answer one),
+    # and `full_name/1` raised on it, so the `.md`/`.txt`/`.json`/`.xml` sibling
+    # of every answer to a page's post was a 500 while the HTML rendered fine.
+    authors = Map.new(posts, &{&1.id, UserHelpers.author_name(&1)})
     depths = thread_depths(posts)
 
     Enum.map(posts, fn post ->
@@ -306,8 +335,11 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       %{
         id: post.id,
         url: AgentDocs.abs_url(Posts.path(post)),
-        author: UserHelpers.full_name(post.user),
-        author_username: post.user.username,
+        author: UserHelpers.author_name(post),
+        # A page's handle is optional (`/organizations/:slug` always works), so
+        # nil here is the honest answer rather than a gap — `author` above names
+        # it either way.
+        author_username: author_username(Posts.author(post)),
         published_on: post.published_on,
         body_markdown: post.body,
         depth: depths[post.id],
@@ -316,6 +348,11 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       }
     end)
   end
+
+  # The handle beside the name, for whichever kind of author the post has. A page
+  # may never have claimed one, and nil is then the honest answer.
+  defp author_username(%Organization{username: username}), do: username
+  defp author_username(%User{username: username}), do: username
 
   # One pass suffices: reading order puts every post after the one it answers,
   # so its parent's depth is already known. A post whose parent is not in the
@@ -450,14 +487,18 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
 
   defp in_reply_to(post) do
     case Posts.reply_ref_state(post) do
+      # `author_name/1` on both, not `full_name/1`: the post answered may have
+      # been published in a page's name (issue #1336), and `full_name/1` has no
+      # clause for a page — it would raise on the `.md`/`.json` sibling of every
+      # answer to one, i.e. a 500 where the HTML card renders fine.
       {:parent, parent} ->
         %{
           url: AgentDocs.abs_url(Posts.path(parent)),
-          author: UserHelpers.full_name(parent.user)
+          author: UserHelpers.author_name(parent)
         }
 
       {:author_only, author} ->
-        %{url: nil, author: UserHelpers.full_name(author)}
+        %{url: nil, author: UserHelpers.author_name(author)}
 
       :gone ->
         %{url: nil, author: nil}
