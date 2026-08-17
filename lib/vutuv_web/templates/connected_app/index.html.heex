@@ -16,6 +16,21 @@
           <li class="flex flex-wrap items-start gap-3 py-4 first:pt-0 last:pb-0">
             <div class="min-w-0 flex-1">
               <p class="font-medium text-slate-800 dark:text-slate-100">{grant.app.name}</p>
+              <%!-- What tells two rows of the same name apart. A Mastodon client
+              registers its own OAuth app per install, so a member with the app
+              on a phone and a laptop sees two entries called "Ivory"; without
+              a time and a device there was nothing to choose the right one by,
+              and "withdraw access" was a guess. --%>
+              <%!-- Its own msgid, not the existing "Connected": that one is
+              translated "Vernetzt" for the mutual-follow relationship, and a
+              msgid is a key rather than a phrase. --%>
+              <p class="mt-0.5 text-sm text-slate-600 dark:text-slate-400">
+                {gettext("Connected on")}
+                <.local_time at={grant.connected_at} style={:datetime} />
+                <%= if grant.devices != [] do %>
+                  · {Enum.join(grant.devices, ", ")}
+                <% end %>
+              </p>
               <ul class="mt-1 space-y-0.5">
                 <li
                   :for={scope <- grant.scopes}

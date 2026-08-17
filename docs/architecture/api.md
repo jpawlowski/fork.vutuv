@@ -67,6 +67,21 @@ query parameter — `OAuth.validate_authorize/1` has already matched it against
 the app's registered `redirect_uris`, so the policy names a destination the
 server was going to redirect to anyway.
 
+**Who holds a credential, and who may take it away.** `/connected_apps` names,
+per authorization, when it was given and which devices still hold a live token
+under it (`Vutuv.ApiAuth.UserAgent` reads a short platform label out of the
+client string stored on the token; nothing recognisable stays "unknown device"
+rather than becoming a guess). That is not cosmetic: a Mastodon client registers
+a **new** OAuth app per install, so several installs are several rows of one
+name, and without a time and a device there was nothing to pick the right one
+by. The page twin is `/organizations/:slug/apps`, where the **owner** sees every
+token issued for the page — filtered by the issuing member, paged, each
+withdrawable on its own — because a member issues such a token of their own
+accord and until then only they could see or stop it. Turning the page's app
+access off withdraws them all, after a confirmation that names how many:
+leaving them alive would make the switch a lie, since they stop working while it
+is off and would come back the moment somebody turned it on again.
+
 **Webhooks** (`Vutuv.Webhooks`): per-app subscriptions deliver signed thin event
 envelopes (HMAC-SHA256 in `X-Vutuv-Signature`, ids/usernames only, never
 content) for members who granted the matching scope; DB-backed queue with

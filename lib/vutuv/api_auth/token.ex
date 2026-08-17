@@ -27,6 +27,11 @@ defmodule Vutuv.ApiAuth.Token do
     field(:scopes, {:array, :string}, default: [])
     field(:expires_at, :utc_datetime)
     field(:last_used_at, :utc_datetime)
+    # The client string of the request the token was minted from, so the
+    # Connected apps page can say which device a row belongs to (several
+    # installs of one Mastodon client are several rows of the same name).
+    # Stored whole and capped on the way in — see `Vutuv.ApiAuth.UserAgent`.
+    field(:user_agent, :string)
     field(:revoked_at, :utc_datetime)
 
     timestamps()

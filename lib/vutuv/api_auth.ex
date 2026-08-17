@@ -20,6 +20,7 @@ defmodule Vutuv.ApiAuth do
 
   alias Vutuv.Accounts.User
   alias Vutuv.ApiAuth.{App, AppToken, AuthCode, Grant, Token}
+  alias Vutuv.ApiAuth.UserAgent
   alias Vutuv.MastodonApi.PushSubscription
   alias Vutuv.{Moderation, Repo}
   alias Vutuv.Organizations.Organization
@@ -185,15 +186,51 @@ defmodule Vutuv.ApiAuth do
 
   # ── Grants (the user × app authorizations) ──
 
-  @doc "The user's active app authorizations, app preloaded — the Connected apps page."
+  @doc """
+  The user's active app authorizations, app preloaded — the Connected apps page.
+
+  Each grant carries two virtual fields the page needs to tell one row from the
+  next: `connected_at`, when the authorization was first given, and `devices`,
+  the distinct devices its live tokens were minted from
+  (`Vutuv.ApiAuth.UserAgent`). Both matter because a Mastodon client registers
+  a **new** OAuth app per install, so a member with the app on a phone and a
+  laptop sees two rows of the same name — and used to have nothing on them to
+  choose by.
+
+  One extra query for the whole list, not one per row.
+  """
   def list_grants(%User{} = user) do
-    Repo.all(
-      from(g in Grant,
-        where: g.user_id == ^user.id and is_nil(g.revoked_at),
-        order_by: [desc: g.updated_at],
-        preload: :app
+    grants =
+      Repo.all(
+        from(g in Grant,
+          where: g.user_id == ^user.id and is_nil(g.revoked_at),
+          order_by: [desc: g.updated_at],
+          preload: :app
+        )
       )
+
+    devices = grant_devices(Enum.map(grants, & &1.id))
+
+    Enum.map(grants, fn grant ->
+      %{grant | connected_at: grant.inserted_at, devices: Map.get(devices, grant.id, [])}
+    end)
+  end
+
+  # The devices behind each grant, from its live tokens. A rotation carries the
+  # device forward, so a long-lived session stays one entry rather than growing
+  # one per refresh.
+  defp grant_devices([]), do: %{}
+
+  defp grant_devices(grant_ids) do
+    from(t in Token,
+      where: t.grant_id in ^grant_ids and is_nil(t.revoked_at) and not is_nil(t.user_agent),
+      select: {t.grant_id, t.user_agent}
     )
+    |> Repo.all()
+    |> Enum.group_by(&elem(&1, 0), &UserAgent.label(elem(&1, 1)))
+    |> Map.new(fn {grant_id, labels} ->
+      {grant_id, labels |> Enum.reject(&is_nil/1) |> Enum.uniq()}
+    end)
   end
 
   def get_grant(%User{} = user, id) do
@@ -217,6 +254,132 @@ defmodule Vutuv.ApiAuth do
       end)
 
     grant
+  end
+
+  # ── An organization's app tokens (the owner's oversight) ──
+
+  @doc """
+  How many entries one page of `organization_tokens/3` holds.
+  """
+  def organization_tokens_per_page, do: 25
+
+  @doc """
+  One page of the live tokens issued **for** `organization`, newest first, with
+  the member who issued each one and the app it belongs to.
+
+  A member turns a page's app access into a token of their own accord, and until
+  now only that member could see or withdraw it — so an owner could not tell who
+  was reaching the page from an app, let alone stop one. `query` filters by the
+  issuing member (name or handle, case-insensitive), because on a page with a
+  large Editorial team "who issued this" is the only question that narrows a
+  list of look-alike rows.
+
+  Returns `%{entries:, total:, page:, pages:}` — offset paging rather than the
+  keyset the API lists use, because this one is a table somebody scans with a
+  filter, and it needs a total to say how much there is.
+  """
+  def organization_tokens(%Organization{} = organization, query \\ nil, page \\ 1) do
+    base = organization_tokens_query(organization, query)
+    total = Repo.aggregate(base, :count)
+    per_page = organization_tokens_per_page()
+
+    page = max(page, 1)
+    # Computed here, not in the query: `offset(^a * ^b)` sends the
+    # multiplication to Postgres, which cannot type two unknown parameters and
+    # answers 42725 "operator is not unique: unknown * unknown".
+    skip = (page - 1) * per_page
+
+    entries =
+      base
+      |> order_by([t], desc: t.inserted_at, desc: t.id)
+      |> limit(^per_page)
+      |> offset(^skip)
+      |> preload([:user, :app])
+      |> Repo.all()
+
+    %{entries: entries, total: total, page: page, pages: Vutuv.Pages.total_pages(total, per_page)}
+  end
+
+  defp organization_tokens_query(%Organization{id: organization_id}, query) do
+    from(t in Token,
+      join: u in assoc(t, :user),
+      where: t.organization_id == ^organization_id and is_nil(t.revoked_at),
+      where: is_nil(t.expires_at) or t.expires_at > ^DateTime.utc_now(:second)
+    )
+    |> filter_by_issuer(query)
+  end
+
+  defp filter_by_issuer(query, term) when is_binary(term) do
+    case String.trim(term) do
+      "" ->
+        query
+
+      trimmed ->
+        like = "%" <> trimmed <> "%"
+
+        from([t, u] in query,
+          where:
+            ilike(u.username, ^like) or ilike(u.first_name, ^like) or ilike(u.last_name, ^like)
+        )
+    end
+  end
+
+  defp filter_by_issuer(query, _absent), do: query
+
+  @doc """
+  Withdraws one of an organization's app tokens, as its owner.
+
+  Scoped to the organization in the query rather than checked afterwards: an id
+  belonging to some other page's token must not be revocable from here, and the
+  cheapest way to guarantee that is for the row never to be found.
+  """
+  def revoke_organization_token(%Organization{id: organization_id}, id) do
+    Vutuv.UUIDv7.with_cast(id, fn uuid ->
+      from(t in Token,
+        where: t.id == ^uuid and t.organization_id == ^organization_id and is_nil(t.revoked_at)
+      )
+      |> Repo.one()
+      |> case do
+        nil ->
+          {:error, :not_found}
+
+        %Token{} = token ->
+          drop_push_subscriptions!(from(t in Token, where: t.id == ^token.id, select: t.id))
+
+          {1, _} =
+            Repo.update_all(from(t in Token, where: t.id == ^token.id),
+              set: [revoked_at: DateTime.utc_now(:second)]
+            )
+
+          {:ok, token}
+      end
+    end) || {:error, :not_found}
+  end
+
+  @doc """
+  Withdraws **every** live app token issued for `organization`, and answers how
+  many there were.
+
+  This is what turning the page's app access off has to do. Leaving the tokens
+  alive would make the switch a lie: `Vutuv.MastodonApi.Access.authorize_token/2`
+  re-checks the flag on every request, so they would stop working — but they
+  would still be listed, still be revocable, and would come back to life the
+  moment somebody turned the switch on again, which is not what "off" means to
+  the person who pressed it.
+  """
+  def revoke_organization_tokens!(%Organization{id: organization_id}) do
+    live =
+      from(t in Token, where: t.organization_id == ^organization_id and is_nil(t.revoked_at))
+
+    drop_push_subscriptions!(from(t in live, select: t.id))
+
+    {count, _} = Repo.update_all(live, set: [revoked_at: DateTime.utc_now(:second)])
+    count
+  end
+
+  @doc "How many live app tokens are issued for `organization` — the switch's confirmation."
+  def count_organization_tokens(%Organization{} = organization) do
+    organization |> organization_tokens_query(nil) |> Repo.aggregate(:count)
   end
 
   @doc false

@@ -23,6 +23,7 @@ defmodule VutuvWeb.OauthController do
   use VutuvWeb, :controller
 
   alias Vutuv.ApiAuth.OAuth
+  alias Vutuv.ApiAuth.UserAgent
   alias Vutuv.MastodonApi.Access
   alias VutuvWeb.Plug.ContentSecurityPolicy
   alias VutuvWeb.RateLimit
@@ -174,11 +175,11 @@ defmodule VutuvWeb.OauthController do
   # ── The token endpoints (machine pipeline, no session/CSRF) ──
 
   def token(conn, %{"grant_type" => "authorization_code"} = params) do
-    token_response(conn, OAuth.exchange(params))
+    token_response(conn, OAuth.exchange(params, UserAgent.capture(conn)))
   end
 
   def token(conn, %{"grant_type" => "refresh_token"} = params) do
-    token_response(conn, OAuth.refresh(params))
+    token_response(conn, OAuth.refresh(params, UserAgent.capture(conn)))
   end
 
   # RFC 6749 §4.4, which Mastodon's token endpoint answers: a token for the app
