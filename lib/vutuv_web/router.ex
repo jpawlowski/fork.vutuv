@@ -302,6 +302,12 @@ defmodule VutuvWeb.Router do
       assigns: %{mastodon_scope: "read:notifications"}
     )
 
+    # The grouped list a 4.3+ client asks for. We advertise 4.4 compatibility,
+    # and a client reads that version to decide which of the two to call.
+    get("/api/v2/notifications", NotificationController, :grouped,
+      assigns: %{mastodon_scope: "read:notifications"}
+    )
+
     get("/api/v1/notifications/unread_count", NotificationController, :unread_count,
       assigns: %{mastodon_scope: "read:notifications"}
     )
@@ -336,6 +342,36 @@ defmodule VutuvWeb.Router do
 
     get("/api/v1/markers", CompatibilityController, :markers,
       assigns: %{mastodon_scope: "read:statuses"}
+    )
+
+    # Trends, announcements and follow suggestions: served as the empty lists
+    # Mastodon itself serves when an instance has them switched off. This site
+    # has none of the three, and the difference between "off" and "not
+    # implemented" is the difference between an empty tab and Ice Cubes'
+    # "an error occurred while loading posts, please try again" — which is what
+    # its Trending and News tabs showed.
+    get("/api/v1/trends/statuses", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:statuses"}
+    )
+
+    get("/api/v1/trends/tags", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:statuses"}
+    )
+
+    get("/api/v1/trends/links", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:statuses"}
+    )
+
+    get("/api/v1/announcements", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:accounts"}
+    )
+
+    get("/api/v1/suggestions", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:accounts"}
+    )
+
+    get("/api/v2/suggestions", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:accounts"}
     )
 
     get("/api/v1/timelines/home", TimelineController, :home,

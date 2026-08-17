@@ -85,7 +85,7 @@ defmodule VutuvWeb.MastodonApi.ClientCompatibilityTest do
     end
 
     test "and on the API subdomain", %{conn: conn, token: token} do
-      conn = conn |> mastodon_conn(token) |> get("/api/v1/announcements")
+      conn = conn |> mastodon_conn(token) |> get("/api/v1/scheduled_statuses")
 
       assert json_response(conn, 404) == %{"error" => "Record not found"}
     end

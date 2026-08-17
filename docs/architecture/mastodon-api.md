@@ -399,6 +399,45 @@ pair (`docs/ADMINS.md`).
 Nothing here is a bug in what ships; each is a place where a client sees less
 than it asks for, or a decision that was left open on purpose.
 
+**A client parses shapes it never asks about, and the times are one of them.**
+Mastodon stamps every time as `2019-11-26T22:37:36.000Z`, always with three
+fractional digits, and Apple's `ISO8601DateFormatter` with
+`.withFractionalSeconds` — what an Ivory or Ice Cubes builds once and reuses —
+**fails outright** on a string without them. A client that cannot parse a date
+falls back to "now", so every post in the timeline carried the moment the
+account was added to the app, all showing the same relative time. Second
+precision is enough for us; printing it in Mastodon's shape is what makes it
+readable. `Presenter.timestamp/1` is the one owner of that shape — the
+notification list used to hold a second copy, which kept second precision after
+the other was fixed.
+
+**Advertising a version is a promise about the shape of the API.** This adapter
+says it is compatible with 4.4, and a client reads that to decide which
+endpoints exist: Ice Cubes therefore calls `GET /api/v2/notifications` (the
+grouped list, 4.3+), which answered 404 while the v1 list beside it was fine —
+its whole notifications tab, and its "@ mentions" page, showed "an error
+occurred". The grouped list is served from the same derived items, with the
+accounts and statuses hoisted into two shared lists; a group is one type over
+one status, which is what makes several likes on one post a single row. The same
+reasoning covers the tabs that have no content here: `trends/statuses|tags|links`,
+`announcements` and `suggestions` answer the **empty list** Mastodon itself
+answers when an instance has them switched off, because the difference between
+"off" and "not implemented" is the difference between an empty tab and an error
+a member is told to retry.
+
+**`pinned=true` asks for the pinned post.** It was ignored on
+`/accounts/:id/statuses`, so a client rendering an account's pinned row got the
+whole timeline back and showed its newest entry as pinned — a member's only post
+looked pinned although they had never pinned anything. vutuv has a real pin
+(`users.pinned_post_id`, #1110), so the answer is that one post or none; a page
+and a remote account have no pin of their own and answer the empty list.
+
+**Where vutuv's rules are stricter than Mastodon's, the refusal says which
+rule.** Editing closes once a post is liked, boosted or answered, and once the
+edit window has passed (`Posts.update_post/2`) — Mastodon allows both. Those
+three reasons are spelled out in the 422 rather than collapsing into "The status
+is invalid", which sends a member looking for a mistake in their own text.
+
 - **Some startup stubs still answer empty.** `conversations`, `lists`,
   `followed_tags`, `filters` and `markers` return `[]`/`{}`
   (`MastodonApi.CompatibilityController`). Notifications no longer do. vutuv has

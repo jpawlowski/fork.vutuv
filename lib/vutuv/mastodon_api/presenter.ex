@@ -418,17 +418,41 @@ defmodule Vutuv.MastodonApi.Presenter do
 
   defp safe_html(value), do: value |> Safe.to_iodata() |> IO.iodata_to_binary()
 
-  defp timestamp(%NaiveDateTime{} = value),
-    do: value |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_iso8601()
+  @doc """
+  A time in Mastodon's shape, and the **one** place that decides it.
 
-  defp timestamp(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  Public because notifications render their own rows: the same conversion
+  existed twice, which is how one of them kept second precision after the other
+  was fixed. See the comment below for why the milliseconds matter.
+  """
+  def timestamp(value)
+
+  # **Milliseconds are not decoration.** Mastodon stamps every time as
+  # `2019-11-26T22:37:36.000Z`, always with three fractional digits, and the
+  # clients are written against exactly that: Apple's `ISO8601DateFormatter`
+  # with `.withFractionalSeconds` — what an Ivory or Ice Cubes builds once and
+  # reuses — **fails outright** on a string without them, and a client that
+  # cannot parse a date falls back to "now". So every post in the timeline
+  # carried the moment the account was added to the app, all with the same
+  # relative time, which is what a member reported. Second precision is enough
+  # for us; printing it in Mastodon's shape is what makes it readable.
+  def timestamp(%NaiveDateTime{} = value),
+    do: value |> DateTime.from_naive!("Etc/UTC") |> timestamp()
+
+  def timestamp(%DateTime{} = value) do
+    value
+    |> DateTime.shift_zone!("Etc/UTC")
+    |> DateTime.truncate(:millisecond)
+    |> Map.put(:microsecond, {elem(value.microsecond, 0), 3})
+    |> DateTime.to_iso8601()
+  end
 
   # Not every caller hands over a fully loaded row: `Vutuv.Search` selects the
   # few columns a result list needs, so `inserted_at` can be absent. Raising
   # over a missing display timestamp would be the wrong trade, and there is a
   # better answer than nil — the id is a UUIDv7 and carries its own creation
   # time.
-  defp timestamp(_missing), do: nil
+  def timestamp(_missing), do: nil
 
   defp created_at(%{inserted_at: at}, _id) when not is_nil(at), do: timestamp(at)
   defp created_at(_record, id), do: timestamp(UUIDv7.timestamp(id))

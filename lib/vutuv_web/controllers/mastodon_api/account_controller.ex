@@ -84,6 +84,25 @@ defmodule VutuvWeb.MastodonApi.AccountController do
     json(conn, relationships)
   end
 
+  def statuses(conn, %{"id" => id, "pinned" => pinned})
+      when pinned in [true, "true", "1"] do
+    # **`pinned=true` asks for the pinned post, not for the timeline.** It was
+    # ignored, so a client showing an account's pinned row got the whole
+    # timeline back and treated its newest entry as pinned — a member's only
+    # post appeared "pinned" although they had never pinned anything. vutuv has
+    # a real pin (`users.pinned_post_id`, issue #1110), so the honest answer is
+    # that one post, or none. A page has no pin of its own, and neither does a
+    # remote account we only cache, so both answer the empty list rather than
+    # their newest post.
+    posts =
+      case target(conn, id) do
+        %User{} = user -> user |> Posts.pinned_post(profile_viewer(conn)) |> List.wrap()
+        _page_or_remote -> []
+      end
+
+    json(conn, Presenter.statuses(posts, viewer(conn)))
+  end
+
   def statuses(conn, %{"id" => id} = params) do
     page = Pagination.params(params, strip: &bare_id/1)
     opts = Pagination.opts(page)
