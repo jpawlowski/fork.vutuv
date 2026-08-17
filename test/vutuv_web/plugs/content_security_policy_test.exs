@@ -40,6 +40,103 @@ defmodule VutuvWeb.Plug.ContentSecurityPolicyTest do
     assert policy =~ "default-src 'self'"
   end
 
+  # `form-action` is enforced on every hop of a submission, redirects included,
+  # and POST /oauth/authorize answers 302 to the client's callback. Under a bare
+  # `form-action 'self'` the browser blocks that hop: the POST lands, a code is
+  # minted, and the member is left on the consent screen with no token and no
+  # error — the Ivory report ("nothing happens when I tap Allow"). Reverting
+  # VutuvWeb.Plug.ContentSecurityPolicy.allow_form_action/2 must turn these red.
+  defp consent_policy(conn, redirect_uri) do
+    {:ok, app, _secret} =
+      Vutuv.ApiAuth.create_mastodon_app(%{
+        "name" => "Phone Client",
+        "redirect_uris" => [redirect_uri],
+        "registered_scopes" => ["read"]
+      })
+
+    query =
+      URI.encode_query(%{
+        "response_type" => "code",
+        "client_id" => app.client_id,
+        "redirect_uri" => redirect_uri,
+        "scope" => "read"
+      })
+
+    conn = get(conn, "/oauth/authorize?#{query}")
+    assert html_response(conn, 200) =~ "Phone Client"
+    csp(conn)
+  end
+
+  describe "form-action on the OAuth consent screen" do
+    setup %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+      {:ok, conn: conn, user: user}
+    end
+
+    test "a native client's scheme is allowed, so the ivory:// hop is not blocked",
+         %{conn: conn} do
+      assert consent_policy(conn, "ivory://oauth-callback") =~ "form-action 'self' ivory:;"
+    end
+
+    test "an https callback is allowed by exact origin, not by wildcard", %{conn: conn} do
+      policy = consent_policy(conn, "https://client.example.org/cb")
+
+      assert policy =~ "form-action 'self' https://client.example.org;"
+      refute policy =~ "form-action 'self' *"
+    end
+
+    test "the approve response carries it too", %{conn: conn, user: user} do
+      # Consent for a Mastodon client needs the member's own kill switch on.
+      user |> Ecto.Changeset.change(%{mastodon_clients?: true}) |> Repo.update!()
+
+      {:ok, app, _secret} =
+        Vutuv.ApiAuth.create_mastodon_app(%{
+          "name" => "Phone Client",
+          "redirect_uris" => ["ivory://oauth-callback"],
+          "registered_scopes" => ["read"]
+        })
+
+      params = %{
+        "response_type" => "code",
+        "client_id" => app.client_id,
+        "redirect_uri" => "ivory://oauth-callback",
+        "scope" => "read"
+      }
+
+      conn = get(conn, "/oauth/authorize?#{URI.encode_query(params)}")
+      conn = submit_with_csrf(conn, "/oauth/authorize", Map.put(params, "decision", "allow"))
+
+      assert redirected_to(conn) =~ "ivory://oauth-callback?code="
+      assert csp(conn) =~ "form-action 'self' ivory:;"
+    end
+
+    test "every other page keeps the bare directive", %{conn: conn} do
+      assert csp(get(conn, ~p"/")) =~ "form-action 'self';"
+    end
+  end
+
+  describe "form_action_source/1" do
+    alias VutuvWeb.Plug.ContentSecurityPolicy
+
+    test "http(s) gets an origin, a default port is left off" do
+      assert ContentSecurityPolicy.form_action_source("https://a.example/cb") ==
+               "https://a.example"
+
+      assert ContentSecurityPolicy.form_action_source("http://localhost:4000/cb") ==
+               "http://localhost:4000"
+    end
+
+    test "a native scheme gets the scheme, whatever shape the rest has" do
+      assert ContentSecurityPolicy.form_action_source("ivory://oauth-callback") == "ivory:"
+      assert ContentSecurityPolicy.form_action_source("com.example.app:/cb") == "com.example.app:"
+    end
+
+    test "nothing usable yields nil, so the policy is left alone" do
+      assert ContentSecurityPolicy.form_action_source("/relative") == nil
+      assert ContentSecurityPolicy.form_action_source(nil) == nil
+    end
+  end
+
   test "the strict default never allows eval (the dev escape hatch is off here)",
        %{conn: conn} do
     # `script-src 'self' 'unsafe-eval'` is added only when

@@ -8,6 +8,12 @@ defmodule VutuvWeb.OauthController do
   is CSRF-protected like every browser form and re-validates the request
   before minting the code, so nothing tampered survives the round trip.
 
+  Both legs re-stamp the CSP so `form-action` names the app's registered
+  redirect URI: the site's blanket `form-action 'self'` is enforced on the
+  redirect this endpoint answers with, and would otherwise leave the member
+  staring at the consent screen with a minted code they never receive. See
+  `VutuvWeb.Plug.ContentSecurityPolicy`.
+
   `POST /oauth/token` and `POST /oauth/revoke` are machine endpoints
   (form-encoded in, JSON out, no session/CSRF). Client/redirect problems
   never redirect — an authorize endpoint that redirects on a bad
@@ -18,6 +24,7 @@ defmodule VutuvWeb.OauthController do
 
   alias Vutuv.ApiAuth.OAuth
   alias Vutuv.MastodonApi.Access
+  alias VutuvWeb.Plug.ContentSecurityPolicy
   alias VutuvWeb.RateLimit
 
   @oob_redirect "urn:ietf:wg:oauth:2.0:oob"
@@ -30,7 +37,11 @@ defmodule VutuvWeb.OauthController do
         if conn.assigns[:current_user] do
           identities = identities(conn.assigns.current_user, request)
 
-          render(conn, "authorize.html",
+          # The consent screen owns the form, so its policy is the one the
+          # browser checks the POST's redirect against.
+          conn
+          |> ContentSecurityPolicy.allow_form_action(request.redirect_uri)
+          |> render("authorize.html",
             request: request,
             params: params,
             identities: identities,
@@ -60,7 +71,12 @@ defmodule VutuvWeb.OauthController do
 
     case user && OAuth.validate_authorize(params) do
       {:ok, request} ->
-        decide(conn, user, request, decision)
+        # Belt and braces: the consent screen's policy is what a browser
+        # enforces here, but a client that re-POSTs this endpoint from a page
+        # of its own gets the same permission from the response itself.
+        conn
+        |> ContentSecurityPolicy.allow_form_action(request.redirect_uri)
+        |> decide(user, request, decision)
 
       _invalid_or_logged_out ->
         conn
