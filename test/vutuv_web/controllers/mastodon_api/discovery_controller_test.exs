@@ -67,7 +67,12 @@ defmodule VutuvWeb.MastodonApi.DiscoveryControllerTest do
     end
 
     test "does not expose the website through the API origin", %{conn: conn} do
-      assert conn |> on_mastodon_host() |> get("/") |> response(404)
+      # The root sends a person who typed the technical name to the site; what
+      # must not happen is this origin *serving* a page of its own, so the claim
+      # is checked where it matters — on a real site path.
+      assert redirected_to(conn |> on_mastodon_host() |> get("/")) == "http://localhost:4001/"
+
+      assert conn |> on_mastodon_host() |> get("/system/members") |> response(404)
     end
 
     test "returns 404 when the installation switch is off", %{conn: conn} do

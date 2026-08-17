@@ -90,6 +90,14 @@ defmodule VutuvWeb.MastodonApi.ClientCompatibilityTest do
       assert json_response(conn, 404) == %{"error" => "Record not found"}
     end
 
+    test "the root of the API host sends a person to the site", %{conn: conn} do
+      # Everything else on that origin answers JSON, which is right for a client
+      # and a dead end for somebody who typed the technical name by hand.
+      conn = conn |> on_mastodon_host() |> get("/")
+
+      assert redirected_to(conn) == "http://localhost:4001/"
+    end
+
     test "leaves the website alone", %{conn: conn} do
       # The catch-all names Mastodon's two version prefixes only, so a site path
       # still gets the site's own answer and not this JSON error.

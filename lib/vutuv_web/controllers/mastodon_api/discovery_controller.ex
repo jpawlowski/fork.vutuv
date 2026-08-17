@@ -93,6 +93,17 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
   end
 
   @doc """
+  The root of the technical API host, for the person who typed it.
+
+  Everything on this origin is for a client, and every other path answers JSON,
+  so the one address a human plausibly reaches by hand deserves the site rather
+  than an error. It is a redirect and not a page on purpose: this host must not
+  start serving anything readable, or it becomes a second address for the same
+  content.
+  """
+  def root(conn, _params), do: redirect(conn, external: MastodonApi.main_url("/"))
+
+  @doc """
   The answer for a Mastodon path this adapter does not implement.
 
   JSON, in Mastodon's own error shape, because a client decodes **every**

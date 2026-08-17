@@ -492,6 +492,16 @@ defmodule VutuvWeb.Router do
 
   scope "/", VutuvWeb.MastodonApi, host: "mastodon." do
     pipe_through(:mastodon_api)
+
+    # Somebody typed the technical name into a browser. Nothing here is for
+    # reading — the catch-all below answers every other path as JSON, which is
+    # right for a client and a dead end for a person — so send them to the site.
+    # (On vutuv.de this host is not served at all today: the DNS record exists
+    # without the certificate and the `server_name` that have to come with it,
+    # so nginx answers from its default virtual host and the app never sees the
+    # request. See the `MASTODON_API_ENABLED` row in `docs/ADMINS.md`.)
+    get("/", DiscoveryController, :root)
+
     match(:*, "/*path", DiscoveryController, :not_found)
   end
 
