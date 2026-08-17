@@ -11,6 +11,7 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
 
   use Gettext, backend: VutuvWeb.Gettext
 
+  alias Vutuv.Accounts.User
   alias Vutuv.Fediverse
   alias Vutuv.Fediverse.Handle
   alias Vutuv.Fediverse.Note
@@ -181,6 +182,9 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
   defp author_label(%Organization{name: name}), do: name
   defp author_label(author), do: UserHelpers.full_name(author)
 
+  defp author_username(%Organization{username: username}), do: username
+  defp author_username(%User{username: username}), do: username
+
   # The organization's own reference, the counterpart of `AgentDocs.person_ref/1`.
   # `canonical_path/1` prefers the page's opt-in root handle, so the URL here is
   # the one the page answers to rather than the slug form the post lives under.
@@ -302,7 +306,11 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
   # hangs in the thread — the nesting the HTML page draws, as a number the
   # other formats can indent by.
   defp thread_entries(posts) do
-    authors = Map.new(posts, &{&1.id, UserHelpers.full_name(&1.user)})
+    # `author_label/1`, not `full_name/1`: a conversation can hold a post
+    # published in a page's name (issue #1336 — a member may answer one), and
+    # `full_name/1` raised on it, so the `.md`/`.txt`/`.json`/`.xml` sibling of
+    # every answer to a page's post was a 500 while the HTML rendered fine.
+    authors = Map.new(posts, &{&1.id, timeline_author(&1)})
     depths = thread_depths(posts)
 
     Enum.map(posts, fn post ->
@@ -311,8 +319,11 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       %{
         id: post.id,
         url: AgentDocs.abs_url(Posts.path(post)),
-        author: UserHelpers.full_name(post.user),
-        author_username: post.user.username,
+        author: timeline_author(post),
+        # A page's handle is optional (`/organizations/:slug` always works), so
+        # nil here is the honest answer rather than a gap — `author` above names
+        # it either way.
+        author_username: author_username(Posts.author(post)),
         published_on: post.published_on,
         body_markdown: post.body,
         depth: depths[post.id],
@@ -455,14 +466,18 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
 
   defp in_reply_to(post) do
     case Posts.reply_ref_state(post) do
+      # `author_label/1` on both, not `full_name/1`: the post answered may have
+      # been published in a page's name (issue #1336), and `full_name/1` has no
+      # clause for a page — it would raise on the `.md`/`.json` sibling of every
+      # answer to one, i.e. a 500 where the HTML card renders fine.
       {:parent, parent} ->
         %{
           url: AgentDocs.abs_url(Posts.path(parent)),
-          author: UserHelpers.full_name(parent.user)
+          author: author_label(Posts.author(parent))
         }
 
       {:author_only, author} ->
-        %{url: nil, author: UserHelpers.full_name(author)}
+        %{url: nil, author: author_label(author)}
 
       :gone ->
         %{url: nil, author: nil}
