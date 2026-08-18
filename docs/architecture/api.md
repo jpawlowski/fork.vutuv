@@ -51,6 +51,37 @@ that fails every app token on its next request), members approve scopes on the
 `/oauth/authorize` consent screen and manage/withdraw access at
 `/connected_apps`.
 
+The consent screen is the one page whose form is *meant* to end up off-site,
+and that collides with the site-wide `form-action 'self'` in
+`VutuvWeb.Plug.ContentSecurityPolicy`: browsers enforce `form-action` on every
+hop of a submission, **redirects included**, so the 302 to the client's
+`redirect_uri` (`ivory://…` for a phone client, an off-origin `https://`
+callback for a web one) was refused. Nothing about that failure is visible —
+the POST arrives, the code is minted, and the member is left on the consent
+screen with no token and no error, which is what an Ivory user reported as a
+dead "Allow access" button. So both legs of `/oauth/authorize` re-stamp the
+policy through `ContentSecurityPolicy.allow_form_action/2` with the app's
+**validated** redirect URI: the exact origin for `http(s)`, the bare scheme
+(`ivory:`) for a native client's own scheme. It is never built from the raw
+query parameter — `OAuth.validate_authorize/1` has already matched it against
+the app's registered `redirect_uris`, so the policy names a destination the
+server was going to redirect to anyway.
+
+**Who holds a credential, and who may take it away.** `/connected_apps` names,
+per authorization, when it was given and which devices still hold a live token
+under it (`Vutuv.ApiAuth.UserAgent` reads a short platform label out of the
+client string stored on the token; nothing recognisable stays "unknown device"
+rather than becoming a guess). That is not cosmetic: a Mastodon client registers
+a **new** OAuth app per install, so several installs are several rows of one
+name, and without a time and a device there was nothing to pick the right one
+by. The page twin is `/organizations/:slug/apps`, where the **owner** sees every
+token issued for the page — filtered by the issuing member, paged, each
+withdrawable on its own — because a member issues such a token of their own
+accord and until then only they could see or stop it. Turning the page's app
+access off withdraws them all, after a confirmation that names how many:
+leaving them alive would make the switch a lie, since they stop working while it
+is off and would come back the moment somebody turned it on again.
+
 **Webhooks** (`Vutuv.Webhooks`): per-app subscriptions deliver signed thin event
 envelopes (HMAC-SHA256 in `X-Vutuv-Signature`, ids/usernames only, never
 content) for members who granted the matching scope; DB-backed queue with

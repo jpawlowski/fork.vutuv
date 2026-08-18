@@ -5036,7 +5036,7 @@ msgstr ""
 msgid "One per line. Exact https:// URLs (http://localhost is allowed for development). The authorization flow only ever redirects to these."
 msgstr ""
 
-#: lib/vutuv_web/controllers/oauth_controller.ex:44
+#: lib/vutuv_web/controllers/oauth_controller.ex:56
 #, elixir-autogen, elixir-format
 msgid "Please log in to connect %{app} with your account."
 msgstr ""
@@ -5145,12 +5145,12 @@ msgstr ""
 msgid "Token URL:"
 msgstr ""
 
-#: lib/vutuv_web/templates/connected_app/index.html.heex:38
+#: lib/vutuv_web/templates/connected_app/index.html.heex:53
 #, elixir-autogen, elixir-format
 msgid "Withdraw access"
 msgstr ""
 
-#: lib/vutuv_web/templates/connected_app/index.html.heex:33
+#: lib/vutuv_web/templates/connected_app/index.html.heex:48
 #, elixir-autogen, elixir-format
 msgid "Withdraw access for \"%{name}\"? It stops working immediately."
 msgstr ""
@@ -5635,7 +5635,7 @@ msgid "@%{slug} started following you on vutuv"
 msgstr ""
 
 #: lib/vutuv_web/components/organization_components.ex:318
-#: lib/vutuv_web/live/organization_live/apps.ex:68
+#: lib/vutuv_web/live/organization_live/apps.ex:162
 #: lib/vutuv_web/templates/settings/apps.html.heex:12
 #, elixir-autogen, elixir-format
 msgid "Apps"
@@ -18296,7 +18296,7 @@ msgstr ""
 msgid "%{address} (whole website)"
 msgstr ""
 
-#: lib/vutuv_web/markdown.ex:323
+#: lib/vutuv_web/markdown.ex:327
 #, elixir-autogen, elixir-format
 msgid "Verified webpage of the author (%{address})"
 msgstr ""
@@ -20623,7 +20623,7 @@ msgstr ""
 msgid "Mute or unmute accounts"
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:82
+#: lib/vutuv_web/live/organization_live/apps.ex:176
 #: lib/vutuv_web/templates/settings/apps.html.heex:42
 #: lib/vutuv_web/views/account_event_text.ex:235
 #, elixir-autogen, elixir-format
@@ -20670,7 +20670,8 @@ msgstr ""
 msgid "No visible local account has that handle."
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:55
+#: lib/vutuv_web/live/organization_live/apps.ex:86
+#: lib/vutuv_web/live/organization_live/apps.ex:116
 #: lib/vutuv_web/live/organization_live/following.ex:259
 #, elixir-autogen, elixir-format
 msgid "You are not allowed to change this organization."
@@ -21016,7 +21017,7 @@ msgstr ""
 msgid "Show the profile picture larger"
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:84
+#: lib/vutuv_web/live/organization_live/apps.ex:178
 #, elixir-autogen, elixir-format
 msgid "The page's Editorial team can use this organization as a separate identity in a compatible phone app, with the same rights they already have here. Those rights are checked again on every request."
 msgstr ""
@@ -21026,7 +21027,7 @@ msgstr ""
 msgid "App settings saved."
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:70
+#: lib/vutuv_web/live/organization_live/apps.ex:164
 #, elixir-autogen, elixir-format
 msgid "Apps built for Mastodon can write in this page's name, read its feed and notify its team."
 msgstr ""
@@ -21036,12 +21037,12 @@ msgstr ""
 msgid "Apps built for Mastodon — Ivory, Tusky, Ice Cubes and the rest — can read your feed, post, and notify you. Off unless you turn it on."
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:39
+#: lib/vutuv_web/live/organization_live/apps.ex:55
 #, elixir-autogen, elixir-format
 msgid "Apps – %{name}"
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:124
+#: lib/vutuv_web/live/organization_live/apps.ex:321
 #: lib/vutuv_web/templates/settings/apps.html.heex:85
 #, elixir-autogen, elixir-format
 msgid "How to set up an app"
@@ -21062,38 +21063,38 @@ msgstr ""
 msgid "Mastodon apps, connected apps and access tokens"
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:110
+#: lib/vutuv_web/live/organization_live/apps.ex:307
 #, elixir-autogen, elixir-format
 msgid "Sign in with your own account, then pick %{name} on the approval screen."
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:115
+#: lib/vutuv_web/live/organization_live/apps.ex:312
 #, elixir-autogen, elixir-format
 msgid "Sign in with your own account, then pick this page on the approval screen. A short @name is not needed for that, only for being followed from another server."
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:105
+#: lib/vutuv_web/live/organization_live/apps.ex:302
 #: lib/vutuv_web/templates/settings/apps.html.heex:70
 #, elixir-autogen, elixir-format
 msgid "The address to type into the app"
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:77
+#: lib/vutuv_web/live/organization_live/apps.ex:171
 #, elixir-autogen, elixir-format
 msgid "This vutuv serves no app interface, so nothing here has any effect."
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:95
+#: lib/vutuv_web/live/organization_live/apps.ex:204
 #, elixir-autogen, elixir-format
 msgid "Turn app access off"
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:96
+#: lib/vutuv_web/live/organization_live/apps.ex:205
 #, elixir-autogen, elixir-format
 msgid "Turn app access on"
 msgstr ""
 
-#: lib/vutuv_web/live/organization_live/apps.ex:89
+#: lib/vutuv_web/live/organization_live/apps.ex:183
 #, elixir-autogen, elixir-format
 msgid "Whoever posted stays recorded, so the team can always tell who wrote what — and an app signed in as this page cannot block anybody, because blocking is between two people."
 msgstr ""
@@ -21346,4 +21347,90 @@ msgstr ""
 #: lib/vutuv_web/views/oauth_html.ex:27
 #, elixir-autogen, elixir-format
 msgid "This application asked to be connected too many times in a row. Please wait a moment and try again."
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:213
+#, elixir-autogen, elixir-format
+msgid "App access in use"
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:137
+#, elixir-autogen, elixir-format
+msgid "App access is off. One app token was withdrawn."
+msgid_plural "App access is off. %{count} app tokens were withdrawn."
+msgstr[0] ""
+msgstr[1] ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:215
+#, elixir-autogen, elixir-format
+msgid "Each row is one app signed in as this page, issued by the team member named on it. Withdrawing one stops that app immediately; the member keeps their own account."
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:230
+#, elixir-autogen, elixir-format
+msgid "Filter by member (name or @handle)"
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:222
+#, elixir-autogen, elixir-format
+msgid "Filter by the member who issued the token"
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:263
+#, elixir-autogen, elixir-format
+msgid "Issued by"
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:237
+#, elixir-autogen, elixir-format
+msgid "No app is signed in as this page."
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:238
+#, elixir-autogen, elixir-format
+msgid "No token matches that member."
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:247
+#, elixir-autogen, elixir-format
+msgid "One app token"
+msgid_plural "%{formatted} app tokens"
+msgstr[0] ""
+msgstr[1] ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:260
+#, elixir-autogen, elixir-format
+msgid "Personal access token"
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:108
+#, elixir-autogen, elixir-format
+msgid "The app can no longer act for this page."
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:196
+#, elixir-autogen, elixir-format
+msgid "Turn app access off? The one app token issued for this page is withdrawn and stops working immediately."
+msgid_plural "Turn app access off? All %{count} app tokens issued for this page are withdrawn and stop working immediately."
+msgstr[0] ""
+msgstr[1] ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:282
+#, elixir-autogen, elixir-format
+msgid "Withdraw"
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:279
+#, elixir-autogen, elixir-format
+msgid "Withdraw this app's access to the page? It stops working immediately."
+msgstr ""
+
+#: lib/vutuv_web/live/organization_live/apps.ex:153
+#, elixir-autogen, elixir-format
+msgid "unknown device"
+msgstr ""
+
+#: lib/vutuv_web/templates/connected_app/index.html.heex:28
+#, elixir-autogen, elixir-format
+msgid "Connected on"
 msgstr ""

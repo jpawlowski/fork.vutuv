@@ -94,10 +94,42 @@ defmodule VutuvWeb.MastodonApi.StatusController do
       attrs = Map.merge(Posts.unchanged_audience_attrs(post), %{body: body, image_ids: image_ids})
 
       case Posts.update_post(post, attrs) do
-        {:ok, updated} -> json(conn, Presenter.one_status(updated, viewer(conn)))
-        {:error, :invalid_images} -> validation_error(conn, "Unknown or foreign media ids.")
-        {:error, :too_many_images} -> validation_error(conn, "Too many images.")
-        {:error, reason} -> validation_error(conn, changeset_error(reason))
+        {:ok, updated} ->
+          json(conn, Presenter.one_status(updated, viewer(conn)))
+
+        {:error, :invalid_images} ->
+          validation_error(conn, "Unknown or foreign media ids.")
+
+        {:error, :too_many_images} ->
+          validation_error(conn, "Too many images.")
+
+        # vutuv closes editing where Mastodon leaves it open, so the two reasons
+        # for that are spelled out rather than collapsing into "the status is
+        # invalid" — the member is not being told about a broken request but
+        # about a rule, and one they can neither see nor work around from a
+        # client. See `Posts.update_post/2`.
+        {:error, :edit_engaged} ->
+          validation_error(
+            conn,
+            "This post can no longer be edited: somebody has liked, boosted or replied to it, " <>
+              "and an edit would rewrite what they put their name to. You can still delete it."
+          )
+
+        {:error, :edit_window_closed} ->
+          validation_error(
+            conn,
+            "This post can no longer be edited: the #{Posts.edit_window_minutes()}-minute " <>
+              "edit window has closed. You can still delete it."
+          )
+
+        {:error, :visibility_locked} ->
+          validation_error(
+            conn,
+            "This post's audience can no longer be narrowed: somebody has boosted or replied to it."
+          )
+
+        {:error, reason} ->
+          validation_error(conn, changeset_error(reason))
       end
     else
       {:error, :unsupported_visibility} ->

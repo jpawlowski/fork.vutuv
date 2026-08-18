@@ -57,6 +57,73 @@ defmodule VutuvWeb.MastodonApi.NotificationController do
     |> json(notifications(conn, items))
   end
 
+  @doc """
+  The **grouped** notifications a Mastodon 4.3+ client asks for
+  (`GET /api/v2/notifications`).
+
+  Not optional for us: this adapter advertises compatibility with 4.4, and a
+  client reads that version to decide which endpoint to call. Ice Cubes does,
+  so its whole notifications tab — and its "@ mentions" activity page, the same
+  endpoint under a type filter — answered "an error occurred" against a server
+  that served the v1 list perfectly well. Advertising a version is a promise
+  about the shape of the API, not only about its features.
+
+  The payload is the same items the v1 list serves, said differently: the
+  accounts and statuses are hoisted into two shared lists and each group names
+  them by id. vutuv's notifications are derived rather than stored, so a group
+  is exactly the set of items that share a **type and a status** — several
+  people liking one post is one group, which is the whole point of the shape —
+  and anything without a status (a follow) groups by its own id.
+  """
+  def grouped(conn, params) do
+    page = Pagination.params(params, strip: &bare_id/1)
+    read = load(conn, page)
+
+    items =
+      read
+      |> Enum.filter(&mapped?/1)
+      |> filter_types(params)
+      |> Pagination.window(page, &bare_id/1)
+
+    more? = length(read) >= Pagination.fetch_size(page)
+    rendered = notifications(conn, items)
+
+    conn
+    |> Pagination.link_header(Enum.map(items, &bare_id/1), page, more?: more?)
+    |> json(%{
+      accounts: rendered |> Enum.map(& &1.account) |> uniq_by_id(),
+      statuses: rendered |> Enum.map(& &1.status) |> Enum.reject(&is_nil/1) |> uniq_by_id(),
+      notification_groups: notification_groups(rendered)
+    })
+  end
+
+  defp uniq_by_id(list), do: Enum.uniq_by(list, &(&1[:id] || &1["id"]))
+
+  defp notification_groups(rendered) do
+    rendered
+    |> Enum.chunk_by(&group_key/1)
+    |> Enum.map(fn [newest | _rest] = group ->
+      ids = Enum.map(group, & &1.id)
+
+      %{
+        group_key: group_key(newest),
+        notifications_count: length(group),
+        type: newest.type,
+        most_recent_notification_id: newest.id,
+        page_min_id: Enum.min(ids),
+        page_max_id: Enum.max(ids),
+        latest_page_notification_at: newest.created_at,
+        sample_account_ids: group |> Enum.map(& &1.account.id) |> Enum.uniq() |> Enum.take(8),
+        status_id: newest.status[:id]
+      }
+    end)
+  end
+
+  # A group is one type over one status. Without a status there is nothing to
+  # collapse onto, so the item is its own group.
+  defp group_key(%{type: type, status: %{id: status_id}}), do: type <> "-" <> status_id
+  defp group_key(%{id: id}), do: id
+
   def show(conn, %{"id" => id}) do
     bare = bare_id(%{id: id})
 
@@ -186,10 +253,9 @@ defmodule VutuvWeb.MastodonApi.NotificationController do
     end
   end
 
-  defp timestamp(%DateTime{} = at), do: DateTime.to_iso8601(at)
-
-  defp timestamp(%NaiveDateTime{} = at),
-    do: at |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_iso8601()
-
-  defp timestamp(_missing), do: nil
+  # One owner for the shape (see `Presenter.timestamp/1`): this used to be a
+  # second copy of the same conversion, and it kept second precision after the
+  # other was fixed — so every notification carried a date no client could
+  # parse while the statuses beside them were fine.
+  defp timestamp(at), do: Presenter.timestamp(at)
 end

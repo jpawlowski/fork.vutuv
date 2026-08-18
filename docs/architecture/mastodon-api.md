@@ -75,8 +75,13 @@ Server discovery, login and the core social workflow:
 - `GET /api/v2/search` — accounts, statuses and hashtags, plus exact
   `@user@host` resolution
 - `GET /api/v1/statuses/:id/context` and `/source`
-- `GET /api/v1/timelines/public` and `/timelines/tag/:hashtag`
-- `GET /api/v1/notifications` (+ `/unread_count`, `/clear`, `/:id`)
+- `GET /api/v1/timelines/public` (honouring `local` / `remote`, which are a
+  client's "Local" and "Federated" tabs — both used to be ignored, so the two
+  tabs asked different questions and got one answer) and
+  `/timelines/tag/:hashtag`
+- `GET /api/v1/notifications` (+ `/unread_count`, `/clear`, `/:id`) and the
+  grouped `GET /api/v2/notifications` a 4.3+ client asks for
+- `GET` and `POST /api/v1/markers` — where a client left off reading
 - `GET /api/v1/bookmarks`, `/favourites`, `/blocks`, `/mutes`,
   `/accounts/:id/followers`, `/statuses/:id/favourited_by` and `/reblogged_by`
 - `PATCH /api/v1/accounts/update_credentials` and `POST /api/v1/reports`
@@ -320,6 +325,32 @@ host test as the HTTP gate (`MastodonApi.client_host?/1`), so a client that
 signed in on the main host can open a stream there too — demanding the subdomain
 here let an app authenticate and then never connect.
 
+**That path is the whole address, and Phoenix does not serve it by default.**
+Mastodon's streaming endpoint *is* `wss://<host>/api/v1/streaming`, and
+`socket/3` appends the transport name unless told otherwise, so the socket
+answered only at `/api/v1/streaming/websocket` — a spelling no client has any
+reason to try. Measured 2026-08-17: 404 for the documented path against 101 for
+the suffixed one. It takes `websocket: [path: "/"]`, and the instance document
+has to *name* it (`configuration.urls.streaming`, v1's `urls.streaming_api`),
+which it answered as `nil`. Between the two, no client could open a stream at
+all, which an Ivory user reported as a home timeline that spun and then said
+"No Posts found" while Local and Federated — plain fetches, no stream — filled
+at once.
+
+**The instance document is read as a promise, so every figure in it is derived.**
+A client asks what this server can do *before* it does anything, and believes the
+answer: `configuration.media_attachments.supported_mime_types` is what a phone
+client converts a picture from the photo library **into**, and it was `[]`, so
+there was nothing to convert to and the camera's original HEIC went up and was
+refused with "Send a JPEG, PNG or WebP image". Beside it,
+`statuses.max_media_attachments` was `0` (posts take no pictures at all) and
+`media_attachments.image_size_limit` was `0`. All three now come from
+`Vutuv.Posts` and the uploader's own extension whitelist, so an installation
+whose libvips decodes HEIC advertises HEIC without anybody editing a list — and
+the media endpoint's refusal is written from the same whitelist, so the sentence
+a member reads after the upload has already gone up cannot contradict what the
+document promised.
+
 **A photo that has not cleared the AI scan holds the announcement, not the
 post.** `update` carries a finished status — an attachment list has no "still
 processing" state (only the media endpoint does, as a `null` url) and a client
@@ -370,11 +401,71 @@ pair (`docs/ADMINS.md`).
 Nothing here is a bug in what ships; each is a place where a client sees less
 than it asks for, or a decision that was left open on purpose.
 
+**A client parses shapes it never asks about, and the times are one of them.**
+Mastodon stamps every time as `2019-11-26T22:37:36.000Z`, always with three
+fractional digits, and Apple's `ISO8601DateFormatter` with
+`.withFractionalSeconds` — what an Ivory or Ice Cubes builds once and reuses —
+**fails outright** on a string without them. A client that cannot parse a date
+falls back to "now", so every post in the timeline carried the moment the
+account was added to the app, all showing the same relative time. Second
+precision is enough for us; printing it in Mastodon's shape is what makes it
+readable. `Presenter.timestamp/1` is the one owner of that shape — the
+notification list used to hold a second copy, which kept second precision after
+the other was fixed.
+
+**Advertising a version is a promise about the shape of the API.** This adapter
+says it is compatible with 4.4, and a client reads that to decide which
+endpoints exist: Ice Cubes therefore calls `GET /api/v2/notifications` (the
+grouped list, 4.3+), which answered 404 while the v1 list beside it was fine —
+its whole notifications tab, and its "@ mentions" page, showed "an error
+occurred". The grouped list is served from the same derived items, with the
+accounts and statuses hoisted into two shared lists; a group is one type over
+one status, which is what makes several likes on one post a single row. The same
+reasoning covers the tabs that have no content here: `trends/statuses|tags|links`,
+`announcements` and `suggestions` answer the **empty list** Mastodon itself
+answers when an instance has them switched off, because the difference between
+"off" and "not implemented" is the difference between an empty tab and an error
+a member is told to retry.
+
+**A reading position is stored now** (`Vutuv.MastodonApi.Markers`). `GET
+/api/v1/markers` answered a bare `{}` and there was no `POST` at all — which
+also meant the write fell through to the website's HTML error page — so the
+position was never kept and never restored, and relaunching an app dropped its
+timeline back to whatever it could fetch. It is the **client's** bookmark and
+deliberately not wired to vutuv's own unread marker
+(`users.notifications_read_at`): scrolling past a notification in a phone app is
+not having read it on the website, and one surface silently clearing another's
+badge is a worse answer than two honest ones. A page identity's position belongs
+to the page, the way its feed does. The stored id is kept exactly as the client
+sent it, prefix and all, because the ids this adapter mints are not all uuids
+and a bookmark whose entry is since gone must not fail a write.
+
+**`pinned=true` asks for the pinned post.** It was ignored on
+`/accounts/:id/statuses`, so a client rendering an account's pinned row got the
+whole timeline back and showed its newest entry as pinned — a member's only post
+looked pinned although they had never pinned anything. vutuv has a real pin
+(`users.pinned_post_id`, #1110), so the answer is that one post or none; a page
+and a remote account have no pin of their own and answer the empty list.
+
+**Where vutuv's rules are stricter than Mastodon's, the refusal says which
+rule.** Editing closes once a post is liked, boosted or answered, and once the
+edit window has passed (`Posts.update_post/2`) — Mastodon allows both. Those
+three reasons are spelled out in the 422 rather than collapsing into "The status
+is invalid", which sends a member looking for a mistake in their own text.
+
 - **Some startup stubs still answer empty.** `conversations`, `lists`,
-  `followed_tags`, `filters` and `markers` return `[]`/`{}`
-  (`MastodonApi.CompatibilityController`). Notifications no longer do. vutuv has
-  real filters (muted words and tags), real direct messages and real followed
-  tags behind three of those, so they are the next worthwhile ones.
+  `followed_tags` and `filters` return `[]`
+  (`MastodonApi.CompatibilityController`). Notifications and markers no longer
+  do. vutuv has real filters (muted words and tags), real direct messages and
+  real followed tags behind three of those, so they are the next worthwhile
+  ones.
+- **A path this adapter does not implement answers JSON, on both hosts.** The
+  subdomain always had a catch-all; the **main host** — the one a member types
+  into a phone app, and so the one every client actually uses — did not, so an
+  unrouted `/api/v1/…` fell through to the website and handed the client an HTML
+  error page where it expected an object. The catch-all names Mastodon's two
+  version prefixes only (`/api/v1/*`, `/api/v2/*`), so vutuv's own `/api/2.0` and
+  the site below it are untouched.
 - **vutuv's own notification kinds are not pushed or listed.** Tag
   endorsements, CV updates, moderation cases, role grants and handle changes
   have no Mastodon type; serving them under an invented one is worse than

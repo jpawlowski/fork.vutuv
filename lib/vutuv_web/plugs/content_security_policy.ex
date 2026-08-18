@@ -19,6 +19,26 @@ defmodule VutuvWeb.Plug.ContentSecurityPolicy do
   socket cannot join. Derived per request from scheme/host/port, so dev
   (`ws://localhost:4000`) and prod (`wss://vutuv.de`) both come out
   right without configuration.
+
+  ## `form-action` and the OAuth consent screen
+
+  `form-action` is checked against **every hop of the submission, redirects
+  included** (Chrome and WebKit both do this; the enforcing policy is the one
+  of the document that owns the form). The OAuth consent screen is the one
+  page here whose form is *supposed* to end up somewhere else: `POST
+  /oauth/authorize` answers 302 to the client's registered `redirect_uri` —
+  `ivory://…` for a phone client, an off-origin `https://` callback for a web
+  one — and under a bare `form-action 'self'` the browser refuses that hop.
+  The failure is silent and reads as a dead button: the POST *does* reach the
+  server, a code *is* minted, and the member is left looking at the consent
+  screen with no token, which is what an Ivory user reported.
+
+  So `allow_form_action/2` lets that one response widen the directive to the
+  exact redirect target. It is only ever called with a URI
+  `Vutuv.ApiAuth.OAuth.validate_authorize/1` has already matched against the
+  app's registered `redirect_uris`, so this names a destination the server was
+  going to redirect to anyway — never anything read straight off the query
+  string.
   """
 
   @behaviour Plug
@@ -28,8 +48,52 @@ defmodule VutuvWeb.Plug.ContentSecurityPolicy do
 
   @impl true
   def call(conn, _opts) do
-    Plug.Conn.put_resp_header(conn, "content-security-policy", policy(conn))
+    Plug.Conn.put_resp_header(conn, "content-security-policy", policy(conn, []))
   end
+
+  @doc """
+  Re-stamps this response's policy with `redirect_uri` added to `form-action`,
+  so a form on this page may submit to an endpoint that redirects there.
+
+  For the OAuth consent screen, see the moduledoc. Pass the **validated**
+  redirect URI (the one matched against the app's registered list), never a
+  raw parameter. An unusable URI (no scheme) leaves the policy alone.
+  """
+  def allow_form_action(conn, redirect_uri) do
+    case form_action_source(redirect_uri) do
+      nil -> conn
+      source -> Plug.Conn.put_resp_header(conn, "content-security-policy", policy(conn, [source]))
+    end
+  end
+
+  @doc """
+  The CSP source expression that permits a form submission to end at `uri`.
+
+  `http(s)` gets the exact origin, which is as narrow as CSP can express and
+  is where narrowness is worth having. Anything else is a native app's own
+  scheme (`ivory://oauth-callback`, `com.example.app:/cb`) whose shape varies
+  too much to pin down as a host-source, so it gets the scheme-source
+  (`ivory:`) — a scheme registered to that one app.
+  """
+  def form_action_source(uri) when is_binary(uri) do
+    case URI.parse(uri) do
+      %URI{scheme: nil} ->
+        nil
+
+      %URI{scheme: scheme, host: host, port: port} when scheme in ["http", "https"] ->
+        if is_binary(host) and host != "", do: origin(scheme, host, port)
+
+      %URI{scheme: scheme} ->
+        scheme <> ":"
+    end
+  end
+
+  def form_action_source(_uri), do: nil
+
+  defp origin("http", host, 80), do: "http://" <> host
+  defp origin("https", host, 443), do: "https://" <> host
+  defp origin(scheme, host, nil), do: scheme <> "://" <> host
+  defp origin(scheme, host, port), do: "#{scheme}://#{host}:#{port}"
 
   # DEV-ONLY escape hatch. When true we add `script-src 'self' 'unsafe-eval'` so
   # Tidewave's `browser_eval` tool works locally: it injects JS and runs it with
@@ -59,23 +123,30 @@ defmodule VutuvWeb.Plug.ContentSecurityPolicy do
     "style-src 'self' 'unsafe-inline'"
   ]
 
-  @suffix_directives [
-    "font-src 'self' data:",
-    "object-src 'none'",
-    "base-uri 'self'",
-    "form-action 'self'",
-    "frame-ancestors 'self'"
-  ]
+  # `form-action` sits between these two halves so the one response that widens
+  # it (the OAuth consent screen) can rebuild that directive alone. With no
+  # extra sources the emitted header stays byte-identical to the old one.
+  @suffix_before ["font-src 'self' data:", "object-src 'none'", "base-uri 'self'"]
+  @suffix_after ["frame-ancestors 'self'"]
 
   @static_prefix Enum.join(@prefix_directives, "; ")
-  @static_suffix Enum.join(@suffix_directives, "; ")
+  @static_suffix_before Enum.join(@suffix_before, "; ")
+  @static_suffix_after Enum.join(@suffix_after, "; ")
 
-  defp policy(conn) do
+  defp policy(conn, form_action_sources) do
     directives =
-      @static_prefix <> "; connect-src 'self' " <> ws_origin(conn) <> "; " <> @static_suffix
+      @static_prefix <>
+        "; connect-src 'self' " <>
+        ws_origin(conn) <>
+        "; " <>
+        @static_suffix_before <>
+        "; " <> form_action(form_action_sources) <> "; " <> @static_suffix_after
 
     maybe_allow_eval(directives)
   end
+
+  defp form_action(sources),
+    do: Enum.reduce(sources, "form-action 'self'", &(&2 <> " " <> &1))
 
   defp maybe_allow_eval(directives) do
     if @allow_eval do

@@ -302,6 +302,12 @@ defmodule VutuvWeb.Router do
       assigns: %{mastodon_scope: "read:notifications"}
     )
 
+    # The grouped list a 4.3+ client asks for. We advertise 4.4 compatibility,
+    # and a client reads that version to decide which of the two to call.
+    get("/api/v2/notifications", NotificationController, :grouped,
+      assigns: %{mastodon_scope: "read:notifications"}
+    )
+
     get("/api/v1/notifications/unread_count", NotificationController, :unread_count,
       assigns: %{mastodon_scope: "read:notifications"}
     )
@@ -336,6 +342,43 @@ defmodule VutuvWeb.Router do
 
     get("/api/v1/markers", CompatibilityController, :markers,
       assigns: %{mastodon_scope: "read:statuses"}
+    )
+
+    # The write half. Without it a client's reading position was never stored,
+    # so relaunching the app dropped its timeline back to whatever it could
+    # fetch — and the request itself fell through to the website's HTML 404.
+    post("/api/v1/markers", CompatibilityController, :put_markers,
+      assigns: %{mastodon_scope: "write:statuses"}
+    )
+
+    # Trends, announcements and follow suggestions: served as the empty lists
+    # Mastodon itself serves when an instance has them switched off. This site
+    # has none of the three, and the difference between "off" and "not
+    # implemented" is the difference between an empty tab and Ice Cubes'
+    # "an error occurred while loading posts, please try again" — which is what
+    # its Trending and News tabs showed.
+    get("/api/v1/trends/statuses", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:statuses"}
+    )
+
+    get("/api/v1/trends/tags", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:statuses"}
+    )
+
+    get("/api/v1/trends/links", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:statuses"}
+    )
+
+    get("/api/v1/announcements", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:accounts"}
+    )
+
+    get("/api/v1/suggestions", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:accounts"}
+    )
+
+    get("/api/v2/suggestions", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:accounts"}
     )
 
     get("/api/v1/timelines/home", TimelineController, :home,
@@ -440,10 +483,32 @@ defmodule VutuvWeb.Router do
     # `OauthController` handles a Mastodon-protocol app there — mirroring put
     # the subdomain's redirect-to-main-host controller in front of the consent
     # screen, which then pointed at itself.
+
+    # Everything under Mastodon's two version prefixes that this adapter does
+    # not implement, answered as JSON like the subdomain's catch-all — and only
+    # those two prefixes, so the website below is untouched (vutuv's own API is
+    # `/api/2.0`, a different word). A client decodes every body as JSON, and
+    # the main host is the one a member types into a phone app, so without this
+    # a startup call for something we simply do not have
+    # (`/api/v1/announcements`, `POST /api/v1/markers`, `/api/v1/trends/…`)
+    # handed the client the website's HTML error page. Last in the scope: a
+    # wildcard matches before any route defined after it.
+    match(:*, "/api/v1/*path", MastodonApi.DiscoveryController, :not_found)
+    match(:*, "/api/v2/*path", MastodonApi.DiscoveryController, :not_found)
   end
 
   scope "/", VutuvWeb.MastodonApi, host: "mastodon." do
     pipe_through(:mastodon_api)
+
+    # Somebody typed the technical name into a browser. Nothing here is for
+    # reading — the catch-all below answers every other path as JSON, which is
+    # right for a client and a dead end for a person — so send them to the site.
+    # (On vutuv.de this host is not served at all today: the DNS record exists
+    # without the certificate and the `server_name` that have to come with it,
+    # so nginx answers from its default virtual host and the app never sees the
+    # request. See the `MASTODON_API_ENABLED` row in `docs/ADMINS.md`.)
+    get("/", DiscoveryController, :root)
+
     match(:*, "/*path", DiscoveryController, :not_found)
   end
 

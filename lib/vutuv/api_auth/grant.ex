@@ -15,6 +15,13 @@ defmodule Vutuv.ApiAuth.Grant do
     field(:scopes, {:array, :string}, default: [])
     field(:revoked_at, :utc_datetime)
 
+    # Filled by `Vutuv.ApiAuth.list_grants/1` for the Connected apps page.
+    # Virtual because they are a question about how this row is *shown* — when
+    # the member connected the app, and which devices still hold a live token
+    # under it — rather than facts about the grant row itself.
+    field(:connected_at, :naive_datetime, virtual: true)
+    field(:devices, {:array, :string}, virtual: true, default: [])
+
     timestamps()
   end
 end

@@ -26,8 +26,18 @@ defmodule VutuvWeb.Endpoint do
   # Mastodon's streaming API. Mounted on the shared endpoint because a socket
   # cannot be host-scoped here; the handler checks the API host itself, so this
   # path stays inert on the main origin.
+  #
+  # `path: "/"` is not cosmetic. Mastodon's streaming endpoint **is**
+  # `wss://<host>/api/v1/streaming` — that exact path, with `stream=` and
+  # `access_token=` in the query — and every client connects there. Phoenix's
+  # default appends the transport name, so this socket answered only at
+  # `/api/v1/streaming/websocket` and the documented address 404ed: measured
+  # 2026-08-17, 404 for the bare path against 101 for the suffixed one. A client
+  # cannot find the suffixed spelling and has no reason to look for it, so the
+  # whole stream was unreachable while every part of it worked.
   socket("/api/v1/streaming", VutuvWeb.MastodonApi.StreamingSocket,
-    websocket: [connect_info: [:x_headers, :uri], max_frame_size: 64_000]
+    websocket: [path: "/", connect_info: [:x_headers, :uri], max_frame_size: 64_000],
+    longpoll: false
   )
 
   # In dev, serve static assets with `cache-control: no-cache` so the browser

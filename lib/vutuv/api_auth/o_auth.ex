@@ -255,17 +255,26 @@ defmodule Vutuv.ApiAuth.OAuth do
   credentials → an access/refresh pair. Errors use the RFC's vocabulary
   (`:invalid_client` answers 401, the rest 400).
   """
-  def exchange(params) do
+  def exchange(params, user_agent \\ nil) do
     with {:ok, app} <- authenticate_client(params),
          {:ok, code} <- fetch_code(app, params["code"]),
          :ok <- consume_code(code),
          :ok <- check_code_params(code, params) do
-      mint_pair(code.grant_id, code.user_id, code.organization_id, app, code.scopes)
+      mint_pair(
+        %{
+          grant_id: code.grant_id,
+          user_id: code.user_id,
+          organization_id: code.organization_id,
+          scopes: code.scopes,
+          user_agent: user_agent
+        },
+        app
+      )
     end
   end
 
   @doc "`grant_type=refresh_token`: rotate the pair; reuse revokes the grant's tokens."
-  def refresh(params) do
+  def refresh(params, user_agent \\ nil) do
     with {:ok, app} <- authenticate_client(params),
          {:ok, token} <- fetch_refresh(app, params["refresh_token"]) do
       cond do
@@ -278,7 +287,7 @@ defmodule Vutuv.ApiAuth.OAuth do
           {:error, :invalid_grant}
 
         true ->
-          rotate_refresh(token, app)
+          rotate_refresh(token, app, user_agent)
       end
     end
   end
@@ -286,7 +295,7 @@ defmodule Vutuv.ApiAuth.OAuth do
   # Atomic rotation: the `is_nil(revoked_at)` guard lets exactly one of two
   # concurrent refreshes win. The loser saw zero rows, so its token was already
   # rotated — treat it as reuse and revoke the grant.
-  defp rotate_refresh(token, app) do
+  defp rotate_refresh(token, app, user_agent) do
     {n, _} =
       Repo.update_all(
         from(t in Token, where: t.id == ^token.id and is_nil(t.revoked_at)),
@@ -294,7 +303,18 @@ defmodule Vutuv.ApiAuth.OAuth do
       )
 
     if n == 1 do
-      mint_pair(token.grant_id, token.user_id, token.organization_id, app, token.scopes)
+      mint_pair(
+        %{
+          grant_id: token.grant_id,
+          user_id: token.user_id,
+          organization_id: token.organization_id,
+          scopes: token.scopes,
+          # A rotation is the same device carrying on, so the fresh token keeps
+          # the device the pair was minted from unless this request named one.
+          user_agent: user_agent || token.user_agent
+        },
+        app
+      )
     else
       ApiAuth.revoke_grant_tokens!(token.grant_id)
       {:error, :invalid_grant}
@@ -546,46 +566,27 @@ defmodule Vutuv.ApiAuth.OAuth do
     not Repo.exists?(from(g in Grant, where: g.id == ^grant_id and is_nil(g.revoked_at)))
   end
 
-  defp mint_pair(grant_id, user_id, organization_id, %App{protocol: "mastodon"} = app, scopes) do
+  defp mint_pair(%{} = fields, %App{protocol: "mastodon"} = app) do
     access = @access_prefix <> ApiAuth.random_token()
-    insert_token!(grant_id, user_id, organization_id, app.id, scopes, "access", access, nil)
+    insert_token!(fields, app, "access", access, nil)
 
     {:ok,
      %{
        access_token: access,
        token_type: "Bearer",
-       scope: Enum.join(scopes, " "),
+       scope: Enum.join(fields.scopes, " "),
        created_at: System.system_time(:second)
      }}
   end
 
-  defp mint_pair(grant_id, user_id, organization_id, %App{} = app, scopes) do
+  defp mint_pair(%{} = fields, %App{} = app) do
     access = @access_prefix <> ApiAuth.random_token()
     refresh = @refresh_prefix <> ApiAuth.random_token()
 
     {:ok, _} =
       Repo.transaction(fn ->
-        insert_token!(
-          grant_id,
-          user_id,
-          organization_id,
-          app.id,
-          scopes,
-          "access",
-          access,
-          @access_ttl_seconds
-        )
-
-        insert_token!(
-          grant_id,
-          user_id,
-          organization_id,
-          app.id,
-          scopes,
-          "refresh",
-          refresh,
-          @refresh_ttl_days * 86_400
-        )
+        insert_token!(fields, app, "access", access, @access_ttl_seconds)
+        insert_token!(fields, app, "refresh", refresh, @refresh_ttl_days * 86_400)
       end)
 
     {:ok,
@@ -594,28 +595,23 @@ defmodule Vutuv.ApiAuth.OAuth do
        refresh_token: refresh,
        token_type: "Bearer",
        expires_in: @access_ttl_seconds,
-       scope: Enum.join(scopes, " ")
+       scope: Enum.join(fields.scopes, " ")
      }}
   end
 
-  defp insert_token!(
-         grant_id,
-         user_id,
-         organization_id,
-         app_id,
-         scopes,
-         kind,
-         plaintext,
-         ttl_seconds
-       ) do
+  # One map rather than the eight positional arguments this used to take: the
+  # ninth (the device) would have been the point where a caller silently swaps
+  # two of them.
+  defp insert_token!(%{} = fields, %App{} = app, kind, plaintext, ttl_seconds) do
     Repo.insert!(%Token{
-      user_id: user_id,
-      organization_id: organization_id,
-      app_id: app_id,
-      grant_id: grant_id,
+      user_id: fields.user_id,
+      organization_id: fields.organization_id,
+      app_id: app.id,
+      grant_id: fields.grant_id,
       kind: kind,
       token_hash: ApiAuth.hash_token(plaintext),
-      scopes: scopes,
+      scopes: fields.scopes,
+      user_agent: fields[:user_agent],
       expires_at: expires_at(ttl_seconds)
     })
   end
