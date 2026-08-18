@@ -11,6 +11,25 @@ developer guide (`mise` for Erlang/Elixir, PostgreSQL 17, libvips, then
 PIN login flow. Installing vutuv to *run* it (rather than develop it) is
 covered separately in [docs/ADMINS.md](docs/ADMINS.md).
 
+## Working from a fork
+
+Pull requests are opened against this repository, so `upstream` — not your
+fork — is what you branch from. Set that up once after cloning:
+
+```bash
+git remote add upstream https://github.com/wintermeyer/vutuv.git
+git remote set-url --push upstream DISABLED   # a stray push must not aim here
+git fetch upstream
+gh repo set-default wintermeyer/vutuv         # bump_version.exs reads open PRs through gh
+```
+
+Then branch from and rebase onto `upstream/main`, and read `upstream/main` —
+not your fork — when you bump the version in `mix.exs`. A mirror one merge
+behind hands out a number that is already taken, and that collides without a
+merge conflict. Push only to `origin`; keep your fork's `main` a mirror with
+`gh repo sync <you>/vutuv --source wintermeyer/vutuv --branch main` and never
+commit to it.
+
 ## Ground rules
 
 - **Start every feature or bugfix with a test** that covers it, then make it
