@@ -181,10 +181,59 @@ toplevel=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
 [ -f "$toplevel/mix.exs" ] ||
   block "$toplevel is not the vutuv project root (no mix.exs), so the precommit gate cannot vouch for this push."
 
+# In a FORK, check the cheap thing before the expensive one: a branch that was
+# never rebased onto the canonical repository's `main` costs twice, and both
+# costs are silent. The version bump takes a number `main` has already spent —
+# same line, same value, so no merge conflict and no warning — and the pull
+# request carries a diff against a base nobody has any more. Five minutes of
+# `mix precommit` on top of that is wasted either way.
+#
+# Nothing local can prove a checkout IS a fork: it is byte-for-byte identical
+# to its parent, and the relationship exists only on GitHub's servers. So this
+# proves the opposite — that `origin` is the canonical repository — and stays
+# out of the way for everybody who works here directly. Opt out anywhere with
+# `git config vutuv.fork-sync false`.
+fork_freshness() {
+  local canonical=${VUTUV_CANONICAL_REPO:-wintermeyer/vutuv} slug behind
+
+  [ "$(git -C "$toplevel" config --bool vutuv.fork-sync 2>/dev/null)" = "false" ] && return 0
+
+  slug=$(git -C "$toplevel" remote get-url origin 2>/dev/null |
+    sed -E 's,.*github\.com[:/]|\.git$,,g' | tr '[:upper:]' '[:lower:]')
+  # An unchanged slug means the sed matched no GitHub URL — another host, so
+  # none of this applies.
+  case "$slug" in
+    "" | *:* | *//* | "$canonical") return 0 ;;
+  esac
+
+  git -C "$toplevel" remote get-url upstream >/dev/null 2>&1 ||
+    block "this fork has no remote for $canonical, so nothing can tell whether the branch is current. Run \`./scripts/fork_setup.sh\` once."
+
+  # Best effort and bounded: nobody is at this terminal to answer a password
+  # prompt. A failed fetch leaves the last known ref in place, and comparing
+  # against that beats not comparing at all.
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -oBatchMode=yes -oConnectTimeout=5' \
+    git -C "$toplevel" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=5 \
+    fetch --quiet --no-tags upstream main </dev/null 2>/dev/null
+
+  behind=$(git -C "$toplevel" rev-list --count HEAD..upstream/main 2>/dev/null)
+  [ "${behind:-0}" -gt 0 ] || return 0
+
+  block "\`$(git -C "$toplevel" rev-parse --abbrev-ref HEAD)\` is $behind commit(s) behind \`upstream/main\`.
+Rebase before pushing, or the version bump collides and the pull request's base is stale:
+
+  git fetch upstream main && git rebase upstream/main
+
+Then re-run \`elixir scripts/bump_version.exs …\`. Deliberate stale push: prefix the command with VUTUV_ALLOW_STALE_PUSH=1."
+}
+
 if [ "$explain" -eq 1 ]; then
   echo "PUSH $toplevel"
   exit 0
 fi
+
+[ "${VUTUV_ALLOW_STALE_PUSH:-}" = "1" ] || fork_freshness
+
 
 cd "$toplevel" || block "cannot enter $toplevel."
 

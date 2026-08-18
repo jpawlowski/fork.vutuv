@@ -118,6 +118,82 @@ defmodule Vutuv.PrecommitHookTest do
     end
   end
 
+  describe "the fork freshness check that runs before precommit" do
+    # A branch that was never rebased onto the canonical repository's `main`
+    # collides on the version number without producing a merge conflict, so
+    # spending five minutes of `mix precommit` on it is wasted either way.
+    # These drive the real path, not `--explain`: the check blocks before
+    # `mix precommit` is ever reached, so no build happens here.
+    test "a fork with no remote for the canonical repository is blocked", ctx do
+      repo = fake_project("https://github.com/someone/vutuv.git")
+
+      decision = run(ctx, "git -C #{repo} push")
+
+      assert decision =~ "BLOCKED"
+      assert decision =~ "./scripts/fork_setup.sh"
+    end
+
+    test "a clone of the canonical repository is untouched", ctx do
+      # The one case that must never regress: whoever works on this repository
+      # directly sees none of this. Proven by the push getting past the check
+      # and into `mix precommit` — stubbed here so no build runs.
+      repo = fake_project("https://github.com/wintermeyer/vutuv.git")
+
+      # Reaching the (stubbed) precommit run is the proof it got past the check.
+      decision = run(ctx, "git -C #{repo} push", path: path_with_stub_mise())
+
+      assert decision =~ "Running mix precommit"
+      refute decision =~ "BLOCKED"
+    end
+
+    test "a fork can opt out", ctx do
+      repo = fake_project("https://github.com/someone/vutuv.git")
+      {_, 0} = System.cmd("git", ["config", "vutuv.fork-sync", "false"], cd: repo)
+
+      # Reaching the (stubbed) precommit run is the proof it got past the check.
+      decision = run(ctx, "git -C #{repo} push", path: path_with_stub_mise())
+
+      assert decision =~ "Running mix precommit"
+      refute decision =~ "BLOCKED"
+    end
+  end
+
+  # A throwaway repository that looks enough like this project for the hook to
+  # accept it (it insists on a `mix.exs`), with the given `origin`.
+  defp fake_project(origin_url) do
+    dir = Path.join(System.tmp_dir!(), "precommit-fork-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    File.write!(Path.join(dir, "mix.exs"), "# fixture\n")
+    {_, 0} = System.cmd("git", ["init", "--quiet", dir])
+    {_, 0} = System.cmd("git", ["remote", "add", "origin", origin_url], cd: dir)
+    dir
+  end
+
+  # The hook shells out to `mise exec -- mix precommit`; a stub that exits 0
+  # stands in for it so a passing check does not trigger a real build.
+  defp path_with_stub_mise do
+    dir = Path.join(System.tmp_dir!(), "precommit-stub-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    for tool <- ~w(bash sh awk git cat sed grep env jq) do
+      case System.find_executable(tool) do
+        nil -> :ok
+        path -> File.ln_s!(path, Path.join(dir, tool))
+      end
+    end
+
+    File.write!(Path.join(dir, "mise"), "#!/bin/sh\nexit 0\n")
+    File.chmod!(Path.join(dir, "mise"), 0o755)
+    dir
+  end
+
+  # Like `decide/3` but without `--explain`, so the checks actually run.
+  defp run(ctx, command, opts \\ []) do
+    decide(ctx, command, Keyword.put(opts, :explain, false))
+  end
+
   # Runs the hook in `--explain` mode against a payload and returns its verdict.
   # `System.cmd/3` cannot feed stdin, so the payload goes in through a file
   # redirect run by `sh`.
@@ -140,7 +216,8 @@ defmodule Vutuv.PrecommitHookTest do
         :error -> []
       end
 
-    script = "bash #{shell_quote(ctx.hook)} --explain < #{shell_quote(payload_file)}"
+    flag = if Keyword.get(opts, :explain, true), do: " --explain", else: ""
+    script = "bash #{shell_quote(ctx.hook)}#{flag} < #{shell_quote(payload_file)}"
 
     {out, _status} =
       System.cmd("sh", ["-c", script], cd: ctx.root, env: env, stderr_to_stdout: true)
