@@ -22,13 +22,8 @@ defmodule VutuvWeb.MastodonApi.TimelineController do
   alias Vutuv.UUIDv7
   alias VutuvWeb.MastodonApi.Pagination
 
-  # Every prefix a feed source stamps onto an entry id (Vutuv.Posts and
-  # Vutuv.Fediverse). Kept here rather than exported, because this is the only
-  # caller that has to reverse the mapping.
-  @entry_prefixes ~w(post repost tagpost boost remote)
-
   def home(conn, params) do
-    page = Pagination.params(strip_prefixes(params))
+    page = Pagination.params(params, strip: &Pagination.bare_id/1)
     entries = load(conn, page)
 
     conn
@@ -39,22 +34,18 @@ defmodule VutuvWeb.MastodonApi.TimelineController do
   # A status from another network is rendered with a prefixed id
   # (`remote-<uuid>`), and that is what a client hands back. Both the boundary
   # we read and the one we advertise are the bare uuid underneath, which is the
-  # part that carries the timestamp.
-  defp strip_prefixes(params) do
-    Enum.reduce(~w(max_id since_id min_id), params, fn key, acc ->
-      case acc[key] do
-        value when is_binary(value) -> Map.put(acc, key, bare_id(value))
-        _absent -> acc
-      end
-    end)
-  end
+  # part that carries the timestamp — every `params/2` call here passes the
+  # same `:strip`, like the account and notification endpoints do.
+  defp bare_id(value), do: Pagination.bare_id(value)
 
-  defp bare_id(value) do
-    case String.split(value, "-", parts: 2) do
-      [prefix, rest] when prefix in @entry_prefixes -> bare_id(rest)
-      _plain_uuid -> value
-    end
-  end
+  # **Every feed entry already carries its own id**, so reading the boundary out
+  # of one costs a map lookup. Rendering the entry to ask (`status_from_entry/1`)
+  # meant a full status per candidate — Markdown to HTML, media, the account map
+  # — and `Pagination.window/3` is handed `limit + 20` of them before the page is
+  # rendered for real, so a 20-status page paid for about eighty renders and, for
+  # a page carrying cached replies, one `get_remote_account/1` per note per
+  # render. The fallback stays for an entry shape that has no id of its own.
+  defp boundary_id(%{id: id}) when is_binary(id), do: bare_id(id)
 
   defp boundary_id(entry) do
     entry |> Presenter.status_from_entry() |> Map.fetch!(:id) |> bare_id()
@@ -114,7 +105,11 @@ defmodule VutuvWeb.MastodonApi.TimelineController do
   there.
   """
   def public(conn, params) do
-    page = Pagination.params(params)
+    # The strip is as load-bearing here as on `home/2`: the fediverse leg's
+    # statuses carry `remote-<uuid>` ids, a client hands the last one back as
+    # `max_id`, and an unstripped boundary casts to nil — no boundary, so the
+    # Federated tab served the same first page forever.
+    page = Pagination.params(params, strip: &Pagination.bare_id/1)
 
     statuses =
       params
@@ -133,7 +128,7 @@ defmodule VutuvWeb.MastodonApi.TimelineController do
   following from a phone at all.
   """
   def tag(conn, %{"hashtag" => slug} = params) do
-    page = Pagination.params(strip_prefixes(params))
+    page = Pagination.params(params, strip: &Pagination.bare_id/1)
 
     statuses =
       case Tags.get_canonical_tag_by_slug(String.downcase(slug)) do
@@ -181,7 +176,7 @@ defmodule VutuvWeb.MastodonApi.TimelineController do
   defp cursor(%Pagination{max_id: max_id}) do
     case UUIDv7.timestamp(max_id) do
       nil -> nil
-      at -> %{at: at, ids: Enum.map(@entry_prefixes, &"#{&1}-#{max_id}")}
+      at -> %{at: at, ids: Pagination.prefixed_ids(max_id)}
     end
   end
 end

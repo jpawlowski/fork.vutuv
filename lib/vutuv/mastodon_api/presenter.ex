@@ -4,11 +4,13 @@ defmodule Vutuv.MastodonApi.Presenter do
   alias Phoenix.HTML.Safe
   alias Vutuv.Accounts.User
   alias Vutuv.Avatar
+  alias Vutuv.Cover
   alias Vutuv.Fediverse
   alias Vutuv.Fediverse.Note
   alias Vutuv.Fediverse.RemoteAccount
   alias Vutuv.Fediverse.RemotePost
   alias Vutuv.MastodonApi
+  alias Vutuv.MastodonApi.AccountCounts
   alias Vutuv.Moderation.ImageScans
   alias Vutuv.Organizations
   alias Vutuv.Organizations.Organization
@@ -28,16 +30,21 @@ defmodule Vutuv.MastodonApi.Presenter do
   @doc """
   One account in Mastodon's shape.
 
-  `counts` fills the three profile-header figures. It is passed by the
-  endpoints that answer with a **single** account — the ones a client renders a
-  profile header from — and left out of the list endpoints, where filling it
-  would mean three counts per row and no client shows them there. Reading the
-  member's own bio into `note` costs nothing, so that is always filled.
+  `counts` fills the three profile-header figures. Every account this adapter
+  sends carries them, because a client renders a profile header from whichever
+  copy of the account it happens to hold — see
+  `Vutuv.MastodonApi.AccountCounts`, which reads them for a whole page at once
+  and is what `statuses/2` fills them from. Passing them here is for the
+  endpoints that answer with a **single** account; leaving them out keeps the
+  entity's zeroes, which is only ever right for an account whose figures are not
+  ours to state. Reading the member's own bio into `note` costs nothing, so that
+  is always filled.
   """
   def account(subject, counts \\ nil)
 
   def account(%User{} = user, counts) do
     avatar = user_avatar(user)
+    header = user_cover(user)
 
     base_account(%{
       id: user.id,
@@ -48,6 +55,8 @@ defmodule Vutuv.MastodonApi.Presenter do
       created_at: created_at(user, user.id),
       url: MastodonApi.main_url("/" <> user.username),
       avatar: avatar,
+      header: header,
+      header_static: header,
       group: false
     })
     |> Map.merge(count_fields(counts))
@@ -55,6 +64,7 @@ defmodule Vutuv.MastodonApi.Presenter do
 
   def account(%Organization{} = organization, counts) do
     handle = organization.username || organization.slug
+    header = organization_image(organization.cover, fallback_header())
 
     base_account(%{
       id: organization.id,
@@ -64,13 +74,10 @@ defmodule Vutuv.MastodonApi.Presenter do
       note: note(organization.description),
       created_at: created_at(organization, organization.id),
       url: MastodonApi.main_url(Organizations.canonical_path(organization)),
-      avatar: organization_image(organization.logo),
+      avatar: organization_image(organization.logo, fallback_avatar()),
+      header: header,
+      header_static: header,
       group: true
-    })
-    |> Map.merge(%{
-      header: organization_image(organization.cover),
-      header_static: organization_image(organization.cover),
-      avatar_static: organization_image(organization.logo)
     })
     |> Map.merge(count_fields(counts))
   end
@@ -78,7 +85,7 @@ defmodule Vutuv.MastodonApi.Presenter do
   def account(%RemoteAccount{} = account, _counts) do
     handle = RemoteAccount.display_handle(account) |> String.trim_leading("@")
     username = handle |> String.split("@") |> hd()
-    icon = fallback_avatar()
+    icon = remote_avatar(account)
 
     base_account(%{
       id: "remote-" <> account.id,
@@ -115,22 +122,120 @@ defmodule Vutuv.MastodonApi.Presenter do
       |> Enum.reject(&is_nil/1)
       |> Posts.post_engagement_map(viewer)
 
-    Enum.map(items, &rendered_status(&1, engagements))
+    items
+    |> Enum.map(&rendered_status(&1, engagements))
+    |> fill_account_counts(viewer)
   end
 
-  @doc "One status as `viewer` sees it — `statuses/2` for a single row."
+  # The figures on every account this page embeds, written in after the fact
+  # rather than threaded through `status/2`: a status reaches its author through
+  # half a dozen shapes (a post, a reshare of one, a cached post from another
+  # network), and each of them would otherwise have to remember to carry the
+  # counts along. See `Vutuv.MastodonApi.AccountCounts` for why they have to be
+  # there at all.
+  defp fill_account_counts(statuses, viewer) do
+    counts = AccountCounts.for_statuses(statuses, viewer)
+    Enum.map(statuses, &counted_status(&1, counts))
+  end
+
+  defp counted_status(%{reblog: %{} = inner} = status, counts),
+    do: %{counted_account(status, counts) | reblog: counted_account(inner, counts)}
+
+  defp counted_status(status, counts), do: counted_account(status, counts)
+
+  defp counted_account(%{account: %{id: id} = account} = status, counts) do
+    case counts[id] do
+      nil -> status
+      figures -> %{status | account: Map.merge(account, count_fields(figures))}
+    end
+  end
+
+  defp counted_account(status, _counts), do: status
+
+  @doc """
+  One status as `viewer` sees it — `statuses/2` for a single row.
+
+  **It fills the author's counts too, and that is the point rather than a side
+  effect of reusing the page path.** This is what answers a status action, a
+  fresh post and an edit, and a client keeps the account object out of any of
+  them: handing back zeroes on the reply to a like would put the very "0 posts"
+  back into a profile header that the counts exist to fix. The bill is the four
+  aggregates in `Vutuv.MastodonApi.AccountCounts` for a single member — and
+  nothing at all when the author is on another network, since there are no local
+  ids to count and the batch short-circuits before it queries.
+  """
   def one_status(item, viewer), do: item |> List.wrap() |> statuses(viewer) |> hd()
 
+  # The map clauses are for feed-entry maps only: a `%Note{}` also carries a
+  # `post` association, so without the guard a Note whose `:post` happens to be
+  # preloaded would render as its parent post instead of itself.
   defp engaged_post_id(%Post{id: id}), do: id
-  defp engaged_post_id(%{post: %Post{id: id}}), do: id
+  defp engaged_post_id(%{post: %Post{id: id}} = entry) when not is_struct(entry), do: id
   defp engaged_post_id(_other), do: nil
 
   defp rendered_status(%Post{} = post, engagements), do: status(post, engagements[post.id])
 
-  defp rendered_status(%{post: %Post{} = post}, engagements),
-    do: status(post, engagements[post.id])
+  defp rendered_status(%{post: %Post{} = post} = entry, engagements)
+       when not is_struct(entry),
+       do: reshared(entry, status(post, engagements[post.id]))
 
   defp rendered_status(other, _engagements), do: status_from_entry(other)
+
+  # A reshare in Mastodon's shape: an outer status by whoever passed the post
+  # on, carrying the post itself under `reblog`.
+  #
+  # **Every feed source here can hand over a reshare, and all of them were
+  # flattened.** A merged-feed entry names its resharer in `reposted_by` (a
+  # member or a page here) or in `boosted_by` (an account on another network),
+  # and this module dropped both: the post was rendered as if its own author had
+  # just written it. So a client showed a stranger's post in the middle of a
+  # member's home timeline with no line saying who passed it on — and the same
+  # on a member's own profile, where their reshares are part of their timeline
+  # (`Posts.author_statuses/3`), which is why "my own posts" read as
+  # everybody's.
+  #
+  # The wrapper is Mastodon's, down to the empty `content` and the `url` of
+  # `null`: a client renders the inner status and takes the outer one only for
+  # the "X boosted" line. The counts stay on the inner status, which is where a
+  # client reads them.
+  defp reshared(entry, inner) do
+    case resharer(entry) do
+      nil ->
+        inner
+
+      sharer ->
+        base_status(%{
+          id: reshare_id(entry, inner),
+          created_at: reshare_time(entry) || inner.created_at,
+          account: account(sharer),
+          content: "",
+          url: nil,
+          uri: inner.uri,
+          visibility: inner.visibility,
+          reblog: inner
+        })
+    end
+  end
+
+  # A resharer is a member or page here (`reposted_by`) or an account out there
+  # (`boosted_by`); an entry that is nobody's reshare has both nil, and a bare
+  # struct has neither key.
+  defp resharer(%{reposted_by: %{} = sharer}), do: sharer
+  defp resharer(%{boosted_by: %RemoteAccount{} = sharer}), do: sharer
+  defp resharer(_not_a_reshare), do: nil
+
+  # **The reshare is its own status and needs its own id**, or a boost and the
+  # post it carries are one entry to a client that keys its timeline by id — and
+  # the id is also the pagination cursor, whose timestamp must be when the post
+  # was *passed on*, not when it was written. Feed entries already carry exactly
+  # that id (`boost-<uuid>`, `repost-<uuid>`, …), built on the reshare row's own
+  # UUIDv7; `VutuvWeb.MastodonApi.Pagination.bare_id/1` reads the uuid back out
+  # of it, and `VutuvWeb.MastodonApi.StatusController` resolves it to the post.
+  defp reshare_id(%{id: id}, _inner) when is_binary(id), do: id
+  defp reshare_id(_entry, inner), do: inner.id
+
+  defp reshare_time(%{at: at}), do: timestamp(at)
+  defp reshare_time(_entry), do: nil
 
   def status(post, engagement \\ nil)
 
@@ -183,9 +288,37 @@ defmodule Vutuv.MastodonApi.Presenter do
     })
   end
 
-  def status_from_entry(%{remote_post: %RemotePost{} = post}), do: status(post)
-  def status_from_entry(%{note: %Note{} = note}), do: status(note)
-  def status_from_entry(%{post: %Post{} = post}), do: status(post)
+  @doc """
+  One feed entry as a status — a reshare included, which is why this wraps
+  rather than only unwrapping (`reshared/2`).
+
+  It is also what the timeline endpoints read the pagination boundary out of, so
+  the id it answers for a reshare has to be the reshare's own.
+  """
+  def status_from_entry(entry), do: reshared(entry, inner_status_from_entry(entry))
+
+  # **A row from another network also arrives on its own, not only wrapped in a
+  # feed entry.** The map clauses below read the merged feed's entry maps, and
+  # every caller that hands over a bare struct instead fell straight through
+  # them into a `FunctionClauseError` — a 500 with an HTML body, to a client
+  # that decodes every answer as JSON. Two live paths did exactly that:
+  # `Fediverse.recent_public_remote_posts/1` answers bare `%RemotePost{}`
+  # structs, so a client's **Federated** tab 500ed the moment this site had
+  # cached a single post (which reads as "no posts found"); and
+  # `one_status/2` renders the answer to every status action, so favouriting,
+  # boosting or bookmarking anything from another network failed *after* the
+  # like had already been written and delivered.
+  #
+  # The struct clauses come first on purpose: a `%Note{}` also carries a `post`
+  # association, so with the map clauses ahead a Note whose `:post` happens to
+  # be preloaded would render as its parent post instead of itself.
+  defp inner_status_from_entry(%RemotePost{} = post), do: status(post)
+  defp inner_status_from_entry(%Note{} = note), do: status(note)
+  defp inner_status_from_entry(%Post{} = post), do: status(post)
+
+  defp inner_status_from_entry(%{remote_post: %RemotePost{} = post}), do: status(post)
+  defp inner_status_from_entry(%{note: %Note{} = note}), do: status(note)
+  defp inner_status_from_entry(%{post: %Post{} = post}), do: status(post)
 
   defp count_fields(nil), do: %{}
 
@@ -216,6 +349,20 @@ defmodule Vutuv.MastodonApi.Presenter do
   def fallback_avatar, do: MastodonApi.main_url("/images/icon-512.png")
 
   @doc """
+  The banner stood in for an account with no cover picture — a remote actor
+  (we cache no banner for one), a page or a member who never uploaded one.
+
+  A separate picture from `fallback_avatar/0` on purpose: a square app icon
+  stretched across a profile header is what a client showed until now, and it
+  reads as a broken image rather than as an empty banner. This is the brand
+  gradient the website's own coverless profile draws, so the two surfaces agree.
+  Still a URL and never nil — Mastodon types `header` as a string, and a client
+  decoding the account into a non-optional field drops the whole account over a
+  null.
+  """
+  def fallback_header, do: MastodonApi.main_url("/images/header-placeholder.png")
+
+  @doc """
   The keys every account carries, under the ones a caller filled in.
 
   Public because an account is also built outside this module — the stand-in for
@@ -232,8 +379,8 @@ defmodule Vutuv.MastodonApi.Presenter do
         discoverable: true,
         group: false,
         note: "",
-        header: fallback_avatar(),
-        header_static: fallback_avatar(),
+        header: fallback_header(),
+        header_static: fallback_header(),
         avatar_static: fields.avatar,
         followers_count: 0,
         following_count: 0,
@@ -280,6 +427,11 @@ defmodule Vutuv.MastodonApi.Presenter do
     )
   end
 
+  # The AI image gate is not re-asked here: `Vutuv.Uploads.url/3` answers "no
+  # image" for a picture still in moderation limbo (the file waits in
+  # quarantine), so a pending avatar already comes back as the `data:` default
+  # and a pending cover as nil — the same chokepoint every website surface
+  # reads, and the stand-in falls out of it.
   defp user_avatar(user) do
     case Avatar.display_url(user, :thumb) do
       "/" <> _path = relative -> MastodonApi.main_url(relative)
@@ -288,14 +440,42 @@ defmodule Vutuv.MastodonApi.Presenter do
     end
   end
 
+  # The member's own banner, which this never sent at all: `base_account/1`
+  # filled `header` with the installation's icon and nothing overrode it for a
+  # member, so a client drew the vutuv logo across the top of every profile —
+  # including profiles that have carried a cover photo for years.
+  defp user_cover(user) do
+    case Cover.display_url(user, :wide) do
+      path when is_binary(path) -> MastodonApi.main_url(path)
+      nil -> fallback_header()
+    end
+  end
+
   # A page's own logo and cover, which this used to skip entirely: every
   # organization account was rendered with the installation's default icon, so a
   # client showed the vutuv logo beside a page that has had a picture all along.
-  # `nil` (no picture stored) keeps the stand-in.
-  defp organization_image(nil), do: fallback_avatar()
+  # The stand-in is the caller's, because it belongs to the *slot* rather than to
+  # the page — a square icon is not a banner. The AI gate is not re-asked here:
+  # an organization image is served through
+  # `VutuvWeb.OrganizationImageController`, which resolves the token and asks it
+  # per request.
+  defp organization_image(nil, stand_in), do: stand_in
 
-  defp organization_image(token),
+  defp organization_image(token, _stand_in),
     do: MastodonApi.main_url(OrganizationImage.token_url(token, "large"))
+
+  # The cached picture of an account on another network (issue #1163), which
+  # every surface of the website already shows and this one threw away: the
+  # avatar was hardcoded to the installation's icon, so a Mastodon client
+  # rendered the vutuv logo beside every remote author. `avatar_url/1` is the
+  # one chokepoint that answers nil unless the AI gate cleared the file, so a
+  # picture we may not show still falls back rather than leaking.
+  defp remote_avatar(%RemoteAccount{} = account) do
+    case RemoteAccount.avatar_url(account) do
+      path when is_binary(path) -> MastodonApi.main_url(path)
+      nil -> fallback_avatar()
+    end
+  end
 
   defp note_account(%Note{account_id: id} = note) when is_binary(id) do
     case Fediverse.get_remote_account(id) do

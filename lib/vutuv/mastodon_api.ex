@@ -53,10 +53,47 @@ defmodule Vutuv.MastodonApi do
     if normalize_host(host) == api_host(), do: api_url(path), else: main_url(path)
   end
 
+  # The machine-readable twin of `@compatibility_version` (Mastodon 4.3+): one
+  # integer that says which API generation this speaks, and the value Mastodon
+  # itself shipped under the version above (`lib/mastodon/version.rb` at
+  # v4.4.0). It exists **because** the version string is unparseable for a fork
+  # — ours reads `4.4.0 (compatible; vutuv 7.x)` — so a client that wants to
+  # know what it may call reads this instead of guessing at prose. Kept beside
+  # the string it belongs to, so the two claims cannot drift into naming
+  # different Mastodon generations.
+  @mastodon_api_version 6
+
   def compatibility_version do
     vutuv_version = Application.spec(:vutuv, :vsn) |> to_string()
     @compatibility_version <> " (compatible; vutuv " <> vutuv_version <> ")"
   end
+
+  @doc """
+  The `api_versions` object of the v2 instance document.
+
+  A map rather than the bare integer, because the field is an open namespace:
+  Mastodon fills `mastodon`, and another implementation may add its own key
+  beside it without either side having to agree first.
+  """
+  def api_versions, do: %{mastodon: @mastodon_api_version}
+
+  @doc """
+  Where to write about this installation — the address `security.txt` already
+  publishes as the operator contact, from the operator-identity block in
+  `config/config.exs` (env-overridable) rather than from a literal here.
+  """
+  def operator_email do
+    {_name, email} = Application.fetch_env!(:vutuv, :operator_recipient)
+    email
+  end
+
+  @doc """
+  The handle of the member a client should be pointed at for this installation,
+  as written in config and **not** resolved here: an installation whose handle
+  names nobody must answer with no account rather than with a stranger's
+  profile, and that is the caller's lookup to make.
+  """
+  def operator_handle, do: Application.get_env(:vutuv, :operator_handle)
 
   def main_url(path), do: absolute_url(local_domain(), path)
   def api_url(path), do: absolute_url(api_host(), path)

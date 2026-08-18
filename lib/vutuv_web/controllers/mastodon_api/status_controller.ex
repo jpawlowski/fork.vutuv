@@ -12,43 +12,47 @@ defmodule VutuvWeb.MastodonApi.StatusController do
   alias Vutuv.Posts.Post
   alias Vutuv.Repo
 
-  def show(conn, %{"id" => "remote-note-" <> id}) do
-    case Fediverse.get_note(id) do
-      nil ->
-        not_found(conn)
+  @doc """
+  One status by the id a client was given.
 
-      note ->
-        if note_visible?(conn, note),
-          do: json(conn, Presenter.status(note)),
-          else: not_found(conn)
-    end
-  end
-
-  def show(conn, %{"id" => "remote-" <> id}) do
-    case Fediverse.get_remote_post(id) do
-      nil ->
-        not_found(conn)
-
-      post ->
-        if remote_post_visible?(conn, post),
-          do: json(conn, Presenter.status(post)),
-          else: not_found(conn)
-    end
-  end
-
+  **A reshare's id resolves to what it passed on.** Reshares are statuses in
+  their own right here (`Presenter.reshared/2`), so a client hands back
+  `boost-<uuid>` or `repost-<uuid>` — ids that named a reshare row, reached
+  `Posts.get_post/1`, missed, and 404ed. Resolving them to the object underneath
+  is what Mastodon does with a reblog id too: acting on a reshare is acting on
+  the post.
+  """
   def show(conn, %{"id" => id}) do
-    case Posts.get_post(id) do
-      %Post{} = post ->
-        subject = conn.assigns.current_organization || conn.assigns.current_user
+    with_visible_status(conn, id, fn object ->
+      json(conn, Presenter.one_status(object, viewer(conn)))
+    end)
+  end
 
-        if Posts.visible_to?(post, subject),
-          do: json(conn, Presenter.one_status(post, subject)),
-          else: not_found(conn)
-
+  # The one spelling of "resolve the id, gate it, or 404" — every read and
+  # every action goes through it. Answering 200 to any id that merely resolves
+  # tells whoever asks that the object exists, which is the one thing a
+  # followers-only cached post must not confirm, so no caller may skip the gate.
+  defp with_visible_status(conn, id, fun) do
+    case resolve_status(id) do
       nil ->
         not_found(conn)
+
+      object ->
+        if status_visible?(conn, object), do: fun.(object), else: not_found(conn)
     end
   end
+
+  # Every id shape the client API mints, in one place. Order matters: the longer
+  # `remote-` prefixes have to be read before the bare one, or a cached reply
+  # would be looked up as a cached post.
+  defp resolve_status("remote-note-" <> id), do: Fediverse.get_note(id)
+  defp resolve_status("remote-reply-repost-" <> id), do: Fediverse.get_reposted_note(id)
+  defp resolve_status("remote-repost-" <> id), do: Fediverse.get_reposted_remote_post(id)
+  defp resolve_status("remote_repost-" <> id), do: Fediverse.get_reposted_remote_post(id)
+  defp resolve_status("remote-" <> id), do: Fediverse.get_remote_post(id)
+  defp resolve_status("boost-" <> id), do: Fediverse.get_boosted_object(id)
+  defp resolve_status("repost-" <> id), do: Posts.get_reposted_post(id)
+  defp resolve_status(id), do: Posts.get_post(id)
 
   def create(conn, %{"status" => body} = params) when is_binary(body) do
     with :ok <- validate_visibility(params["visibility"]),
@@ -174,16 +178,19 @@ defmodule VutuvWeb.MastodonApi.StatusController do
   and inventing one would put words in the wrong conversation.
   """
   def context(conn, %{"id" => id}) do
-    case Posts.get_post(id) do
-      %Post{} = post ->
-        if status_visible?(conn, post),
-          do: json(conn, thread_context(conn, post)),
-          else: not_found(conn)
-
-      nil ->
-        not_found(conn)
-    end
+    with_visible_status(conn, id, fn object ->
+      json(conn, context_payload(conn, object))
+    end)
   end
+
+  defp context_payload(conn, %Post{} = post), do: thread_context(conn, post)
+
+  # A status from another network has no place in the local reply tree, but a
+  # client asks for its context the moment somebody opens it — and a 404 to
+  # that call is an error screen where the post should be. The honest answer is
+  # the empty conversation, in Mastodon's own shape (the visibility gate has
+  # already been asked by `with_visible_status/3`, like on every other read).
+  defp context_payload(_conn, _remote), do: %{ancestors: [], descendants: []}
 
   @doc """
   The status as its author typed it — the Markdown source, not the rendered
@@ -228,52 +235,20 @@ defmodule VutuvWeb.MastodonApi.StatusController do
       else: Posts.create_organization_post(organization, user, attrs)
   end
 
-  defp create_reply(user, "remote-note-" <> id, attrs) do
-    case Fediverse.get_note(id) do
-      nil -> {:error, :not_found}
-      note -> Posts.create_remote_reply(user, note, attrs)
-    end
-  end
-
-  defp create_reply(user, "remote-" <> id, attrs) do
-    case Fediverse.get_remote_post(id) do
-      nil -> {:error, :not_found}
-      post -> Posts.create_remote_post_reply(user, post, attrs)
-    end
-  end
-
+  # Answering goes through the same resolution as everything else, so a client
+  # that replies while looking at a reshare answers the post rather than being
+  # told the status does not exist.
   defp create_reply(user, id, attrs) do
-    case Posts.get_post(id) do
+    case resolve_status(id) do
+      %Note{} = note -> Posts.create_remote_reply(user, note, attrs)
+      %RemotePost{} = post -> Posts.create_remote_post_reply(user, post, attrs)
+      %Post{} = post -> Posts.create_reply(user, post, attrs)
       nil -> {:error, :not_found}
-      post -> Posts.create_reply(user, post, attrs)
-    end
-  end
-
-  defp status_action(conn, "remote-note-" <> id, action) do
-    case Fediverse.get_note(id) do
-      nil -> not_found(conn)
-      note -> maybe_perform_status_action(conn, note, action)
-    end
-  end
-
-  defp status_action(conn, "remote-" <> id, action) do
-    case Fediverse.get_remote_post(id) do
-      nil -> not_found(conn)
-      post -> maybe_perform_status_action(conn, post, action)
     end
   end
 
   defp status_action(conn, id, action) do
-    case Posts.get_post(id) do
-      nil -> not_found(conn)
-      post -> maybe_perform_status_action(conn, post, action)
-    end
-  end
-
-  defp maybe_perform_status_action(conn, post, action) do
-    if status_visible?(conn, post),
-      do: perform_status_action(conn, post, action),
-      else: not_found(conn)
+    with_visible_status(conn, id, &perform_status_action(conn, &1, action))
   end
 
   defp perform_status_action(conn, post, action) do
@@ -371,6 +346,40 @@ defmodule VutuvWeb.MastodonApi.StatusController do
   defp action_error(:restricted), do: "This status cannot be reblogged."
   defp action_error(:unsupported), do: "This identity cannot perform that action."
   defp action_error(:not_found), do: "The referenced status no longer exists."
+
+  # **A refusal a member can act on has to say what to do**, and every reason a
+  # cached post can refuse for used to collapse into one sentence that names
+  # nothing: "The status action could not be completed." A member whose account
+  # simply does not federate yet was told exactly what a member hitting their
+  # hourly budget was told, and both read as a broken button — which is how
+  # "posts from the fediverse cannot be favourited" was reported. These are the
+  # reasons `Vutuv.Fediverse`'s outbound gates answer with; anything else keeps
+  # the catch-all below.
+  defp action_error(:not_federating) do
+    "Turn Fediverse publishing on for your account first: a like, boost or reply " <>
+      "leaves this site signed with your own key, and an account that does not " <>
+      "federate has none. You can switch it on under Settings, Privacy, Fediverse."
+  end
+
+  defp action_error(:fediverse_disabled),
+    do: "This installation does not talk to the Fediverse."
+
+  defp action_error(:moved),
+    do: "Your account is redirected to another server, so nothing leaves this one any more."
+
+  defp action_error(:instance_blocked),
+    do: "This installation does not exchange anything with that server."
+
+  defp action_error(:not_visible),
+    do: "This status is not yours to read, so it is not yours to act on."
+
+  defp action_error(:post_not_public),
+    do: "The author narrowed this status, so it cannot be answered or passed on."
+
+  defp action_error(reason) when reason in [:like_capped, :boost_capped, :reply_capped],
+    do:
+      "You have used this hour's budget for actions that leave for other servers. Try again later."
+
   defp action_error(_reason), do: "The status action could not be completed."
 
   defp note_visible?(%{assigns: %{current_organization: nil, current_user: user}}, note),
@@ -417,13 +426,19 @@ defmodule VutuvWeb.MastodonApi.StatusController do
     %{posts: posts} = Posts.list_thread(post, viewer)
 
     parents = Map.new(posts, &{&1.id, parent_id(&1)})
-    ancestors = ancestor_chain(parents, parents[post.id], [])
+    by_id = Map.new(posts, &{&1.id, &1})
+    ancestors = for id <- ancestor_chain(parents, parents[post.id], []), by_id[id], do: by_id[id]
     descendants = Enum.filter(posts, &below?(parents, &1.id, post.id))
 
-    %{
-      ancestors: render_thread(posts, ancestors, viewer),
-      descendants: Presenter.statuses(descendants, viewer)
-    }
+    # **One render for both halves.** A thread is mostly the same handful of
+    # people, and every `Presenter.statuses/2` call reads their counts
+    # (`Vutuv.MastodonApi.AccountCounts`) — rendering ancestors and descendants
+    # separately paid for that twice per request, on the call a client makes the
+    # moment somebody opens a status.
+    rendered = Presenter.statuses(ancestors ++ descendants, viewer)
+    {rendered_ancestors, rendered_descendants} = Enum.split(rendered, length(ancestors))
+
+    %{ancestors: rendered_ancestors, descendants: rendered_descendants}
   end
 
   # Oldest first, which is reading order for a chain of answers.
@@ -431,11 +446,6 @@ defmodule VutuvWeb.MastodonApi.StatusController do
 
   defp ancestor_chain(parents, id, acc) do
     if id in acc, do: acc, else: ancestor_chain(parents, parents[id], [id | acc])
-  end
-
-  defp render_thread(posts, ids, viewer) do
-    by_id = Map.new(posts, &{&1.id, &1})
-    Presenter.statuses(for(id <- ids, post = by_id[id], do: post), viewer)
   end
 
   # Walks up rather than down: a post is a descendant when the focus is

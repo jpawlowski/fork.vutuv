@@ -7,6 +7,7 @@ defmodule VutuvWeb.MastodonApi.AccountController do
   alias Vutuv.Accounts.User
   alias Vutuv.Fediverse
   alias Vutuv.Fediverse.RemoteAccount
+  alias Vutuv.MastodonApi.AccountCounts
   alias Vutuv.MastodonApi.Presenter
   alias Vutuv.Moderation
   alias Vutuv.Organizations
@@ -29,31 +30,20 @@ defmodule VutuvWeb.MastodonApi.AccountController do
     end
   end
 
-  # The three figures a client puts in a profile header. Only here and on
-  # `verify_credentials`, the two endpoints that answer with a single account —
-  # a followers list would pay this per row, and no client shows the numbers
-  # there.
-  defp counts(conn, %User{} = user) do
-    %{
-      followers: Social.follower_count(user),
-      following: following_count(user),
-      statuses: Posts.count_author_posts(user, profile_viewer(conn))
-    }
-  end
+  # The three figures a client puts in a profile header, from the one place that
+  # assembles them (`Vutuv.MastodonApi.AccountCounts`). They used to be composed
+  # here as well as there, and the two copies had already drifted: a page's own
+  # publisher counted as a publisher on this endpoint and as a stranger in the
+  # account embedded in a status, so the same page reported two different post
+  # counts depending on which object the client happened to read.
+  # The viewer differs by subject and always has: a page's own publisher may see
+  # its frozen posts, a member's profile is read as `profile_viewer/1` decides.
+  # Only the *arithmetic* moved out; passing the viewer stays here, because this
+  # is the only layer that knows which page the request is acting for.
+  defp counts(conn, %Organization{} = page),
+    do: AccountCounts.for_account(page, organization_viewer(conn, page))
 
-  defp counts(conn, %Organization{} = organization) do
-    %{
-      followers: Social.organization_follower_count(organization),
-      following: following_count(organization),
-      statuses:
-        Posts.count_organization_posts(organization, organization_viewer(conn, organization))
-    }
-  end
-
-  # A remote account's figures live on its own server; we hold a cache of its
-  # posts, not its social graph, and inventing a number from what happens to be
-  # cached would be worse than the honest zero.
-  defp counts(_conn, _remote), do: nil
+  defp counts(conn, subject), do: AccountCounts.for_account(subject, profile_viewer(conn))
 
   def follow(conn, %{"id" => id}), do: relationship_action(conn, id, :follow)
   def unfollow(conn, %{"id" => id}), do: relationship_action(conn, id, :unfollow)
@@ -423,14 +413,6 @@ defmodule VutuvWeb.MastodonApi.AccountController do
       Social.organization_followed_pages(organization, opts) ++ remote_accounts
   end
 
-  defp following_count(%User{} = user),
-    do: Social.followee_count(user) + Fediverse.remote_follow_count(user)
-
-  defp following_count(%Organization{} = organization) do
-    Social.organization_followee_count(organization) +
-      length(Fediverse.list_organization_remote_follows(organization))
-  end
-
   defp target(_conn, "remote-" <> id), do: Fediverse.get_remote_account(id)
 
   defp target(conn, id) do
@@ -489,8 +471,9 @@ defmodule VutuvWeb.MastodonApi.AccountController do
   # Accounts and statuses from another network are rendered with a prefixed id
   # (`remote-<uuid>`); the uuid underneath is what carries the ordering, so it
   # is what a page boundary compares and advertises.
-  defp bare_id("remote-note-author-" <> rest), do: rest
-  defp bare_id("remote-note-" <> rest), do: rest
-  defp bare_id("remote-" <> rest), do: rest
-  defp bare_id(id), do: id
+  # Shared with the timelines rather than kept as a second list: an account's
+  # own statuses carry the reshare ids the merged feed mints (`repost-<uuid>`,
+  # `remote_repost-<uuid>`), which this copy did not know about and would have
+  # handed to the paginator whole.
+  defp bare_id(id), do: Pagination.bare_id(id)
 end
