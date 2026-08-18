@@ -11,6 +11,19 @@ developer guide (`mise` for Erlang/Elixir, PostgreSQL 17, libvips, then
 PIN login flow. Installing vutuv to *run* it (rather than develop it) is
 covered separately in [docs/ADMINS.md](docs/ADMINS.md).
 
+## Working from a fork
+
+Set your clone up once, right after cloning:
+
+```bash
+./scripts/fork_setup.sh
+```
+
+It adds an `upstream` remote for this repository and makes it fetch-only, so
+`origin` (your fork) stays the only thing you push to. Branch from and rebase
+onto `upstream/main` — this repository moves fast enough that a fork is behind
+within hours, and your fork's `main` is only a mirror of it.
+
 ## Ground rules
 
 - **Start every feature or bugfix with a test** that covers it, then make it
