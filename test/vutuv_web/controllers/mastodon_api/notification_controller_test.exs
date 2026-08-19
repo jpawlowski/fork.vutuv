@@ -15,6 +15,7 @@ defmodule VutuvWeb.MastodonApi.NotificationControllerTest do
   alias Vutuv.Posts
   alias Vutuv.Repo
   alias Vutuv.Social
+  alias VutuvWeb.RemoteMediaToken
 
   test "a like and a follow arrive as favourite and follow", %{conn: conn} do
     member = insert(:activated_user)
@@ -207,8 +208,16 @@ defmodule VutuvWeb.MastodonApi.NotificationControllerTest do
       assert favourite["type"] == "favourite"
       assert favourite["account"]["id"] == "remote-" <> account.id
 
-      assert favourite["account"]["avatar"] ==
-               MastodonApi.main_url(RemoteAccount.avatar_url(account))
+      # Plus the capability the picture's proxy wants — a phone app's image
+      # loader sends no cookie, so the URL has to carry its own permission.
+      assert String.starts_with?(
+               favourite["account"]["avatar"],
+               MastodonApi.main_url(RemoteAccount.avatar_url(account)) <> "?"
+             )
+
+      assert favourite["account"]["avatar"]
+             |> avatar_capability()
+             |> RemoteMediaToken.avatar?(account.id, account.avatar)
 
       refute favourite["account"]["avatar"] == Presenter.fallback_avatar()
     end

@@ -95,7 +95,17 @@ defmodule Vutuv.MastodonApi do
   """
   def operator_handle, do: Application.get_env(:vutuv, :operator_handle)
 
-  def main_url(path), do: absolute_url(local_domain(), path)
+  @doc """
+  An absolute URL on the main host, optionally with a query string.
+
+  The URI is built from parts, and `URI.to_string/1` escapes nothing, so a
+  query folded into `path` also comes out intact — `PostImage.url/2` has always
+  arrived that way, carrying its crop buster. What must not happen is both at
+  once: a `path` already ending in `?v=…` plus a `query` yields `…?v=1?t=…`,
+  which names nothing. Nothing enforces that, so pass the query here.
+  """
+  def main_url(path, query \\ nil), do: absolute_url(local_domain(), path, query)
+
   def api_url(path), do: absolute_url(api_host(), path)
 
   @doc """
@@ -113,8 +123,8 @@ defmodule Vutuv.MastodonApi do
     |> String.replace_prefix("http://", "ws://")
   end
 
-  defp absolute_url(host, path) do
+  defp absolute_url(host, path, query \\ nil) do
     uri = URI.parse(Endpoint.url())
-    URI.to_string(%{uri | host: host, path: path, query: nil, fragment: nil})
+    URI.to_string(%{uri | host: host, path: path, query: query, fragment: nil})
   end
 end

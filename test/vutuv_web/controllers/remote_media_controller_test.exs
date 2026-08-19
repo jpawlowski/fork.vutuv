@@ -15,13 +15,17 @@ defmodule VutuvWeb.RemoteMediaControllerTest do
   """
   use VutuvWeb.ConnCase, async: true
 
+  import Vutuv.MastodonHelpers, only: [avatar_capability: 1]
+
   alias Vutuv.Fediverse.Follow
   alias Vutuv.Fediverse.PostBoost
   alias Vutuv.Fediverse.PostRepost
   alias Vutuv.Fediverse.RemoteAccount
   alias Vutuv.Fediverse.RemoteImage
   alias Vutuv.Fediverse.RemotePost
+  alias Vutuv.MastodonApi.Presenter
   alias Vutuv.RemoteMedia
+  alias VutuvWeb.RemoteMediaToken
 
   setup %{conn: conn} do
     {conn, user} = create_and_login_user(Plug.Test.init_test_session(conn, %{}))
@@ -233,4 +237,77 @@ defmodule VutuvWeb.RemoteMediaControllerTest do
       assert get(ctx.conn, media_url(stored)).status == 404
     end
   end
+
+  describe "the URL the Mastodon adapter hands a client" do
+    # The seam #1588 opened: the adapter started naming the cached picture
+    # instead of the installation's icon, and an image loader fetches with a
+    # bare GET — no cookie, no bearer, because that is what every image loader
+    # does. So the picture the API had just named came back 404 and every
+    # account out of the fediverse sat blank in the app.
+    test "loads without a session, because that is how an image loader asks", ctx do
+      stored = avatar(ctx.account)
+
+      assert get(ctx.out, adapter_path(stored)).status == 200
+    end
+
+    test "is refused when the query carries something that is not one", ctx do
+      stored = avatar(ctx.account)
+
+      assert get(ctx.out, media_url(stored) <> "?t=not-a-token").status == 404
+    end
+
+    # Expiry is the whole difference between a capability and the unguessable
+    # URL the proxy's moduledoc refuses, so both ends of the window are pinned.
+    test "stops opening the picture once it has expired", ctx do
+      stored = avatar(ctx.account)
+      stale = minted_ago(stored, RemoteMediaToken.max_age() + 86_400)
+
+      refute RemoteMediaToken.avatar?(avatar_capability("?" <> stale), stored.id, stored.avatar)
+      assert get(ctx.out, media_url(stored) <> "?" <> stale).status == 404
+    end
+
+    # The other end, and the one a reader would report: a client may still be
+    # showing a timeline it cached days ago, and those URLs have to keep
+    # working. It is also the only guard on `verify/4`'s `max_age:` option —
+    # drop it and Plug.Crypto falls back to the ONE DAY it bakes in at signing
+    # time, which is *stricter*, so no expiry test can catch that. Every
+    # capability older than a day would 404 and every face would go blank
+    # again, which is the bug this whole module exists to fix.
+    test "still opens it a day inside the window", ctx do
+      stored = avatar(ctx.account)
+      old = minted_ago(stored, RemoteMediaToken.max_age() - 86_400)
+
+      assert get(ctx.out, media_url(stored) <> "?" <> old).status == 200
+    end
+
+    test "stops answering once the gate takes the picture back", ctx do
+      stored = avatar(ctx.account)
+      path = adapter_path(stored)
+
+      Repo.update!(change(stored, avatar_moderation: "pending"))
+
+      assert get(ctx.out, path).status == 404
+    end
+
+    test "does not open another account's picture", ctx do
+      other = avatar(other_account())
+      borrowed = ctx.account |> avatar() |> capability()
+
+      assert get(ctx.out, media_url(other) <> "?" <> borrowed).status == 404
+    end
+  end
+
+  # The avatar URL as a client receives it, reduced to what ConnTest requests.
+  defp adapter_path(%RemoteAccount{} = account),
+    do: media_url(account) <> "?" <> capability(account)
+
+  defp capability(%RemoteAccount{} = account) do
+    %URI{query: query} = account |> Presenter.account() |> Map.fetch!(:avatar) |> URI.parse()
+    query
+  end
+
+  # A capability as it would have been minted `seconds` ago — the injectable
+  # clock, so the expiry tests never wait and never read the real one.
+  defp minted_ago(%RemoteAccount{id: id, avatar: file}, seconds),
+    do: RemoteMediaToken.avatar_query(id, file, System.os_time(:second) - seconds)
 end

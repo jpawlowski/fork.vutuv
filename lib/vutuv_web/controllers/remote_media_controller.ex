@@ -31,9 +31,25 @@ defmodule VutuvWeb.RemoteMediaController do
   follows their author; none of it is a public surface, and an unguessable URL
   is not an access control — it is a URL, and URLs get shared, logged and
   pasted. The check is in the action rather than in a router pipeline so it
-  cannot be lost by a route moving scope, and it is the same `%User{}` gate on
-  both actions: the routes sit in the plain `:browser` scope, where nothing
-  else would ask.
+  cannot be lost by a route moving scope: the routes sit in the plain
+  `:browser` scope, where nothing else would ask. `post_image/2` takes a
+  `%User{}` and nothing else; `avatar/2` takes one of two claims.
+
+  **The avatar's second claim is a signed capability.** A session is how a
+  *browser* proves it is a member, and the Mastodon adapter's readers are phone
+  apps whose image loader sends neither the cookie nor the bearer token the API
+  call beside it used. So the avatar action takes a
+  `VutuvWeb.RemoteMediaToken` as the equivalent claim — unforgeable, expiring,
+  and naming exactly the account and stored file it opens. Everything else on
+  the way in is unchanged and re-asked per request, so it widens *what* may be
+  seen by nothing; without it, v7.330.0 named every remote picture in an API
+  response at a URL no client could fetch. It does widen *who*, and the module
+  says how far. `post_image/2` has no such door because the adapter names no
+  remote attachment — see `VutuvWeb.RemoteMediaToken`.
+
+  Both actions open on `Vutuv.Fediverse.enabled?/0`: switching federation off
+  has to close the proxy too, or the pictures it cached go on being served
+  after the feature that justified them is gone.
   """
 
   use VutuvWeb, :controller
@@ -44,9 +60,11 @@ defmodule VutuvWeb.RemoteMediaController do
   alias Vutuv.Fediverse.RemoteImage
   alias Vutuv.RemoteMedia
   alias VutuvWeb.ImageProxy
+  alias VutuvWeb.RemoteMediaToken
 
   def post_image(conn, %{"id" => id, "version" => version_file}) do
-    with %User{} = viewer <- viewer(conn),
+    with true <- Fediverse.enabled?(),
+         %User{} = viewer <- conn.assigns[:current_user],
          %RemoteImage{} = image <- Fediverse.get_remote_image(id),
          true <- RemoteImage.released?(image),
          version when not is_nil(version) <- parse_version(version_file, image.file),
@@ -62,11 +80,25 @@ defmodule VutuvWeb.RemoteMediaController do
 
   # An avatar has no per-post audience: it is the picture of an account
   # somebody here follows, shown wherever that account is named. So the check
-  # is the gate plus a signed-in reader.
-  def avatar(conn, %{"id" => id, "version" => version_file}) do
-    with %User{} <- viewer(conn),
+  # is the gate plus a reader who belongs here — a session, or the capability
+  # the API hands its clients.
+  #
+  # The capability is asked about twice because the two halves of its answer
+  # have different costs. Whether we minted it and it is still good is a
+  # signature check over the token alone (`authentic?/1`), so it goes ABOVE the
+  # lookup and keeps an anonymous caller from spending a query — this route
+  # used to refuse them for free and must go on doing so. Which file it opens
+  # can only be settled against the row, because a rotated picture has to stop
+  # answering, so that half stays below.
+  def avatar(conn, %{"id" => id, "version" => version_file} = params) do
+    member? = match?(%User{}, conn.assigns[:current_user])
+    token = params[RemoteMediaToken.param()]
+
+    with true <- Fediverse.enabled?(),
+         true <- member? or RemoteMediaToken.authentic?(token),
          %RemoteAccount{} = account <- Fediverse.get_remote_account(id),
          true <- RemoteAccount.avatar_ready?(account),
+         true <- member? or RemoteMediaToken.avatar?(token, account.id, account.avatar),
          version when not is_nil(version) <- parse_version(version_file, account.avatar) do
       serve(conn, version,
         accel: &RemoteMedia.avatar_accel_path(account.id, &1),
@@ -75,13 +107,6 @@ defmodule VutuvWeb.RemoteMediaController do
     else
       _ -> ImageProxy.not_found(conn)
     end
-  end
-
-  # A signed-in reader, and only while the installation federates at all:
-  # switching federation off has to close the proxy too, or the pictures it
-  # cached go on being served after the feature that justified them is gone.
-  defp viewer(conn) do
-    if Fediverse.enabled?(), do: conn.assigns[:current_user]
   end
 
   defp serve(conn, version, accel: accel, path: path) do
