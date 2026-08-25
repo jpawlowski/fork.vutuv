@@ -18,6 +18,7 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
   alias Vutuv.Fediverse.RemoteAccount
   alias Vutuv.Fediverse.RemoteImage
   alias Vutuv.Fediverse.RemotePost
+  alias Vutuv.Moderation.ImageScans
   alias Vutuv.Organizations.Organization
   alias Vutuv.Posts
   alias Vutuv.Posts.PhotoLicense
@@ -33,12 +34,22 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
 
   @doc """
   The robots axes of a post page as `{noindex?, noai?}`: a restriction
-  noindexes the page and keeps it from AI page-level, and the author's
-  `noai?` extends their AI opt-out to all their posts. The one derivation
-  behind the HTML permalink's headers (`PostController`) and the doc's,
-  so the two cannot disagree.
+  noindexes the page and keeps it from AI page-level, and the author's own
+  opt-outs extend to everything they wrote. The one derivation behind the
+  HTML permalink's headers (`PostController`) and the doc's, so the two
+  cannot disagree.
+
+  **`author.noindex?` belongs on the first axis and was missing from it.**
+  Only a restriction noindexed a post, so a member who had asked search
+  engines to stay away from their profile still had every permalink and
+  archive page offered for indexing — while `LayoutHTML.robots_directives/1`
+  derived a *third* answer from the same author and put `noindex` in the
+  page's `<meta>` tag. The tag said one thing, the header and every
+  `.md`/`.json` sibling said nothing, and the docstring above claimed the
+  two could not disagree.
   """
-  def robots_axes(author, restricted?), do: {restricted?, restricted? or author.noai?}
+  def robots_axes(author, restricted?),
+    do: {restricted? or author.noindex?, restricted? or author.noai?}
 
   @doc """
   The permalink page: the post itself plus its visible replies. Anonymous
@@ -87,13 +98,18 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       # reuse a picture should not have to parse a translated sentence.
       license: license_entry(post),
       in_reply_to: in_reply_to(post),
-      # Every reply the page counts, from both worlds — the figure the HTML
-      # reply button now shows (a remote reply is a reply). Counted off the two
-      # loaded lists rather than re-queried, so the number and the entries below
-      # it can never drift: `replies` holds the anonymous-visible vutuv ones
-      # (Posts.reply_count/1 excludes frozen / denied replies since issue #774)
-      # and `fediverse_replies` the public remote ones.
-      reply_count: length(replies) + length(remote_replies),
+      # Every reply the page counts, from both worlds — literally the figure the
+      # HTML reply button shows, taken from the same `shown_counts/1` two lines
+      # up rather than re-derived.
+      #
+      # It used to be `length(replies) + length(remote_replies)`, to keep the
+      # number and the entries below it in step. That reasoning is sound and the
+      # arithmetic was not: `list_replies/2` stops at `@default_thread_limit`
+      # (100), so past a hundred direct replies the page and its `.json` sibling
+      # stated *different* reply counts — a wrong number rather than a shorter
+      # list. The page has always shown the true count beside a window of the
+      # thread; this document does the same, and `replies` below is that window.
+      reply_count: counts.replies,
       replies: Enum.map(replies, &reply_entry/1),
       # The whole conversation the HTML permalink renders (issue #1006), in
       # the same reading order (the reply tree depth-first, issue #1027);
@@ -208,7 +224,12 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
   the page that was asked for (including the period segments).
   """
   def build_archive(author, path, entries, total, period_label) do
-    AgentDocs.doc_meta("post_archive", path, noai: author.noai?)
+    # Both axes, like the permalink: an archive is the member's own posts under
+    # their own handle, so their opt-outs apply to it exactly as they do to the
+    # profile it hangs off.
+    {noindex?, noai?} = robots_axes(author, false)
+
+    AgentDocs.doc_meta("post_archive", path, noindex: noindex?, noai: noai?)
     |> Map.merge(%{
       title:
         "#{UserHelpers.full_name(author)} · #{gettext("Posts")}" <> period_suffix(period_label),
@@ -300,10 +321,24 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       author: UserHelpers.author_name(post),
       published_on: post.published_on,
       excerpt: PostTeaser.line(post),
+      # Same reason as the remote clause above (issue #1163), pointed the other
+      # way: a vutuv post can be a photograph and nothing else, its body is then
+      # genuinely empty and `PostTeaser.line/1` answers "" — so the HTML archive
+      # rendered the photos and every agent format showed an entry with no
+      # content at all. Only released images count, exactly as on the page.
+      pictures: picture_count(post),
       reposted_by: entry[:reposted_by] && UserHelpers.author_name(entry[:reposted_by]),
       reposters: Enum.map(reposters, &UserHelpers.author_name/1)
     }
   end
+
+  # An unloaded association answers 0 rather than raising: not every caller of
+  # `timeline_entry/1` preloads images, and a missing count is a smaller wrong
+  # answer than a 500.
+  defp picture_count(%Post{images: images}) when is_list(images),
+    do: Enum.count(images, &ImageScans.released?(&1.moderation))
+
+  defp picture_count(_post), do: 0
 
   # The conversation entries, in `Posts.list_thread/3` reading order.
   # `in_reply_to_author` resolves only inside the thread (a deleted or

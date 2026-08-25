@@ -278,7 +278,7 @@ defmodule VutuvWeb.Admin.JobLive do
                 </td>
                 <td>
                   <% {label, tone} = posting_status_badge(posting) %>
-                  <span class={["inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold", tone]}>{label}</span>
+                  <.admin_pill tone={tone}>{label}</.admin_pill>
                 </td>
                 <td class="text-right">
                   <button
@@ -303,10 +303,6 @@ defmodule VutuvWeb.Admin.JobLive do
     """
   end
 
-  attr(:label, :string, required: true)
-  attr(:value, :integer, required: true)
-  attr(:attention, :boolean, default: false)
-
   defp detail_card(%{detail: nil} = assigns), do: ~H""
 
   defp detail_card(assigns) do
@@ -321,7 +317,7 @@ defmodule VutuvWeb.Admin.JobLive do
             </.link>
           </p>
         </div>
-        <button type="button" phx-click="close-drawer" class="shrink-0 text-sm font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
+        <button type="button" phx-click="close-drawer" class="shrink-0 text-sm font-semibold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">
           {gettext("Close")}
         </button>
       </div>
@@ -365,7 +361,7 @@ defmodule VutuvWeb.Admin.JobLive do
           <dt class="card__label">{gettext("Status")}</dt>
           <dd class="mt-1 text-sm">
             <% {label, tone} = posting_status_badge(@detail.posting) %>
-            <span class={["inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold", tone]}>{label}</span>
+            <.admin_pill tone={tone}>{label}</.admin_pill>
           </dd>
         </div>
 
@@ -479,7 +475,7 @@ defmodule VutuvWeb.Admin.JobLive do
           phx-click="close-posting"
           phx-value-id={@detail.posting.id}
           data-confirm={gettext("Close this posting? It ends the listing (a regular ending, not a deletion).")}
-          class="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200"
+          class="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
         >
           {gettext("Close")}
         </button>

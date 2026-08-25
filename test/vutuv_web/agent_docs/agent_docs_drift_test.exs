@@ -194,6 +194,48 @@ defmodule VutuvWeb.AgentDocsDriftTest do
     end
   end
 
+  # The other half of the same fix: the doc reads `JobReference.public_scope/0`,
+  # the same scope the profile card reads, so an unpublished Zeugnis — or one
+  # whose document is still waiting on moderation — must not appear in a
+  # document served anonymously.
+  test "profile: an unpublished employment reference stays out of every format", %{user: user} do
+    insert(:job_reference,
+      user: user,
+      title: "Zeugnis Geheim",
+      employer: "Verschwiegen GmbH",
+      kind: "qualified",
+      public?: false
+    )
+
+    for {format, body} <- formats_for("/drift_tester") do
+      refute body =~ "Zeugnis Geheim",
+             "an unpublished Zeugnis leaked into the #{format} version"
+
+      refute body =~ "Verschwiegen GmbH",
+             "an unpublished Zeugnis's employer leaked into the #{format} version"
+    end
+  end
+
+  # A vutuv post can be a photograph and nothing else (`posts/post.ex` allows an
+  # empty body), and `PostTeaser.line/1` answers "" for it — so the archive
+  # entry was blank. The clause for a post from another network solved exactly
+  # this and wrote down why (issue #1163); the vutuv clause beside it did not,
+  # so the same asymmetry pointed the other way: the HTML archive rendered the
+  # photos and every agent format read an entry with no content at all.
+  test "archive: a wordless photo post says it carries a picture", %{user: user} do
+    # Straight through the factory: `create_post/2` refuses an empty body unless
+    # it is handed the images in the same call, and what is under test here is
+    # the *rendering* of a post that already exists in that shape.
+    post = insert(:post, user: user, body: "")
+
+    insert(:post_image, post: post)
+
+    for {format, body} <- formats_for("/drift_tester/posts"), format in [:md, :txt] do
+      assert body =~ "picture",
+             "the #{format} archive renders a wordless photo post as an empty line"
+    end
+  end
+
   test "profile: every public fact appears in HTML, Markdown, text and JSON",
        %{user: user, tag: tag} do
     rendered = formats_for("/drift_tester")
@@ -207,6 +249,12 @@ defmodule VutuvWeb.AgentDocsDriftTest do
       # experience
       "Bridge Engineer",
       "Span AG",
+      # A published employment reference (issue: the card is public on `/:slug`
+      # for every viewer, and the profile doc listed twelve sections and not
+      # this one — so an agent reading the `.md` reported the member had none,
+      # about the strongest credential a German profile carries).
+      "Zeugnis Spannbau",
+      "Spannbau AG",
       # the volunteer entry and its category (issue #840): HTML shows the
       # "Volunteering & hobbies" heading, md/txt the "[Volunteering & hobbies]"
       # note, json/xml the kind field — the case-insensitive "volunteer" is the

@@ -253,7 +253,7 @@ defmodule VutuvWeb.Admin.OrganizationLive do
                 <td class="breakwrap text-slate-600 dark:text-slate-400">{organization.city}</td>
                 <td>
                   <% {label, tone} = organization_status_badge(organization) %>
-                  <span class={["inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold", tone]}>{label}</span>
+                  <.admin_pill tone={tone}>{label}</.admin_pill>
                 </td>
                 <td class="text-right">
                   <button
@@ -278,9 +278,6 @@ defmodule VutuvWeb.Admin.OrganizationLive do
     """
   end
 
-  attr(:label, :string, required: true)
-  attr(:value, :integer, required: true)
-
   defp detail_card(%{detail: nil} = assigns), do: ~H""
 
   defp detail_card(assigns) do
@@ -295,7 +292,7 @@ defmodule VutuvWeb.Admin.OrganizationLive do
             </.link>
           </p>
         </div>
-        <button type="button" phx-click="close" class="shrink-0 text-sm font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
+        <button type="button" phx-click="close" class="shrink-0 text-sm font-semibold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">
           {gettext("Close")}
         </button>
       </div>
@@ -387,7 +384,7 @@ defmodule VutuvWeb.Admin.OrganizationLive do
           phx-click="archive"
           phx-value-id={@detail.organization.id}
           data-confirm={gettext("Archive this page?")}
-          class="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200"
+          class="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
         >
           {gettext("Archive")}
         </button>

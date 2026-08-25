@@ -50,10 +50,40 @@ defmodule Vutuv.OrganizationImageStore do
     end
   end
 
+  # `:organization_image`, not `:post_image`. The post list carries a fourth,
+  # 2560px `xl` version for the lightbox; nothing here can ever serve it —
+  # `@versions`, and with it the proxy's whitelist, `version_path/2` and
+  # `accel_path/2`, know only three names. So every logo, cover and gallery
+  # shot paid for the most expensive AVIF encode of the four and kept the file
+  # for ever, unreachable.
   defp write_derived_versions(rotated, dir) do
-    Spec.write_all(:post_image, rotated, fn spec ->
+    Spec.write_all(:organization_image, rotated, fn spec ->
       Path.join(dir, "#{spec.name}#{Spec.served_ext()}")
     end)
+  end
+
+  @doc """
+  Re-derives every served version from the kept original (for the Regenerator).
+
+  This tree had no such hook at all, so a format or quality change in
+  `Vutuv.Uploads.Spec` never reached a single organization logo, cover or
+  gallery picture — while the Regenerator's own doc calls itself "the tool that
+  makes a Spec change real for existing data" and reported success.
+  """
+  def regenerate(token, opts \\ []) when is_binary(token) do
+    dir = dir(token)
+
+    Vutuv.Uploads.regenerate_from_original(storage_dir(token), dir,
+      canonical: canonical_filenames(),
+      stale_glob: "*",
+      legacy_candidates: [Path.join(dir, "original.*")],
+      derive: &write_derived_versions(&1, dir),
+      opts: opts
+    )
+  end
+
+  defp canonical_filenames do
+    for spec <- Spec.versions(:organization_image), do: "#{spec.name}#{Spec.served_ext()}"
   end
 
   @doc "The served version names (drives the proxy's URL whitelist)."

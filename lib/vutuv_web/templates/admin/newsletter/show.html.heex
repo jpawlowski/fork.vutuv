@@ -45,12 +45,12 @@
   <section :if={@newsletter.status == "sent"} class="card">
     <h1>{gettext("Resonance")}</h1>
     <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
-      {gettext("How members engaged with the vutuv.de links in this newsletter. Counts the HTML email's links; the plain-text version is not tracked.")}
+      {gettext("How members engaged with the %{host} links in this newsletter. Counts the HTML email's links; the plain-text version is not tracked.", host: VutuvWeb.Endpoint.host())}
     </p>
 
     <div class="mt-4 grid gap-4 sm:grid-cols-3">
       <div class="rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700">
-        <p class="text-sm font-semibold uppercase tracking-wide text-slate-500">
+        <p class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
           {gettext("Recipients")}
         </p>
         <p class="mt-1 text-2xl font-bold text-slate-900 dark:text-white">
@@ -58,7 +58,7 @@
         </p>
       </div>
       <div class="rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700">
-        <p class="text-sm font-semibold uppercase tracking-wide text-slate-500">
+        <p class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
           {gettext("Members who clicked")}
         </p>
         <p class="mt-1 text-2xl font-bold text-slate-900 dark:text-white">
@@ -69,7 +69,7 @@
         </p>
       </div>
       <div class="rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700">
-        <p class="text-sm font-semibold uppercase tracking-wide text-slate-500">
+        <p class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
           {gettext("Total clicks")}
         </p>
         <p class="mt-1 text-2xl font-bold text-slate-900 dark:text-white">
@@ -296,7 +296,7 @@
             <th :for={{col, label} <- [{"when", gettext("When")}, {"kind", gettext("Kind")}, {"recipient", gettext("Recipient")}, {"status", gettext("Status")}]}>
               <a
                 href={~p"/admin/newsletters/#{@newsletter}?#{sort_query(@filters, col)}"}
-                class="font-semibold text-slate-700 hover:text-brand-700 dark:text-slate-200"
+                class="font-semibold text-slate-700 hover:text-brand-700 dark:hover:text-brand-300 dark:text-slate-200"
               >
                 {label}{sort_caret(@filters, col)}
               </a>

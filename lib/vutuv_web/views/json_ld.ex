@@ -34,6 +34,7 @@ defmodule VutuvWeb.JsonLd do
   alias Vutuv.Posts.PostImage
   alias Vutuv.Posts.PostReview
   alias Vutuv.Profiles.SocialMediaAccount
+  alias Vutuv.SiteName
   alias Vutuv.Tags.Tag
   alias Vutuv.Tags.UserTag
   alias VutuvWeb.AgentDocs
@@ -54,7 +55,7 @@ defmodule VutuvWeb.JsonLd do
     %{
       "@context" => "https://schema.org",
       "@type" => "Organization",
-      "name" => "vutuv",
+      "name" => SiteName.get(),
       "url" => VutuvWeb.Endpoint.url()
     }
   end
@@ -106,7 +107,7 @@ defmodule VutuvWeb.JsonLd do
     %{
       "@context" => "https://schema.org",
       "@type" => "WebSite",
-      "name" => "vutuv",
+      "name" => SiteName.get(),
       # No `www.` alternate name: the site has one canonical host (the bare
       # PHX_HOST, e.g. vutuv.de) and `www.` 301-redirects to it. Advertising
       # `www.<host>` as a schema.org alias was the one spot in the whole app that
@@ -287,7 +288,11 @@ defmodule VutuvWeb.JsonLd do
         "validThrough" => posting.expires_on && Date.to_iso8601(posting.expires_on),
         "employmentType" => JobPosting.schema_org_employment_type(posting.employment_type),
         "hiringOrganization" => hiring_organization(posting),
-        "identifier" => %{"@type" => "PropertyValue", "name" => "vutuv", "value" => posting.id},
+        "identifier" => %{
+          "@type" => "PropertyValue",
+          "name" => SiteName.get(),
+          "value" => posting.id
+        },
         "skills" => job_skills(posting),
         "directApply" => posting.apply_kind == :message
       }
@@ -398,7 +403,11 @@ defmodule VutuvWeb.JsonLd do
       "name" => name,
       "description" => description,
       "about" => %{"@type" => "Thing", "name" => name},
-      "isPartOf" => %{"@type" => "WebSite", "url" => VutuvWeb.Endpoint.url(), "name" => "vutuv"}
+      "isPartOf" => %{
+        "@type" => "WebSite",
+        "url" => VutuvWeb.Endpoint.url(),
+        "name" => SiteName.get()
+      }
     })
   end
 
@@ -413,7 +422,7 @@ defmodule VutuvWeb.JsonLd do
     home = %{
       "@type" => "ListItem",
       "position" => 1,
-      "item" => %{"@id" => VutuvWeb.Endpoint.url(), "name" => "vutuv"}
+      "item" => %{"@id" => VutuvWeb.Endpoint.url(), "name" => SiteName.get()}
     }
 
     items =
@@ -441,25 +450,14 @@ defmodule VutuvWeb.JsonLd do
   defp crumb_url("http" <> _ = url), do: url
   defp crumb_url(path), do: AgentDocs.abs_url(path)
 
+  @doc """
+  The profile's own trail: the site root, then this member. It is
+  `breadcrumb_trail/1` with a single linked crumb — it was written out a second
+  time, down to the same site-root item, and a second copy of the site root is
+  a second place to remember an installation's own name.
+  """
   def breadcrumbs(user) do
-    profile_url = AgentDocs.abs_url("/" <> user.username)
-
-    %{
-      "@context" => "https://schema.org",
-      "@type" => "BreadcrumbList",
-      "itemListElement" => [
-        %{
-          "@type" => "ListItem",
-          "position" => 1,
-          "item" => %{"@id" => VutuvWeb.Endpoint.url(), "name" => "vutuv"}
-        },
-        %{
-          "@type" => "ListItem",
-          "position" => 2,
-          "item" => %{"@id" => profile_url, "name" => UserHelpers.full_name(user)}
-        }
-      ]
-    }
+    breadcrumb_trail([{UserHelpers.full_name(user), "/" <> user.username}])
   end
 
   defp works_for(nil), do: nil

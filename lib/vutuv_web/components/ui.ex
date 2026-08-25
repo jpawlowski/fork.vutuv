@@ -491,7 +491,7 @@ defmodule VutuvWeb.UI do
       target="_blank"
       rel="noopener"
       class={[
-        "text-xs font-medium text-slate-600 hover:text-brand-700",
+        "text-xs font-medium text-slate-600 hover:text-brand-700 dark:hover:text-brand-300",
         "dark:text-slate-400 dark:hover:text-brand-300",
         @class
       ]}
@@ -1146,7 +1146,7 @@ defmodule VutuvWeb.UI do
       data-feed-button
       class={[
         "inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3.5 text-xs font-semibold transition-colors",
-        "border-slate-300 text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700",
+        "border-slate-300 text-slate-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 dark:hover:text-brand-300",
         "dark:border-slate-700 dark:text-slate-400 dark:hover:border-brand-500 dark:hover:bg-brand-900/30 dark:hover:text-brand-200",
         @class
       ]}
@@ -1182,7 +1182,7 @@ defmodule VutuvWeb.UI do
       href={@href}
       class={[
         "inline-flex min-h-10 shrink-0 items-center gap-1 text-sm font-semibold",
-        "text-slate-600 transition-colors hover:text-brand-700",
+        "text-slate-600 transition-colors hover:text-brand-700 dark:hover:text-brand-300",
         "dark:text-slate-400 dark:hover:text-brand-200"
       ]}
     >
@@ -3419,6 +3419,31 @@ defmodule VutuvWeb.UI do
         {gettext("Review")}
       </.link>
     </p>
+    """
+  end
+
+  @doc """
+  The status pill in the admin oversight tables (jobs, organizations, users):
+  the shape is fixed, the colour is not. `tone` is the tint the host's own
+  `*_status_badge/1` picked for this row — "frozen" is amber wherever it
+  appears, and only the host knows what frozen means for its records.
+
+  Beside `admin_pager/1` because it has the same reach: seven copies of the
+  five base utilities sat across four admin LiveViews, so a change to the pill
+  shape was a change in four files, and one of them drifting was invisible.
+  """
+  attr(:tone, :string, required: true)
+  attr(:rest, :global)
+  slot(:inner_block, required: true)
+
+  def admin_pill(assigns) do
+    ~H"""
+    <span
+      class={["inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold", @tone]}
+      {@rest}
+    >
+      {render_slot(@inner_block)}
+    </span>
     """
   end
 
