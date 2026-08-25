@@ -22,6 +22,7 @@ defmodule VutuvWeb.MastodonApi.StreamingSocketTest do
   import Vutuv.MastodonHelpers
   import Vutuv.OrganizationsHelpers
 
+  alias Vutuv.MastodonApi.Presenter
   alias Vutuv.Organizations
   alias Vutuv.Organizations.OrganizationRole
   alias Vutuv.Posts
@@ -328,6 +329,17 @@ defmodule VutuvWeb.MastodonApi.StreamingSocketTest do
       # reading `account.acct` off nil crashes on its side of our contract.
       assert decoded["payload"]["account"]["id"] == actor.id
       assert decoded["payload"]["account"]["acct"] == actor.username
+
+      # Through `Presenter.timestamp/1`, the one place that decides a Mastodon
+      # time. A bare `to_string/1` on the NaiveDateTime writes
+      # "2026-08-17 10:00:00" — no `T`, no `Z`, no milliseconds — and a client
+      # built on `ISO8601DateFormatter` with `.withFractionalSeconds` fails
+      # outright on that and falls back to "now". Calibrated against the
+      # un-fixed socket, which did exactly that and made this line red.
+      assert decoded["payload"]["created_at"] ==
+               Presenter.timestamp(notification.at)
+
+      assert decoded["payload"]["created_at"] == "2026-08-17T10:00:00.000Z"
     end
 
     # The REST endpoint refuses to invent a type for a vutuv-only kind, and the

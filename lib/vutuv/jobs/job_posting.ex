@@ -25,6 +25,8 @@ defmodule Vutuv.Jobs.JobPosting do
   alias Vutuv.ChangesetHelpers
   alias Vutuv.Countries
   alias Vutuv.Geo
+  alias Vutuv.Identity
+  alias Vutuv.Languages
   alias Vutuv.MarkdownContent
   alias Vutuv.Mentions
   alias Vutuv.Organizations.Organization
@@ -124,7 +126,7 @@ defmodule Vutuv.Jobs.JobPosting do
   """
   def employer_name(%__MODULE__{organization: %Organization{name: name}}), do: name
   def employer_name(%__MODULE__{hiring_org_name: name}) when is_binary(name), do: name
-  def employer_name(%__MODULE__{user: %User{} = user}), do: VutuvWeb.UserHelpers.full_name(user)
+  def employer_name(%__MODULE__{user: %User{} = user}), do: Identity.display_name(user)
   def employer_name(_posting), do: nil
 
   @doc """
@@ -390,11 +392,5 @@ defmodule Vutuv.Jobs.JobPosting do
   defp upcase(nil), do: nil
   defp upcase(value), do: value |> String.trim() |> String.upcase()
 
-  # `:locales` lives under the ENDPOINT config, not as a top-level `:vutuv` key,
-  # so `Application.get_env(:vutuv, :locales, default)` silently answers the
-  # default and pins this validation to en/de whatever the installation serves.
-  defp installation_locales do
-    {:ok, config} = Application.fetch_env(:vutuv, VutuvWeb.Endpoint)
-    config[:locales]
-  end
+  defp installation_locales, do: Languages.site_locales()
 end

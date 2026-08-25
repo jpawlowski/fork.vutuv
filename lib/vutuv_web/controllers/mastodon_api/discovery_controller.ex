@@ -8,6 +8,7 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
 
   alias Vutuv.Accounts
   alias Vutuv.Accounts.User
+  alias Vutuv.Languages
   alias Vutuv.MastodonApi
   alias Vutuv.MastodonApi.Presenter
   alias Vutuv.MastodonApi.Scopes
@@ -15,9 +16,10 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
   alias Vutuv.NodeInfo
   alias Vutuv.Posts
   alias Vutuv.Posts.Post
+  alias Vutuv.SourceRepo
   alias Vutuv.Uploads.Spec
+  alias VutuvWeb.MastodonApi.Errors
 
-  @source_url "https://github.com/wintermeyer/vutuv"
   def instance_v2(conn, _params) do
     usage = NodeInfo.usage()
 
@@ -25,7 +27,7 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
       domain: MastodonApi.local_domain(),
       title: node_name(),
       version: MastodonApi.compatibility_version(),
-      source_url: @source_url,
+      source_url: SourceRepo.url(),
       description: node_description(),
       usage: %{users: %{active_month: usage.users.active_month}},
       thumbnail: %{
@@ -119,9 +121,7 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
   `POST /api/v1/markers`) handed the client a page of markup where it expected
   an object. That is not a missing feature to a client, it is a broken server.
   """
-  def not_found(conn, _params) do
-    conn |> put_status(404) |> json(%{error: "Record not found"})
-  end
+  def not_found(conn, _params), do: Errors.not_found(conn)
 
   # The MIME types the post-image uploader really accepts, from its own
   # extension whitelist, so this cannot drift from what an upload does.
@@ -212,8 +212,5 @@ defmodule VutuvWeb.MastodonApi.DiscoveryController do
   defp node_name, do: Application.fetch_env!(:vutuv, :node_name)
   defp node_description, do: Application.fetch_env!(:vutuv, :node_description)
 
-  defp locales do
-    {:ok, config} = Application.fetch_env(:vutuv, VutuvWeb.Endpoint)
-    config[:locales]
-  end
+  defp locales, do: Languages.site_locales()
 end
