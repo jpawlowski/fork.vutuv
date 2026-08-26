@@ -23,10 +23,12 @@ defmodule Vutuv.SocialFeed.Cache do
   does no work until a page requests a fetch, and the per-provider feature
   flags gate that in tests).
   """
-  use GenServer
+
+  use Vutuv.EtsCache, access: :protected
 
   require Logger
 
+  alias Vutuv.EtsCache
   alias Vutuv.SocialFeed
   alias Vutuv.SocialFeed.Feed
 
@@ -43,15 +45,13 @@ defmodule Vutuv.SocialFeed.Cache do
   yet). A caller-side ETS read; expired rows are left for the sweep.
   """
   def lookup({_provider, _handle} = key, table \\ @table) do
-    case :ets.lookup(table, key) do
+    case EtsCache.lookup(table, key) do
       [{^key, result, expires_at}] ->
         if System.monotonic_time(:millisecond) < expires_at, do: result, else: :miss
 
       [] ->
         :miss
     end
-  rescue
-    ArgumentError -> :miss
   end
 
   @doc """
@@ -66,21 +66,9 @@ defmodule Vutuv.SocialFeed.Cache do
   @doc "Drops every cached entry (tests)."
   def reset(server \\ __MODULE__), do: GenServer.call(server, :reset)
 
-  def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    # `name: nil` (isolated test instances) starts the process unregistered.
-    gen_opts = if name, do: [name: name], else: []
-    GenServer.start_link(__MODULE__, opts, gen_opts)
-  end
-
   @impl true
   def init(opts) do
-    table =
-      :ets.new(Keyword.get(opts, :table, @table), [
-        :named_table,
-        :protected,
-        read_concurrency: true
-      ])
+    table = open_table(Keyword.get(opts, :table, @table))
 
     state = %{
       table: table,

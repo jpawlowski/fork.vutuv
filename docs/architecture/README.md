@@ -70,6 +70,16 @@ installing and operating vutuv in [Running your own vutuv](../ADMINS.md).
   exception is the people counter — the top bar's total of members here plus
   the Fediverse accounts following them — which shows the **exact** figure via
   `delimited_count/1` so it visibly ticks (see [realtime.md](realtime.md))
+- **In-memory caches**: every ETS-backed cache is a GenServer that owns one
+  named table and shares one shell, `Vutuv.EtsCache` (its moduledoc is the
+  reference): `use Vutuv.EtsCache, access: :protected | :public` generates the
+  `start_link/1` and the `open_table/1` the module's `init/1` calls, and the
+  reads go through `EtsCache.fetch/2` / `lookup/2`, which answer a **miss**
+  rather than raising when the table is not up yet. Its two options answer two
+  questions — `access:` is who may write, `created_by:` is who calls
+  `:ets.new/2` — and a cache whose readers may need the table before the
+  GenServer has it sets `created_by: :any_process`. A cold cache is never an
+  error: every caller has the direct query the cache exists to spare
 - **Ids**: all database ids are UUID v7 (`Vutuv.UUIDv7`): time-ordered, minted
   in the app, never integers or UUID v4.
 

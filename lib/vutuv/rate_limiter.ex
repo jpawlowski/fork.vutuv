@@ -12,16 +12,15 @@ defmodule Vutuv.RateLimiter do
   enumeration mitigation the issue asks for; it is not a distributed quota.
   """
 
-  use GenServer
+  # Every request process counts its own hits, and whichever gets there first
+  # creates the table — including before (or without) this GenServer, which is
+  # what lets a unit test call `hit/3` with nothing supervised.
+  use Vutuv.EtsCache, access: :public, created_by: :any_process
 
   @table __MODULE__
   @sweep_interval :timer.minutes(5)
 
   # ── Public API ──
-
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
 
   @doc """
   Records one hit for `key` and returns `:ok` while at or under `limit` within
@@ -42,13 +41,13 @@ defmodule Vutuv.RateLimiter do
   """
   def hit_remaining(key, limit, window_ms)
       when is_integer(limit) and limit > 0 and is_integer(window_ms) and window_ms > 0 do
-    ensure_table()
+    table = open_table()
     now = System.system_time(:millisecond)
     window = div(now, window_ms)
     window_end = (window + 1) * window_ms
     bucket = {key, window}
 
-    count = :ets.update_counter(@table, bucket, {2, 1}, {bucket, 0, window_end})
+    count = :ets.update_counter(table, bucket, {2, 1}, {bucket, 0, window_end})
 
     if count <= limit, do: {:ok, limit - count}, else: {:error, :rate_limited}
   end
@@ -60,11 +59,11 @@ defmodule Vutuv.RateLimiter do
   member's cold-outreach counter — without moving the counter.
   """
   def peek(key, window_ms) when is_integer(window_ms) and window_ms > 0 do
-    ensure_table()
+    table = open_table()
     now = System.system_time(:millisecond)
     window = div(now, window_ms)
 
-    case :ets.lookup(@table, {key, window}) do
+    case :ets.lookup(table, {key, window}) do
       [{_bucket, count, _window_end}] -> count
       [] -> 0
     end
@@ -73,8 +72,7 @@ defmodule Vutuv.RateLimiter do
   @doc false
   # Test helper: forget every recorded hit.
   def reset do
-    ensure_table()
-    :ets.delete_all_objects(@table)
+    :ets.delete_all_objects(open_table())
     :ok
   end
 
@@ -82,7 +80,7 @@ defmodule Vutuv.RateLimiter do
 
   @impl true
   def init(_opts) do
-    ensure_table()
+    open_table()
     schedule_sweep()
     {:ok, %{}}
   end
@@ -95,27 +93,6 @@ defmodule Vutuv.RateLimiter do
   end
 
   # ── Internals ──
-
-  defp ensure_table do
-    case :ets.whereis(@table) do
-      :undefined ->
-        try do
-          :ets.new(@table, [
-            :named_table,
-            :public,
-            :set,
-            read_concurrency: true,
-            write_concurrency: true
-          ])
-        rescue
-          # Lost a race with another process creating the table; that is fine.
-          ArgumentError -> @table
-        end
-
-      _tid ->
-        @table
-    end
-  end
 
   defp sweep do
     now = System.system_time(:millisecond)
