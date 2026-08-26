@@ -4951,15 +4951,20 @@ defmodule VutuvWeb.PostComponents do
     """
   end
 
-  # The link screenshot image, shared by the preview and full layouts — both
-  # float it beside the body. A decorative duplicate of the body's autolinked
-  # URL — `aria-hidden` + `tabindex=-1` so assistive tech and the tab order keep
-  # the one link in the prose — opening the page in a new tab. `class` positions
-  # it and sets the width.
+  @doc """
+  The link screenshot image, shared by the preview and full layouts — both float
+  it beside the body — and by the composer, which shows the author the same
+  picture their post will carry.
+
+  On a post card it is a decorative duplicate of the body's autolinked URL —
+  `aria-hidden` + `tabindex=-1`, so assistive tech and the tab order keep the
+  one link in the prose — opening the page in a new tab. `class` positions it
+  and sets the width.
+  """
   attr(:screenshot, :any, required: true)
   attr(:class, :string, default: nil)
 
-  defp link_screenshot_image(assigns) do
+  def link_screenshot_image(assigns) do
     ~H"""
     <.link
       href={@screenshot.url}

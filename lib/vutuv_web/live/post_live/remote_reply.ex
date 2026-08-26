@@ -22,6 +22,9 @@ defmodule VutuvWeb.PostLive.RemoteReply do
 
   use VutuvWeb, :live_view
 
+  # The composer's link preview appears by itself (issue #1714).
+  on_mount(VutuvWeb.Live.DraftPreview)
+
   import VutuvWeb.PostComponents
 
   alias Vutuv.Fediverse

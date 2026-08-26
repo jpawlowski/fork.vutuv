@@ -5811,9 +5811,9 @@ defmodule Vutuv.Posts do
 
   @doc "Drops the member's draft for one context (the post was sent, or discarded)."
   def delete_draft(%User{} = author, context \\ nil) do
-    scope = draft_scope(author, context)
-    purge_draft_previews(from(d in PostDraft, where: ^scope))
-    Repo.delete_all(from(d in PostDraft, where: ^scope))
+    drafts = from(d in PostDraft, where: ^draft_scope(author, context))
+    purge_draft_previews(drafts)
+    Repo.delete_all(drafts)
     :ok
   end
 
@@ -6016,31 +6016,34 @@ defmodule Vutuv.Posts do
     do: Repo.preload(draft, :screenshot, force: true).screenshot
 
   @doc """
+  Whether this installation builds link previews at all — off on an air-gapped
+  intranet install, where nothing may reach the linked page. Read by the
+  composer too, so it does not offer a card that can never arrive.
+  """
+  def link_previews_enabled?, do: Application.get_env(:vutuv, :generate_screenshots, true)
+
+  @doc """
   Brings the draft's link preview in line with what the author has typed:
   enqueues one for the chosen link (default the first), points an existing one
   at a different page, or drops it when the text carries no link any more.
 
   Called from the composer's **debounced** draft autosave, so a member typing a
-  URL character by character causes one fetch when they pause, not one per
-  keystroke. Gated by `:generate_screenshots` like every other enqueue.
+  URL causes one fetch when they pause, not one per keystroke.
   """
-  def reconcile_draft_preview(%PostDraft{} = draft) do
-    if Application.get_env(:vutuv, :generate_screenshots, true) do
-      Screenshots.reconcile(draft)
-      ScreenshotWorker.nudge()
-    end
-
-    :ok
-  end
+  def reconcile_draft_preview(%PostDraft{} = draft), do: reconcile_screenshot(draft)
 
   @doc """
   The author's pick in the composer: one of the links in their text, or `:none`
   for no card. See `Vutuv.Posts.Screenshots.choose/2`.
   """
   def choose_draft_preview(%PostDraft{} = draft, choice) do
-    result = Screenshots.choose(draft, choice)
-    ScreenshotWorker.nudge()
-    result
+    if link_previews_enabled?() do
+      result = Screenshots.choose(draft, choice)
+      nudge_for(result)
+      result
+    else
+      {:ok, nil}
+    end
   end
 
   @doc """
@@ -6120,14 +6123,24 @@ defmodule Vutuv.Posts do
   # body and images, then poke the worker to capture it now. Gated by
   # `:generate_screenshots` so an air-gapped install queues nothing (and the
   # test suite creates no rows unless it opts in).
-  defp reconcile_screenshot(%Post{} = post) do
-    if Application.get_env(:vutuv, :generate_screenshots, true) do
-      Screenshots.reconcile(post)
-      ScreenshotWorker.nudge()
+  # Shared by a published post and by the composer draft it was written in —
+  # `Screenshots.reconcile/1` already dispatches on the owner, so this is one
+  # gate and one nudge rule rather than a copy per owner.
+  #
+  # The nudge is a cast the worker answers by draining the whole queue
+  # synchronously, so it is spent only when this call actually left work behind.
+  # Without that check every debounced autosave of every open composer would
+  # kick it, whether or not the member had typed a link at all.
+  defp reconcile_screenshot(owner) do
+    if link_previews_enabled?() do
+      owner |> Screenshots.reconcile() |> nudge_for()
     end
 
     :ok
   end
+
+  defp nudge_for({:ok, %PostScreenshot{status: "pending"}}), do: ScreenshotWorker.nudge()
+  defp nudge_for(_settled), do: :ok
 
   # A fresh repost distributes like a fresh post — to the reposter's own
   # sessions and their followers' feeds.

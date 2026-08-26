@@ -132,29 +132,35 @@ defmodule Vutuv.Posts.Screenshots do
   end
 
   defp reconcile_loaded(owner) do
-    case chosen_url(owner) do
+    case chosen_url_for(owner) do
       {:ok, url} -> enqueue(owner, url)
       :none -> cancel(owner)
     end
   end
 
-  # The link this owner's preview is for: the one already chosen, as long as it
-  # is still in the text, else the first one there. That single rule is both the
-  # default ("the first link") and the memory of an author's pick — the choice
-  # does not need a column of its own, because the row already records which
-  # page it describes.
-  defp chosen_url(owner) do
+  @doc """
+  The link this owner's preview is for: the one already chosen, as long as it is
+  still in the text, else the first one there — or `:none`. That single rule is
+  both the default ("the first link") and the memory of an author's pick, so the
+  choice needs no column of its own: the row already records which page it
+  describes.
+
+  `previous` is the URL on the existing row, passed in rather than read off a
+  preloaded `:screenshot`. A clause matching the association would fall through
+  for a caller that forgot the preload and **silently** re-point the preview at
+  the first link, which is exactly the failure the "match on a column" rule is
+  about.
+  """
+  def chosen_url(owner, previous \\ nil) do
     case candidate_urls(owner) do
       [] -> :none
-      urls -> {:ok, keep_choice(owner, urls)}
+      urls -> {:ok, if(previous in urls, do: previous, else: hd(urls))}
     end
   end
 
-  defp keep_choice(%{screenshot: %PostScreenshot{url: url}}, urls) do
-    if url in urls, do: url, else: hd(urls)
-  end
-
-  defp keep_choice(_owner, [first | _rest]), do: first
+  defp chosen_url_for(%{screenshot: screenshot} = owner)
+       when not is_struct(screenshot, Ecto.Association.NotLoaded),
+       do: chosen_url(owner, screenshot && screenshot.url)
 
   # This installation's own login-walled / internal areas: a screenshot of them
   # would only ever be a login redirect or an admin/internal page, never useful
@@ -191,20 +197,6 @@ defmodule Vutuv.Posts.Screenshots do
   # "no picture" rule reads that list rather than an association.
   def candidate_urls(%PostDraft{image_ids: [_first | _rest]}), do: []
   def candidate_urls(%PostDraft{body: body}), do: previewable_urls(body)
-
-  def candidate_urls(_owner), do: []
-
-  @doc """
-  The link a preview would default to — the **first** previewable one — or
-  `:none`. The default only; `reconcile/1` prefers a choice the author has
-  already made (`choose/2`).
-  """
-  def qualifying_url(owner) do
-    case candidate_urls(owner) do
-      [] -> :none
-      [first | _rest] -> {:ok, first}
-    end
-  end
 
   defp previewable_urls(body) do
     body
@@ -368,18 +360,9 @@ defmodule Vutuv.Posts.Screenshots do
   def choose(%PostDraft{} = draft, :none) do
     draft = Repo.preload(draft, :screenshot, force: true)
 
-    case {draft.screenshot, qualifying_url(draft)} do
-      {%PostScreenshot{} = existing, _default} ->
-        dismiss(existing)
-
-      # Nothing fetched yet, but the answer still has to survive the next
-      # reconcile — so the tombstone is written against the default link.
-      {nil, {:ok, url}} ->
-        {:ok, job} = enqueue(draft, url)
-        dismiss(job)
-
-      {nil, :none} ->
-        {:ok, nil}
+    case draft.screenshot do
+      %PostScreenshot{} = existing -> dismiss(existing)
+      nil -> dismiss_default(draft)
     end
   end
 
@@ -398,6 +381,18 @@ defmodule Vutuv.Posts.Screenshots do
 
       true ->
         enqueue(draft, url)
+    end
+  end
+
+  # Nothing has been fetched yet, but the answer still has to survive the next
+  # reconcile — so the tombstone is written against the link the preview would
+  # otherwise have been for.
+  defp dismiss_default(draft) do
+    with {:ok, url} <- chosen_url(draft),
+         {:ok, job} <- enqueue(draft, url) do
+      dismiss(job)
+    else
+      _nothing_to_refuse -> {:ok, nil}
     end
   end
 
@@ -422,10 +417,8 @@ defmodule Vutuv.Posts.Screenshots do
       %PostScreenshot{} = row ->
         {:ok, adopted} =
           Repo.transaction(fn ->
-            post
-            |> Repo.preload(:screenshot, force: true)
-            |> Map.get(:screenshot)
-            |> discard_placeholder()
+            # `cancel/1` is the existing "retire this row and its files".
+            post |> Repo.preload(:screenshot, force: true) |> cancel()
 
             row
             |> Ecto.Changeset.change(post_id: post.id, post_draft_id: nil)
@@ -435,14 +428,6 @@ defmodule Vutuv.Posts.Screenshots do
         if PostScreenshot.ready?(adopted), do: announce_ready(adopted)
         :ok
     end
-  end
-
-  defp discard_placeholder(nil), do: :ok
-
-  defp discard_placeholder(%PostScreenshot{} = placeholder) do
-    Repo.delete!(placeholder)
-    delete(placeholder)
-    :ok
   end
 
   @doc """
@@ -815,9 +800,15 @@ defmodule Vutuv.Posts.Screenshots do
   defp announce_ready(%PostScreenshot{post_id: post_id}) when is_binary(post_id),
     do: Vutuv.Posts.broadcast_screenshot_ready(post_id)
 
-  # A draft's preview is watched by the one composer that owns it, which polls
-  # for it (a LiveComponent cannot subscribe to PubSub itself), so there is
-  # nothing to broadcast.
+  # A draft's preview goes to the one member writing it, on their own
+  # `Vutuv.Activity` topic: it belongs to an unpublished draft, so nobody else
+  # has any business hearing about it. `VutuvWeb.Live.DraftPreview` turns that
+  # into a `send_update/2` for the composer.
+  defp announce_ready(%PostScreenshot{post_draft_id: draft_id} = row)
+       when is_binary(draft_id) do
+    Vutuv.Activity.broadcast(owner_user_id(row), {:draft_preview_ready, draft_id})
+  end
+
   defp announce_ready(%PostScreenshot{}), do: :ok
 
   # The AI scan's owning member: the post's author, or nobody for a remote
@@ -895,13 +886,19 @@ defmodule Vutuv.Posts.Screenshots do
   """
   def queue_page(params) do
     page(
-      from(ps in PostScreenshot,
-        where: ps.status not in ["ready", "dismissed"] and is_nil(ps.post_draft_id)
+      published_owners(
+        from(ps in PostScreenshot, where: ps.status not in ["ready", "dismissed"])
       ),
       params,
       desc: :inserted_at
     )
   end
+
+  # The admin views are about published things. A row a composer **draft** owns
+  # is somebody's unfinished post: not moderatable content, and with no page for
+  # a row to link to. One named function so a fourth owner is one edit, not
+  # three (the rule this repo learned from the nullable-pair model).
+  defp published_owners(query), do: from(ps in query, where: is_nil(ps.post_draft_id))
 
   @doc """
   One page of the admin gallery: captured (`ready`) screenshots, newest capture
@@ -910,7 +907,7 @@ defmodule Vutuv.Posts.Screenshots do
   """
   def gallery_page(params) do
     page(
-      from(ps in PostScreenshot, where: ps.status == "ready" and is_nil(ps.post_draft_id)),
+      published_owners(from(ps in PostScreenshot, where: ps.status == "ready")),
       params,
       desc: :captured_at
     )
@@ -918,11 +915,10 @@ defmodule Vutuv.Posts.Screenshots do
 
   @doc "Count of unfinished vs ready jobs, for the admin tab labels."
   def counts do
-    from(ps in PostScreenshot,
-      where: ps.status != "dismissed" and is_nil(ps.post_draft_id),
-      group_by: fragment("? = 'ready'", ps.status),
-      select: {fragment("? = 'ready'", ps.status), count(ps.id)}
-    )
+    from(ps in PostScreenshot, where: ps.status != "dismissed")
+    |> published_owners()
+    |> group_by([ps], fragment("? = 'ready'", ps.status))
+    |> select([ps], {fragment("? = 'ready'", ps.status), count(ps.id)})
     |> Repo.all()
     |> Enum.reduce(%{queue: 0, ready: 0}, fn
       {true, n}, acc -> %{acc | ready: n}

@@ -54,6 +54,8 @@ defmodule VutuvWeb.PostLive.Feed do
   # The origin's like/repost figures on a card from another network tick
   # while this page is open (issue #1283). One line, no handler.
   on_mount(VutuvWeb.Live.RemoteCounts)
+  # The composer's link preview appears by itself (issue #1714).
+  on_mount(VutuvWeb.Live.DraftPreview)
 
   @page_size 20
   # What a source-tab press loads (see `load_source_filter/2`) — deliberately

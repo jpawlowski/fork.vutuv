@@ -53,7 +53,7 @@ defmodule Vutuv.Posts.ScreenshotsTest do
     {post, ready}
   end
 
-  describe "extract_urls/1 + qualifying_url/1 (detection)" do
+  describe "extract_urls/1 + chosen_url/2 (detection)" do
     test "one bare http(s) URL, surrounding text allowed" do
       assert Screenshots.extract_urls("see https://example.com now") == ["https://example.com"]
     end
@@ -68,17 +68,17 @@ defmodule Vutuv.Posts.ScreenshotsTest do
     end
 
     test "qualifies: no image + exactly one URL" do
-      assert Screenshots.qualifying_url(%Posts.Post{images: [], body: "https://a.test"}) ==
+      assert Screenshots.chosen_url(%Posts.Post{images: [], body: "https://a.test"}) ==
                {:ok, "https://a.test"}
     end
 
     test "does not qualify: an image is attached" do
       post = %Posts.Post{images: [%PostImage{}], body: "https://a.test"}
-      assert Screenshots.qualifying_url(post) == :none
+      assert Screenshots.chosen_url(post) == :none
     end
 
     test "does not qualify: no URL at all" do
-      assert Screenshots.qualifying_url(%Posts.Post{images: [], body: "no link here"}) == :none
+      assert Screenshots.chosen_url(%Posts.Post{images: [], body: "no link here"}) == :none
       assert Screenshots.candidate_urls(%Posts.Post{images: [], body: "no link here"}) == []
     end
 
@@ -87,7 +87,7 @@ defmodule Vutuv.Posts.ScreenshotsTest do
 
       # This used to be `:none` — a post with two links silently got no
       # preview. Now the first one is previewed and the author can switch.
-      assert Screenshots.qualifying_url(post) == {:ok, "https://a.test"}
+      assert Screenshots.chosen_url(post) == {:ok, "https://a.test"}
       assert Screenshots.candidate_urls(post) == ["https://a.test", "https://b.test"]
     end
 
@@ -98,7 +98,7 @@ defmodule Vutuv.Posts.ScreenshotsTest do
       }
 
       assert Screenshots.candidate_urls(post) == ["https://a.test"]
-      assert Screenshots.qualifying_url(post) == {:ok, "https://a.test"}
+      assert Screenshots.chosen_url(post) == {:ok, "https://a.test"}
     end
 
     test "does not qualify: this installation's own /settings, /admin or /system page" do
@@ -106,13 +106,13 @@ defmodule Vutuv.Posts.ScreenshotsTest do
             ~w(/settings /settings/privacy /admin /admin/screenshots /system /system/members) do
         body = own_url(path)
 
-        assert Screenshots.qualifying_url(%Posts.Post{images: [], body: body}) == :none,
+        assert Screenshots.chosen_url(%Posts.Post{images: [], body: body}) == :none,
                "expected #{body} to be excluded from screenshotting"
       end
     end
 
     test "still qualifies: another site's /admin (only the own host is excluded)" do
-      assert Screenshots.qualifying_url(%Posts.Post{
+      assert Screenshots.chosen_url(%Posts.Post{
                images: [],
                body: "https://example.com/admin"
              }) == {:ok, "https://example.com/admin"}
@@ -120,7 +120,7 @@ defmodule Vutuv.Posts.ScreenshotsTest do
 
     test "still qualifies: the own host on an ordinary path" do
       url = own_url("/some-profile")
-      assert Screenshots.qualifying_url(%Posts.Post{images: [], body: url}) == {:ok, url}
+      assert Screenshots.chosen_url(%Posts.Post{images: [], body: url}) == {:ok, url}
     end
 
     test "does not qualify: a screenshot-blocklisted host (reddit.com + subdomains)" do
@@ -132,20 +132,20 @@ defmodule Vutuv.Posts.ScreenshotsTest do
             https://www.reddit.com/r/elixir/comments/abc
             https://old.reddit.com/r/programming
           ) do
-        assert Screenshots.qualifying_url(%Posts.Post{images: [], body: url}) == :none,
+        assert Screenshots.chosen_url(%Posts.Post{images: [], body: url}) == :none,
                "expected #{url} to be excluded from screenshotting"
       end
     end
 
     test "the blocklist is admin-editable data, and an added entry takes effect at once" do
-      assert Screenshots.qualifying_url(%Posts.Post{
+      assert Screenshots.chosen_url(%Posts.Post{
                images: [],
                body: "https://example.com/page"
              }) == {:ok, "https://example.com/page"}
 
       {:ok, _entry} = Vutuv.ScreenshotBlocklist.create_entry(%{"pattern" => "example.com"})
 
-      assert Screenshots.qualifying_url(%Posts.Post{
+      assert Screenshots.chosen_url(%Posts.Post{
                images: [],
                body: "https://example.com/page"
              }) == :none

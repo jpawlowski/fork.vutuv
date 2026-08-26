@@ -1510,15 +1510,26 @@ permanent outcome).
 **The author sees it before publishing (issue #1714).** The queue serves a
 **third** owner: the composer draft the post is still being written in
 (`post_draft_id`, `Vutuv.Posts.PostDraft`). `VutuvWeb.PostLive.Composer`
-reconciles it from the **debounced draft autosave**, so somebody typing a URL
-costs one fetch when they pause rather than one per keystroke, and renders the
-card exactly as the post will (`Vutuv.Posts.reconcile_draft_preview/1`). Beneath
-it sits one button per link in the text plus **No preview**, all
-`aria-pressed`, so the current choice is visible rather than remembered
-(`choose/2`; a URL that is not in the author's own text is refused rather than
-fetched, since this arrives from the browser). Turning it off writes the same
-`dismissed` tombstone the edit page's Remove button writes — one answer to
-"they said no", not two — and pressing the link again lifts it.
+reconciles it from the **debounced draft autosave** and renders the card exactly
+as the post will (`Vutuv.Posts.reconcile_draft_preview/1`). Beneath it sits one
+button per link in the text plus **No preview**, all `aria-pressed`, so the
+current choice is visible rather than remembered (`choose/2`; a URL that is not
+in the author's own text is refused rather than fetched, since this arrives from
+the browser). Turning it off writes the same `dismissed` tombstone the edit
+page's Remove button writes — one answer to "they said no", not two — and
+pressing the link again lifts it. The panel is hidden entirely where
+`:generate_screenshots` is off, or it would be a spinner that can never resolve.
+
+**Only a link that survived a pause is fetched.** `@url_regex` matches a
+*partial* URL, so the autosave in the middle of typing one offers
+`https://githu`, the next `https://github.com/us` — and each of those would be a
+real outbound fetch, several of them resolving to real pages, so it is captures
+and AI-scan spend on addresses nobody asked for. The composer therefore fetches
+only a candidate list that is unchanged from the round before, and when the
+links *did* change it arms a single one-shot timer (`settle_link_preview`) so a
+member who simply stops typing still gets their preview — the confirming
+autosave would otherwise never come, which is a bug this had until it was driven
+in a browser. The cost is that the card appears one pause after the text.
 
 On publish the row's owner simply **flips** from the draft to the post
 (`adopt_draft/2`, called from the composer before the draft is deleted): the row
@@ -1531,10 +1542,15 @@ files never do. Draft-owned rows are excluded from the `/admin/screenshots`
 views: they are somebody's unpublished half-written post, and have no page to
 link a row to.
 
-A LiveComponent cannot subscribe to PubSub, so rather than teach all four host
-LiveViews to forward a broadcast, the composer **polls** for its own row
-(`send_update_after/3`, 1.5s, at most 20 times, and only while a fetch is
-actually in flight).
+A LiveComponent cannot subscribe to PubSub, so the card is pushed to it:
+`announce_ready/1` broadcasts `{:draft_preview_ready, …}` on the **author's own**
+`Vutuv.Activity` topic (the preview belongs to their unpublished draft, so
+nobody else has business hearing about it) and `VutuvWeb.Live.DraftPreview`
+turns that into a `send_update/2`. It is an `on_mount` hook rather than a
+`handle_info` clause copied into each of the four hosts, for the reason
+`VutuvWeb.Live.RemoteCounts` already documents: a clause missing from one host
+is invisible, and `attach_hook/4` means a page that has no `handle_info/2` at
+all still opts in with one line.
 
 **The page's own preview comes first (issue #1706).** Most sites publish one —
 Open Graph's `og:title` / `og:description` / `og:site_name` / `og:image` — and

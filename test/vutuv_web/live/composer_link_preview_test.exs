@@ -84,7 +84,17 @@ defmodule VutuvWeb.ComposerLinkPreviewTest do
     end)
   end
 
+  # Two round trips with the same text, because that is what "the member
+  # stopped typing" looks like to the server: a link is only fetched once it has
+  # survived a whole autosave pause unchanged, so a half-typed URL is never
+  # requested (see `sync_link_preview/1`). The debounce is 0 in the test env, so
+  # each `render_change` is one pause.
   defp type(live, body) do
+    live |> form("#composer-form", %{"post" => %{"body" => body}}) |> render_change()
+    live |> form("#composer-form", %{"post" => %{"body" => body}}) |> render_change()
+  end
+
+  defp type_once(live, body) do
     live |> form("#composer-form", %{"post" => %{"body" => body}}) |> render_change()
   end
 
@@ -145,6 +155,24 @@ defmodule VutuvWeb.ComposerLinkPreviewTest do
         |> render_click()
 
       assert html =~ "Dieser Beitrag geht ohne Linkvorschau raus."
+    end
+
+    test "a half-typed link is not fetched", %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+      {:ok, live, _html} = live(conn, ~p"/feed")
+
+      # One pause with a link that is still being typed: the panel appears and
+      # says it is working, but nothing has been requested yet — the address on
+      # screen is a prefix, and fetching prefixes means real captures and real
+      # AI-scan spend on pages nobody asked for.
+      html = type_once(live, "Schau mal: https://first.exam")
+
+      assert html =~ "Fetching the preview"
+      assert Posts.draft_link_preview(Posts.get_draft(user)) == nil
+
+      # The same text a pause later is a link the member meant.
+      type_once(live, "Schau mal: https://first.exam")
+      assert Posts.draft_link_preview(Posts.get_draft(user)).url == "https://first.exam"
     end
 
     test "no link, no panel", %{conn: conn} do

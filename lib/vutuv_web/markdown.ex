@@ -845,7 +845,15 @@ defmodule VutuvWeb.Markdown do
   # "hostsharing.net/downloads/…" instead of a mid-word character cut.
   # `@url_display_max` stays a final safety cap for a pathologically long host
   # or first segment (or a query string on a single-segment path).
-  defp truncate_url(url) do
+  @doc """
+  A link as a person recognises it: no scheme, no `www.`, the path elided to
+  one directory (two on the code forges and on our own host) and hard-capped.
+
+  Public because the composer's link-preview chooser labels its buttons with it
+  (issue #1714) — the same link has to read the same way there as it does in
+  the prose above the buttons.
+  """
+  def truncate_url(url) do
     url
     |> strip_url_scheme()
     |> String.replace_prefix("www.", "")
