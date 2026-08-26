@@ -35,6 +35,23 @@ export function once(el, key) {
   return true
 }
 
+// Whether a click is the ordinary "take me there" press, as opposed to one that
+// leaves this document exactly as it is: already handled by something else, or
+// carrying a modifier that opens the destination in a new tab or window.
+//
+// Three listeners on the nav bars ask this — the press paint in app.js, the
+// Feed tab's back-to-top face, and the per-tab scroll memory — and they had
+// three slightly different answers. The one that mattered was the shortest:
+// remembering a scroll offset for a page a cmd-click never left. Callers add
+// their own extra conditions (app.js also skips `target="_blank"` and the tab
+// you are already on); this is the part they share.
+export const plainPress = (event) =>
+  !event.defaultPrevented &&
+  !event.metaKey &&
+  !event.ctrlKey &&
+  !event.shiftKey &&
+  !event.altKey
+
 // fetch() with the page CSRF token attached, plus the `x-requested-with` marker
 // the controllers look for to answer JSON from the :browser pipeline. No Accept
 // header on purpose: `accepts ["html"]` 406s an explicit application/json

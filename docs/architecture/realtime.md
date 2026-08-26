@@ -103,19 +103,58 @@ silently on exactly the devices nobody is testing on. The same holds for the
 cache: `activate` deletes every key that is not its own, so two releases never
 share one, but the old cache lives as long as the old worker does.
 
-The **Messages** (`/messages`), **Notifications** (`/notifications`) and
-**Search** (`/search`) pages are LiveViews under a `live_session`. The search
-page itself is described in [search.md](search.md).
+The **Feed** (`/feed`), **Messages** (`/messages`), **Notifications**
+(`/notifications`) and **Search** (`/search`) pages are LiveViews under
+`live_session :default`. The search page itself is described in
+[search.md](search.md).
 
 The **profile** (`/:slug`, `VutuvWeb.UserProfileLive`) is a LiveView too —
 embedded by its controller via `live_render` (so the
 `.md`/`.txt`/`.json`/`.xml`/`.vcf` agent siblings keep flowing through the
-controller).
+controller), which is why it is not in the session yet.
 
-The **feed** (`/feed`, `VutuvWeb.PostLive.Feed`) is fronted the same way by
-`VutuvWeb.NewsfeedController` so its own agent siblings can be negotiated (see
-[agents-and-seo.md](agents-and-seo.md)), so it is the one LiveView no longer in
-the `live_session`.
+### Switching tabs patches the content (issue #1731)
+
+A page that is a LiveView is not enough to make navigation cheap. `<.link
+navigate>` only patches **within one `live_session`**, and a route that is not
+a `live` route cannot be in one — so a page fronted by a controller for its
+agent formats has to be reached by a full document load, and across the
+boundary `navigate` degrades to exactly that, silently. That is what made every
+bottom-tab press rebuild the document, stylesheet, socket and shell.
+
+`VutuvWeb.Plug.AgentRoute` separates the two. The route is declared `live` and
+names its old controller in the route's `:private` map; Phoenix merges that map
+into the conn before the pipeline runs, so the plug (last in `:browser`) can
+hand a `.md`/`.txt`/`.json`/`.xml` or ActivityPub request to the controller and
+halt, while an HTML request falls through to the LiveView carrying the
+`<link rel="alternate">` head tags the controller used to add. `/feed` is the
+first page routed this way; `VutuvWeb.NewsfeedController` now serves only its
+agent siblings.
+
+`ShellLive.nav_to/2` then decides, per nav item, whether it is a `navigate` or
+an ordinary `href` — and it asks the **router**, because the question is not
+"is the destination live" but "are these two the same `live_session`". The
+shell renders on every page, the admin session's and the controller pages
+included, so a rule that looked only at the destination would put a `navigate`
+on a link that cannot patch, spending a socket round trip before falling back
+to a full load. Feed, Search, Messages and Notifications patch between
+themselves; Profile, Network, Jobs, the directory and the admin panel stay full
+loads. The profile is the one worth naming, because it is a bottom tab: it
+needs `/:slug` to become a `live` route, which means moving the whole
+`live_session` block behind the `/:slug` sub-route scope and teaching
+`UserProfileLive` to answer the organization-handle dispatch, the legacy-handle
+301 and the 404 from a socket mount.
+
+Two things the shell owes a patching navigation. It is embedded
+`sticky: true`, which is what keeps its badges, subscriptions and presence
+alive — and also means it never mounts again, so the `"path"` it was born with
+would freeze. `VutuvWeb.Live.ShellNav` carries the new path to it over a PubSub
+topic scoped to `socket.transport_pid`, the websocket process shared by every
+LiveView on one browser tab and by nobody else; the shell then recomputes the
+active-tab highlight, the brand link and both unread badges. And a live
+navigation does not touch the scroll position — LiveView only restores one on
+a back/forward pop — so `assets/js/tab_scroll.js` resets it, and puts back
+where each path was left, the way a phone app does.
 
 The **add-tag form** (`/settings/tags/new`, `VutuvWeb.TagNewLive`) is the first
 live `/settings` page: it previews the parsed tags while the member types and

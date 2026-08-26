@@ -57,6 +57,14 @@ defmodule VutuvWeb.PostLive.Feed do
   alias VutuvWeb.PostTeaser
   alias VutuvWeb.UserHelpers
 
+  # `/feed` is a real `live` route inside `live_session :default` (issue #1731),
+  # so a bottom-tab press patches the content instead of rebuilding the
+  # document. That means the session's `:default` hook has already resolved the
+  # viewer, the locale and the shell path before mount/3 runs, and the login
+  # gate is the shared stage rather than a hand-rolled one — declared first, so
+  # an anonymous socket is turned away before anything subscribes for it.
+  on_mount({InitAssigns, :require_login})
+
   # The origin's like/repost figures on a card from another network tick
   # while this page is open (issue #1283). One line, no handler.
   on_mount(VutuvWeb.Live.RemoteCounts)
@@ -147,23 +155,15 @@ defmodule VutuvWeb.PostLive.Feed do
   def first_page_size, do: @first_page_size
 
   @impl true
-  # Rendered by VutuvWeb.NewsfeedController via `live_render` (off-router, so it
-  # can negotiate the agent-format siblings), exactly like UserProfileLive. An
-  # off-router LiveView can't use `InitAssigns` as an `on_mount` — that hook
-  # attaches a `:handle_params` hook, which it rejects — so mount mirrors it:
-  # load the viewer + locale from the session the controller passes, and gate on
-  # login here instead of the `:require_login` stage.
-  def mount(_params, session, socket) do
-    socket = InitAssigns.assign_embedded(socket, session)
-
-    if user = socket.assigns.current_user do
-      {:ok, mount_feed(socket, user, calendar_from_url(session))}
-    else
-      {:ok,
-       socket
-       |> put_flash(:error, gettext("You must be logged in to access that page"))
-       |> redirect(to: ~p"/login")}
-    end
+  # The viewer is already resolved (and, when anonymous, already redirected) by
+  # the `on_mount` hooks above.
+  #
+  # The calendar's `?day=` / `?cal=` come straight from the URL. They used to
+  # ride the `live_render` session, because an embedded LiveView never sees the
+  # query string; since issue #1731 this one is routed, so `mount/3` is handed
+  # the params itself and the controller has nothing left to pass on.
+  def mount(params, _session, socket) do
+    {:ok, mount_feed(socket, socket.assigns.current_user, calendar_from_url(params))}
   end
 
   defp mount_feed(socket, user, {day, open?}) do
@@ -1441,20 +1441,21 @@ defmodule VutuvWeb.PostLive.Feed do
   # What the URL asked the calendar to show (`/feed?day=2026-08-21`,
   # `/feed?cal=1`), as `{day_or_nil, unfolded?}`.
   #
-  # The controller reads the query string and passes the two values through the
-  # `live_render` session, because this LiveView is embedded rather than routed
-  # and so has no `handle_params/3` of its own. An unreadable or future date is
+  # Read straight off `mount/3`'s params. Until issue #1731 the controller read
+  # the query string and passed the two values through the `live_render`
+  # session, because an embedded LiveView never sees a URL; this one is routed
+  # now, so the detour is gone. An unreadable or future date is
   # simply ignored: a link somebody mangled should land on the feed, not on an
   # error, and a day that has not happened has nothing to show.
   #
   # A named day implies an unfolded calendar — arriving at a day with the grid
   # folded away would hide the only control that explains where the reader is.
-  defp calendar_from_url(session) do
-    with {:ok, day} <- FeedTimeTravel.parse_date(session["cal_day"] || ""),
+  defp calendar_from_url(params) do
+    with {:ok, day} <- FeedTimeTravel.parse_date(params["day"] || ""),
          true <- FeedTimeTravel.reachable?(day) do
       {day, true}
     else
-      _no_day -> {nil, session["cal_open"] in ~w(1 open true)}
+      _no_day -> {nil, params["cal"] in ~w(1 open true)}
     end
   end
 

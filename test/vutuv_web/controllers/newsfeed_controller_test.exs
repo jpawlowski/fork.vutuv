@@ -5,6 +5,11 @@ defmodule VutuvWeb.NewsfeedControllerTest do
   format. Unlike the public agent docs these are per-viewer and login-only, so
   they are private (never cached, noindex/noai) and 404 for anonymous callers.
   The HTML page itself is covered by VutuvWeb.PostFeedLiveTest.
+
+  `/feed` is a `live` route now (issue #1731), so every case here also asserts
+  that `VutuvWeb.Plug.AgentRoute` still hands the non-HTML representations to
+  this controller — the whole point of that plug is that a page can be a
+  LiveView **and** keep its siblings at the same URL.
   """
   use VutuvWeb.ConnCase
 
@@ -104,6 +109,57 @@ defmodule VutuvWeb.NewsfeedControllerTest do
 
       assert doc.status == 200
       assert doc.resp_body =~ "Feed von"
+    end
+  end
+
+  describe "the HTML page and the documents share one URL (issue #1731)" do
+    test "the HTML page advertises its siblings and varies on Accept", %{conn: conn} do
+      {conn, _user} = create_and_login_user(conn)
+
+      page = get(conn, "/feed")
+
+      assert page.status == 200
+      assert get_resp_header(page, "vary") == ["accept"]
+
+      # The <head> alternates and the Link header are built from the same
+      # assign, which VutuvWeb.Plug.AgentRoute now sets in the retired
+      # controller HTML branch's place.
+      for format <- ~w(md txt json xml) do
+        assert page.resp_body =~ ~s(href="/feed.#{format}")
+      end
+
+      link = get_resp_header(page, "link") |> Enum.join(", ")
+      assert link =~ ~s(</feed.md>; rel="alternate"; type="text/markdown")
+    end
+
+    # `VutuvWeb.Plug.AgentRoute` dispatches on `ap_request?/1` as well as on the
+    # agent formats; remove that test and this case 500s (`Plug.Conn.resp/3`
+    # raises on a body no template produced). This pins /feed only. The same
+    # crash is reachable on every other `live_render` page — `/organizations`
+    # raises identically and is untouched by this change — so read it as one
+    # page covered, not as the class fixed. The class is issue #1776.
+    test "an ActivityPub Accept gets a refusal, not a crash", %{conn: conn} do
+      {conn, _user} = create_and_login_user(conn)
+
+      doc =
+        conn
+        |> recycle()
+        |> put_req_header("accept", "application/activity+json")
+        |> get("/feed")
+
+      assert doc.status == 404
+    end
+
+    test "the HTML page is the LiveView, not this controller", %{conn: conn} do
+      {conn, _user} = create_and_login_user(conn)
+
+      page = get(conn, "/feed")
+
+      assert page.status == 200
+      # A `live` route dispatches through Phoenix.LiveView.Plug; if AgentRoute
+      # ever swallowed the HTML request, this would name the controller.
+      refute page.private[:phoenix_controller] == VutuvWeb.NewsfeedController
+      assert page.resp_body =~ "data-phx-main"
     end
   end
 

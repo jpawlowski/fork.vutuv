@@ -47,7 +47,6 @@ defmodule VutuvWeb.SearchLive do
     {:ok,
      socket
      |> assign(:page_title, gettext("Search"))
-     |> assign(:current_user_id, current_user && current_user.id)
      |> assign(:show_save?, false)
      |> assign(:saved?, false)
      # Whether this member could look a post up at all, asked once here rather

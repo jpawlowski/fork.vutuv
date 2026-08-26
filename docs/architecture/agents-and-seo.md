@@ -29,10 +29,19 @@ These variants render the **anonymous public view** from one doc map per page
 a page's HTML and its docs diverge).
 
 The **newsfeed** is the one exception: `/feed.md/.txt/.json/.xml`
-(`VutuvWeb.AgentDocs.FeedDoc`, negotiated by `VutuvWeb.NewsfeedController` — the
-controller in front of the `/feed` LiveView) render the signed-in viewer's own
-timeline, so they are login-only and sent `private, no-store` + `noindex/noai`
-(an agent-format request without a session 404s, and a feed has no `.vcf`).
+(`VutuvWeb.AgentDocs.FeedDoc`, negotiated by `VutuvWeb.NewsfeedController`)
+render the signed-in viewer's own timeline, so they are login-only and sent
+`private, no-store` + `noindex/noai` (an agent-format request without a session
+404s, and a feed has no `.vcf`).
+
+`/feed` is also the first page where the controller is **not** in front of the
+LiveView. The route is `live` (so a bottom-tab press can patch the content
+instead of rebuilding the document, issue #1731) and names that controller in
+its `:private` map; `VutuvWeb.Plug.AgentRoute`, last in the `:browser`
+pipeline, hands it every representation the LiveView cannot render — the agent
+formats and the ActivityPub one — and lets HTML fall through with the
+alternates in its head. A page adopting that shape keeps its siblings at the
+same URLs; see [realtime.md](realtime.md) for the navigation side.
 
 Documents carry `schema_version` + `generated_at`; responses carry
 `Content-Signal`, `Vary: Accept` and `x-markdown-tokens`.

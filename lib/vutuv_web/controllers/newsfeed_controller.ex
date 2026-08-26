@@ -1,11 +1,15 @@
 defmodule VutuvWeb.NewsfeedController do
   @moduledoc """
-  The signed-in member's newsfeed (`/feed`). The HTML page is the LiveView
-  `VutuvWeb.PostLive.Feed`, `live_render`ed here so the controller stays the
-  entry point and can negotiate the **agent-format siblings** —
-  `/feed.md/.txt/.json/.xml` (`VutuvWeb.AgentDocs.FeedDoc`), the viewer's
-  timeline in another format. (Named NewsfeedController, not FeedController,
-  which already serves the RSS feeds.)
+  The **agent-format siblings** of the newsfeed — `/feed.md/.txt/.json/.xml`
+  (`VutuvWeb.AgentDocs.FeedDoc`), the viewer's timeline in another format.
+  (Named NewsfeedController, not FeedController, which already serves the RSS
+  feeds.)
+
+  The HTML page is not here: `/feed` is a real `live` route inside
+  `live_session :default` (`VutuvWeb.PostLive.Feed`), so a bottom-tab press
+  patches the content instead of rebuilding the document (issue #1731).
+  `VutuvWeb.Plug.AgentRoute` is what keeps both at one URL — it dispatches the
+  non-HTML representations here and lets HTML fall through to the LiveView.
 
   Unlike every other agent-format page these docs are **not** the anonymous
   public view: the feed is per-viewer and login-only. So an agent-format
@@ -24,33 +28,14 @@ defmodule VutuvWeb.NewsfeedController do
   alias VutuvWeb.ControllerHelpers
   alias VutuvWeb.PostLive.Feed
 
+  # AgentRoute only dispatches here for a format the LiveView cannot answer, so
+  # `negotiate/2` resolving to `:html` means the request reached this action by
+  # some other path — a 404 rather than the HTML page, which the route owns.
   def index(conn, params) do
     case AgentDocs.negotiate(conn) do
-      :html -> show_html(conn, params)
+      :html -> ControllerHelpers.render_error(conn, 404)
       format -> send_feed_doc(conn, format, params)
     end
-  end
-
-  # The LiveView brings the `:app` layout (chrome + the socket assigns) itself,
-  # so drop the controller's to avoid rendering it twice — the root layout (the
-  # document <head>, with the agent-format alternates) still applies. The feed
-  # is outside the `live_session`, so its session values are passed explicitly
-  # (mirrors VutuvWeb.UserController.show).
-  #
-  # `?day=` and `?cal=` are the feed calendar's state (issue: time travel). The
-  # LiveView is `live_render`ed rather than routed, so it has no
-  # `handle_params/3` to read them itself — the controller is the only side
-  # that sees the query string, and it hands the two values on through the
-  # session map. They are display state, not identity: that map is signed but
-  # **not encrypted**, so nothing that decides who the viewer is may ever
-  # travel this way.
-  defp show_html(conn, params) do
-    conn
-    |> AgentDocs.put_html_alternates()
-    |> ControllerHelpers.render_live(Feed, %{
-      "cal_day" => params["day"],
-      "cal_open" => params["cal"]
-    })
   end
 
   defp send_feed_doc(conn, format, params) do

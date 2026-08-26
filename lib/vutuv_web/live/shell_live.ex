@@ -47,6 +47,7 @@ defmodule VutuvWeb.ShellLive do
   alias Vutuv.Social
   alias Vutuv.WebPush
   alias VutuvWeb.Live.InitAssigns
+  alias VutuvWeb.Live.ShellNav
   alias VutuvWeb.NotificationLine
   alias VutuvWeb.PostTeaser
   alias VutuvWeb.Presence
@@ -79,6 +80,12 @@ defmodule VutuvWeb.ShellLive do
     # coalesces a burst of sign-ups into at most one message per second, so this
     # fan-out costs one message per connected tab per second of actual change.
     if connected?(socket), do: PeopleCounter.subscribe()
+
+    # This shell is embedded `sticky: true`, so it outlives every live
+    # navigation the page under it makes — which is the whole point, and also
+    # why `path` above is only ever the path this document was *loaded* with.
+    # ShellNav is how the arriving page tells it where the reader went.
+    ShellNav.subscribe(socket)
 
     socket =
       if connected?(socket) do
@@ -222,12 +229,7 @@ defmodule VutuvWeb.ShellLive do
     |> assign(:presence_hidden_ids, MapSet.new())
     |> assign(:messages_count, 0)
     |> assign(:notifications_count, 0)
-    |> assign(:brand_path, brand_path(socket.assigns.user_param, path))
-    # The current path also drives the active-nav highlight (which top/bottom
-    # nav item is the page being viewed). Like brand_path it is the path at
-    # mount; every nav destination is reached by a full-reload `href`, so the
-    # shell remounts with a fresh path on each of those.
-    |> assign(:path, path)
+    |> assign_path(path)
     # Admins get one more figure: how many sign-ups confirmed so far today.
     # Zero renders nothing, so it is also the starting value for everyone else.
     |> assign(:new_members_today, 0)
@@ -338,6 +340,46 @@ defmodule VutuvWeb.ShellLive do
   defp on_route?(nil, _route), do: false
   defp on_route?(path, route), do: path == route or String.starts_with?(path, route <> "/")
 
+  # Whether a nav item can patch the content instead of rebuilding the document
+  # (issue #1731), as attributes to spread into `<.link>`.
+  #
+  # `<.link navigate>` patches only WITHIN one `live_session`, so the question
+  # is not "is the destination live" but "are these two the same session" —
+  # this shell is rendered on every page, including the admin session's and the
+  # controller pages that have no LiveView at all. Getting it wrong is silent
+  # either way: a `navigate` across a boundary spends a socket round trip
+  # before falling back to a full load, and an `href` where a patch was
+  # possible simply throws the document away.
+  #
+  # The router already knows, so it is asked rather than copied into a list
+  # here — a list would have to be re-audited on every routing change, and
+  # nothing would fail when it drifted. `nil` (a controller page, an unmatched
+  # path) never equals itself for this purpose, so anything outside a session
+  # stays an ordinary link, which is the right default.
+  # `current` is the session name of the page being shown, resolved once per
+  # path change in `assign_path/2` rather than re-derived at each of the ten
+  # links — it is the same answer every time, and the path is the only thing it
+  # depends on.
+  defp nav_to(destination, current) do
+    session = live_session(destination)
+
+    if session && session == current do
+      %{navigate: destination}
+    else
+      %{href: destination}
+    end
+  end
+
+  defp live_session(nil), do: nil
+  defp live_session(""), do: nil
+
+  defp live_session(path) when is_binary(path) do
+    case Phoenix.Router.route_info(VutuvWeb.Router, "GET", path, VutuvWeb.Endpoint.host()) do
+      %{phoenix_live_view: {_view, _action, _opts, %{name: name}}} -> name
+      _ -> nil
+    end
+  end
+
   # The active nav item (the page being viewed) reads as the current location,
   # not a normal clickable link: brand-tinted, medium weight and no hover
   # affordance. The inactive item keeps the quiet slate link treatment.
@@ -349,11 +391,34 @@ defmodule VutuvWeb.ShellLive do
     do:
       "rounded-md px-3 py-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
 
+  # The current path and everything that is a pure function of it, in one place
+  # — the mount sets it and every later navigation resets it, and the two must
+  # not be able to disagree about what a path implies. It drives the active-nav
+  # highlight (which top/bottom nav item is the page being viewed), the Feed
+  # tab's back-to-top face, `nav_to/2`'s same-session test, and the brand
+  # wordmark's destination.
+  defp assign_path(socket, path) do
+    socket
+    |> assign(:path, path)
+    |> assign(:nav_session, live_session(path))
+    |> assign(:brand_path, brand_path(socket.assigns.user_param, path))
+  end
+
   # Where the logo goes. Normally "home" ("/", which routes a logged-in member
   # to their feed), but ON the feed itself that would be a no-op round trip, so
   # there it deep-links to the member's own profile instead.
   defp brand_path(user_param, "/feed") when is_binary(user_param), do: ~p"/#{user_param}"
   defp brand_path(_user_param, _path), do: ~p"/"
+
+  # The page under this sticky shell navigated (VutuvWeb.Live.ShellNav). Every
+  # assign derived from the path has to be recomputed here, because none of
+  # them will ever be recomputed by a mount again: the active-nav highlight,
+  # the Feed tab's back-to-top face and `nav_to/2` all read `:path`, and the
+  # brand wordmark's destination is a function of it.
+  @impl true
+  def handle_info({:shell_path, path}, socket) do
+    {:noreply, socket |> resync_badges(socket.assigns.path, path) |> assign_path(path)}
+  end
 
   # Both badges recompute from the source of truth rather than adjusting a
   # running tally, so they can't drift. A bare +1 on :new_notification went
@@ -362,7 +427,6 @@ defmodule VutuvWeb.ShellLive do
   # self-healed on a full reload (issue #782). :notifications_changed is that
   # silent-decrement signal (broadcast by Vutuv.Social), and recomputing on
   # :new_notification too keeps the increment honest.
-  @impl true
   def handle_info({:new_notification, n}, socket),
     do: {:noreply, socket |> recount_notifications() |> push_browser_notification(n)}
 
@@ -496,6 +560,36 @@ defmodule VutuvWeb.ShellLive do
     socket
     |> assign(:notifications_count, Activity.unread_notification_count(socket.assigns.user_id))
     |> push_badge()
+  end
+
+  # What a *navigation* can do to the badges, which is far less than it looks:
+  # both counts are kept live over PubSub the whole time the shell is up
+  # (`recount_messages/1`, `recount_notifications/1`), so moving between two
+  # pages that are neither /messages nor /notifications is no reason to ask the
+  # database anything. What only a navigation can change is the **zeroing
+  # rule** — sitting on one of those two pages means that badge reads zero —
+  # so a badge is touched exactly when the reader entered or left its page.
+  #
+  # Zeroing on arrival is not cosmetic: the page marks what is on screen read
+  # and broadcasts, and that broadcast can lose the race with this message,
+  # which would leave a badge standing over a read inbox. This is also why the
+  # comparison is `on_route?/2` and not path equality — tapping from one
+  # conversation to the next is a navigation, and neither badge changes.
+  defp resync_badges(socket, from, to) do
+    socket
+    |> resync_badge(from, to, "/messages", :messages_count, &recount_messages/1)
+    |> resync_badge(from, to, "/notifications", :notifications_count, &recount_notifications/1)
+  end
+
+  defp resync_badge(%{assigns: %{user_id: nil}} = socket, _from, _to, _route, _assign, _recount),
+    do: socket
+
+  defp resync_badge(socket, from, to, route, assign, recount) do
+    cond do
+      on_route?(from, route) == on_route?(to, route) -> socket
+      on_route?(to, route) -> socket |> assign(assign, 0) |> push_badge()
+      true -> recount.(socket)
+    end
   end
 
   defp recount_new_members(socket),
@@ -1003,10 +1097,14 @@ defmodule VutuvWeb.ShellLive do
               vutuv
             </.link>
 
-            <%!-- `data-nav-bar` + `data-nav-item`: these are plain links, so a
-            press here is a full page load that nothing in THIS document ever
-            answers. The paint in `app.css` moves the pill on the spot; see the
-            press block there. --%>
+            <%!-- `data-nav-bar` + `data-nav-item`: the paint in `app.css`
+            moves the pill on the spot. It is still needed for a destination
+            that patches (LiveView's own `phx-click-loading` lands on the link
+            but says nothing about which item is now current), and it is the
+            only feedback there is for the ones that do not: `nav_to/1` gives a
+            controller page a plain `href`, so a press there is a whole new
+            document that nothing in THIS one ever answers. See the press block
+            in `app.css`. --%>
             <nav
               aria-label={gettext("Main navigation")}
               data-nav-bar
@@ -1014,7 +1112,7 @@ defmodule VutuvWeb.ShellLive do
             >
               <.link
                 :if={@user_id}
-                href={~p"/feed"}
+                {nav_to(~p"/feed", @nav_session)}
                 data-nav-item
                 aria-current={on_route?(@path, "/feed") && "page"}
                 class={nav_link_class(on_route?(@path, "/feed"))}
@@ -1114,10 +1212,9 @@ defmodule VutuvWeb.ShellLive do
             </.link>
           </div>
 
-          <%!-- `data-nav-bar` here too: these icons are the same kind of plain
-          link as the nav above, and pressing one is the same whole new
-          document. They inherit that bar's palette, so a press fills the circle
-          the way hovering it already tints it. --%>
+          <%!-- `data-nav-bar` here too: these icons take the same treatment as
+          the nav above. They inherit that bar's palette, so a press fills the
+          circle the way hovering it already tints it. --%>
           <div data-nav-bar class="flex items-center justify-end gap-1">
             <%!-- Admins only: today's confirmed sign-ups (German calendar day),
             live from PeopleCounter and reset by the DayClock at Berlin
@@ -1137,7 +1234,7 @@ defmodule VutuvWeb.ShellLive do
             </.link>
 
             <.link
-              href={~p"/search"}
+              {nav_to(~p"/search", @nav_session)}
               data-nav-item
               title={gettext("Search")}
               class="hidden h-10 w-10 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 sm:flex dark:text-slate-400 dark:hover:bg-slate-800"
@@ -1147,7 +1244,7 @@ defmodule VutuvWeb.ShellLive do
 
             <%= if @user_id do %>
               <.link
-                href={~p"/bookmarks"}
+                {nav_to(~p"/bookmarks", @nav_session)}
                 data-nav-item
                 title={gettext("Bookmarks")}
                 class="hidden h-10 w-10 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 md:flex dark:text-slate-400 dark:hover:bg-slate-800"
@@ -1155,7 +1252,7 @@ defmodule VutuvWeb.ShellLive do
                 <.icon_bookmark class="h-6 w-6" />
               </.link>
               <.link
-                href={~p"/messages"}
+                {nav_to(~p"/messages", @nav_session)}
                 data-nav-item
                 title={gettext("Messages")}
                 class="relative hidden h-10 w-10 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 md:flex dark:text-slate-400 dark:hover:bg-slate-800"
@@ -1167,7 +1264,7 @@ defmodule VutuvWeb.ShellLive do
                 />
               </.link>
               <.link
-                href={~p"/notifications"}
+                {nav_to(~p"/notifications", @nav_session)}
                 data-nav-item
                 title={gettext("Notifications")}
                 class="relative hidden h-10 w-10 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 md:flex dark:text-slate-400 dark:hover:bg-slate-800"
@@ -1216,6 +1313,13 @@ defmodule VutuvWeb.ShellLive do
                     </span>
                   </.link>
 
+                  <%!-- The menu's items stay plain `href`s even where the
+                  destination is in the `live_session` and could patch: the menu
+                  is a native `<details>` inside this sticky shell, so a patch
+                  would leave it hanging open over the page it just opened.
+                  Closing it is the browser's job on a full load and nobody's on
+                  a patch, and one more piece of state to unwind is not worth
+                  what an account menu saves. --%>
                   <.link href={~p"/bookmarks"} class={[menu_item_class(), "block"]}>
                     {gettext("Bookmarks")}
                   </.link>
@@ -1314,23 +1418,23 @@ defmodule VutuvWeb.ShellLive do
         <%= if @user_id do %>
           <%!-- On /feed this tab points at the page under the reader's thumb, so
           once they are a screen down it scrolls back to the top instead of
-          reloading (`scroll_top`; `assets/js/scroll_top_tab.js` takes the
-          press). The arrow is the promise that it will: a control that behaves
-          differently has to look different first, or the press reads as a
-          reload. --%>
-          <.tab href={~p"/feed"} label={gettext("Feed")} active={on_route?(@path, "/feed")} scroll_top>
+          re-mounting the page (`scroll_top`; `assets/js/scroll_top_tab.js`
+          takes the press). The arrow is the promise that it will: a control
+          that behaves differently has to look different first, or the press
+          reads as a fresh load. --%>
+          <.tab href={~p"/feed"} current_path={@path} nav_session={@nav_session} label={gettext("Feed")} scroll_top>
             <.icon_feed data-tab-icon="feed" />
             <.icon_scroll_top />
           </.tab>
         <% end %>
-        <.tab href={~p"/search"} label={gettext("Search")} active={on_route?(@path, "/search")}><.icon_search /></.tab>
+        <.tab href={~p"/search"} current_path={@path} nav_session={@nav_session} label={gettext("Search")}><.icon_search /></.tab>
         <%= if @user_id do %>
-          <.tab href={~p"/messages"} label={gettext("Messages")} count={@messages_count} active={on_route?(@path, "/messages")}><.icon_envelope /></.tab>
-          <.tab href={~p"/notifications"} label={gettext("Alerts")} count={@notifications_count} active={on_route?(@path, "/notifications")}><.icon_bell /></.tab>
+          <.tab href={~p"/messages"} current_path={@path} nav_session={@nav_session} label={gettext("Messages")} count={@messages_count}><.icon_envelope /></.tab>
+          <.tab href={~p"/notifications"} current_path={@path} nav_session={@nav_session} label={gettext("Alerts")} count={@notifications_count}><.icon_bell /></.tab>
           <%!-- The member's own avatar is the Profile tab — the universal mobile
           convention for "you", so the profile is reachable on phones too, not
           just via the desktop nav or the logo's /feed deep-link. --%>
-          <.tab href={~p"/#{@user_param}"} label={gettext("Profile")} data-mobile-profile active={on_route?(@path, "/#{@user_param}")}>
+          <.tab href={~p"/#{@user_param}"} current_path={@path} nav_session={@nav_session} label={gettext("Profile")} data-mobile-profile>
             <%= if @user_avatar do %>
               <img src={@user_avatar} alt="" class="h-6 w-6 rounded-full object-cover" />
             <% else %>
@@ -1340,7 +1444,7 @@ defmodule VutuvWeb.ShellLive do
             <% end %>
           </.tab>
         <% else %>
-          <.tab href={~p"/login"} label={gettext("Log in")}><.icon_login /></.tab>
+          <.tab href={~p"/login"} current_path={@path} nav_session={@nav_session} label={gettext("Log in")}><.icon_login /></.tab>
         <% end %>
       </nav>
     </div>
@@ -1350,20 +1454,32 @@ defmodule VutuvWeb.ShellLive do
   ## Components
 
   attr(:href, :string, required: true)
+  # The page the tab bar is currently showing, and the `live_session` that page
+  # belongs to. Both are about the page being LEFT, which is why they are attrs
+  # and not something a tab could work out from its own `href`: whether it is
+  # the current tab, and whether a press can patch (`nav_to/2`), are questions
+  # about the pair.
+  attr(:current_path, :string, default: nil)
+  attr(:nav_session, :atom, default: nil)
   attr(:label, :string, required: true)
   attr(:count, :integer, default: 0)
-  attr(:active, :boolean, default: false)
   attr(:scroll_top, :boolean, default: false)
   attr(:rest, :global)
   slot(:inner_block, required: true)
 
   defp tab(assigns) do
+    # Derived, not passed: a tab is current when the page being shown is its own
+    # destination, and every call site spelling that out again was the same
+    # route string written a third time — with nothing to catch an `href` and an
+    # `active=` that named different pages.
+    assigns = assign(assigns, :active, on_route?(assigns.current_path, assigns.href))
+
     ~H"""
     <%!-- The weight lives on the link, not on the label span: the press paint
     in `app.css` has one element to work on, and the label inherits it. Two
     owners of the same property is what leaves a half-repainted control. --%>
     <.link
-      href={@href}
+      {nav_to(@href, @nav_session)}
       data-nav-item
       data-scroll-top={(@active && @scroll_top) || nil}
       aria-current={@active && "page"}

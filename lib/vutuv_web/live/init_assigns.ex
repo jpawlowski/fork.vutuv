@@ -26,18 +26,15 @@ defmodule VutuvWeb.Live.InitAssigns do
   alias Vutuv.Moderation
   alias Vutuv.Organizations
   alias Vutuv.Sessions
+  alias VutuvWeb.Live.ShellNav
 
   def on_mount(:default, _params, session, socket) do
-    user = session_user(session)
-    VutuvWeb.LiveLocale.put_viewer(user, session)
-
     # Mirror `conn.request_path` for live pages: the shared layout hands the
     # current path to the embedded ShellLive so it can zero the matching
     # unread badge at mount, without enumerating view modules.
     socket =
       socket
-      |> assign(:current_user, user)
-      |> assign(:acting_as, acting_as(user, session))
+      |> assign_viewer(session)
       |> Phoenix.LiveView.attach_hook(:shell_path, :handle_params, &assign_shell_path/3)
 
     {:cont, socket}
@@ -84,8 +81,21 @@ defmodule VutuvWeb.Live.InitAssigns do
     |> Phoenix.LiveView.redirect(to: to)
   end
 
+  # Runs on every `handle_params`, so it fires again after each live navigation
+  # inside the `live_session`. The assign is what the layout hands a *newly*
+  # mounted ShellLive; the broadcast is what reaches the **sticky** one, which
+  # by definition does not mount again (see `VutuvWeb.Live.ShellNav`). The
+  # broadcast comes first on purpose: it reads the assign it is about to be
+  # overwritten by, which is how it tells a navigation from a self-patch.
   defp assign_shell_path(_params, uri, socket) do
-    {:cont, assign(socket, :shell_path, URI.parse(uri).path)}
+    path = URI.parse(uri).path
+
+    socket =
+      socket
+      |> ShellNav.broadcast_path(path)
+      |> assign(:shell_path, path)
+
+    {:cont, socket}
   end
 
   @doc """
@@ -97,9 +107,24 @@ defmodule VutuvWeb.Live.InitAssigns do
   (the "Other formats" `?lang=` suffix) and `:shell_path` (so the embedded
   ShellLive can zero the page's unread badge); the controller hands the last
   two through the session. Read the loaded user back from
-  `socket.assigns.current_user`.
+  `socket.assigns.current_user`. Everything but `:shell_path` is shared with
+  the `:default` hook, so a page can move into the `live_session` without
+  rewriting its template.
   """
   def assign_embedded(socket, session) do
+    socket
+    |> assign_viewer(session)
+    |> assign(:shell_path, session["request_path"])
+  end
+
+  # Who is looking, in the language they read — the half the routed and the
+  # off-router mounts share. Kept in one place because the two drifted once
+  # already: `:locale` and `:current_user_id` were set only here, so `/feed`
+  # arrived in the `live_session` missing both (issue #1731). The only thing
+  # left to each caller is `:shell_path`, which they genuinely learn
+  # differently — from `handle_params` on the router, from the controller's
+  # curated session off it.
+  defp assign_viewer(socket, session) do
     user = session_user(session)
     VutuvWeb.LiveLocale.put_viewer(user, session)
 
@@ -107,8 +132,10 @@ defmodule VutuvWeb.Live.InitAssigns do
     |> assign(:current_user, user)
     |> assign(:current_user_id, user && user.id)
     |> assign(:acting_as, acting_as(user, session))
+    # The visitor's language as a plain value, for the pages that render an
+    # `?lang=` suffix into a link (the "Other formats" card) rather than merely
+    # speaking it; `put_viewer/2` above has already applied it to this process.
     |> assign(:locale, session["locale"])
-    |> assign(:shell_path, session["request_path"])
   end
 
   @doc """

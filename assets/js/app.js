@@ -23,6 +23,7 @@ import {
   localSet,
   onReady,
   once,
+  plainPress,
   postJSON,
   request,
   reducedMotion,
@@ -42,6 +43,13 @@ import "./lightbox"
 // (self-contained; marks <html>, which is outside every LiveView root, so no
 // patch can drop the state. See scroll_top_tab.js).
 import "./scroll_top_tab"
+// Where each tab was left, and the scroll reset a live navigation does not do
+// for us (self-contained, in memory for the life of the document; see
+// tab_scroll.js). It must stay BELOW scroll_top_tab: both listen for the same
+// nav press on `document`, and this one reads `defaultPrevented` to see that
+// the Feed tab's back-to-top face has already taken it. `asset_import_order_test.exs`
+// fails the build if the two ever swap.
+import "./tab_scroll"
 
 // LiveSocket drives the incremental LiveView shell (live unread badges, the
 // notifications/messages pages, presence). The CSRF token is rendered into the
@@ -1670,20 +1678,21 @@ document.addEventListener("click", (e) => {
   retryFilterPress(tab)
 })
 
-// A nav item pressed, and a whole document to wait for. The top bar's Feed /
-// Profile / Network / Jobs and the phone's bottom tab bar are plain links on
-// purpose (they cross live_sessions), so there is no socket round trip to hang
-// feedback off and no ack to end it: the pill sits on the page being left
-// until the next document paints, which on a slow line is the same dead
-// control the filter tabs had. So the press is painted here and the new
-// document's own render is what takes it off — no timer, nothing to expire.
+// A nav item pressed, and a page to wait for. Two kinds now (issue #1731):
+// the destinations inside `live_session :default` patch, and everything else —
+// Profile, Network, Jobs, the directory, the admin panel — is still a plain
+// link crossing a live_session boundary, so there is no socket round trip to
+// hang feedback off and no ack to end it. Either way the pill would otherwise
+// sit on the page being left, which on a slow line is the same dead control
+// the filter tabs had. So the press is painted here; the next document's own
+// render takes it off for a full load, and `phx:navigate` does for a patch.
 document.addEventListener("click", (e) => {
   const item = e.target.closest("[data-nav-item]")
   if (!item) return
   // Three presses that leave THIS document exactly as it is, so painting any
   // of them would be a lie: one that opens a new tab or window, one already
   // handled by something else, and one on the page the reader is on.
-  if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+  if (!plainPress(e)) return
   if (item.target === "_blank") return
   if (item.getAttribute("aria-current") === "page") return
 
@@ -1697,12 +1706,20 @@ document.addEventListener("click", (e) => {
 // press, still painted for a page the reader has since walked away from. A
 // restore fires `pageshow` and an ordinary load fires it too, so one listener
 // covers both.
-window.addEventListener("pageshow", () => {
+//
+// A live navigation keeps the document, so neither ever fires for it and the
+// paint would stand for the rest of the session. `phx:navigate` is the arrival
+// of the page the press was aiming at, which is exactly when a full load's new
+// render would have dropped it.
+function clearNavPress() {
   document.documentElement.removeAttribute(NAV_PRESSING)
   document
     .querySelectorAll(`[data-nav-item][${NAV_PRESSING}]`)
     .forEach((el) => el.removeAttribute(NAV_PRESSING))
-})
+}
+
+window.addEventListener("pageshow", clearNavPress)
+window.addEventListener("phx:navigate", clearNavPress)
 
 // Flash toasts. Lives outside LiveView so it also works on classic controller
 // pages: EVERY toast (info and error alike) auto-dismisses after a few seconds,

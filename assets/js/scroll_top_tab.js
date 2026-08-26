@@ -1,9 +1,9 @@
 // The phone tab bar's Feed tab, doubling as a back-to-top control.
 //
-// On /feed that tab points at the page under the reader's thumb, so a press is
-// a full reload of what they are looking at. Once they have scrolled a screen
-// down the useful press is the other one: back to the top, the standing
-// convention on phone tab bars. It has to LOOK different before it behaves
+// On /feed that tab points at the page under the reader's thumb, so a press
+// re-mounts what they are looking at. Once they have scrolled a screen down the
+// useful press is the other one: back to the top, the standing convention on
+// phone tab bars. It has to LOOK different before it behaves
 // differently, or the press still reads as a reload — so one attribute drives
 // both halves and they cannot disagree: `data-page-scrolled` on <html> is what
 // swaps the glyph for an arrow (components.css) and what this press handler
@@ -17,7 +17,7 @@
 // server's call, not a path check here: it renders `data-scroll-top` on the
 // active tab alone, so this file never has to know what counts as "the feed".
 
-import { reducedMotion } from "./util"
+import { plainPress, reducedMotion } from "./util"
 
 const MARKER = "data-page-scrolled"
 
@@ -56,11 +56,19 @@ window.addEventListener("pageshow", sync)
 document.addEventListener("click", (event) => {
   // Leave a modified click alone: it opens the feed in a new tab, where the
   // reader really is asking for the page and not for this document's scroll.
-  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey) return
+  if (!plainPress(event)) return
 
   const tab = event.target.closest?.("a[data-scroll-top]")
   if (!tab || !document.documentElement.hasAttribute(MARKER)) return
 
   event.preventDefault()
+  // The tab is a `<.link navigate>` now (issue #1731), and LiveView binds its
+  // own click handler on `window`, one node further out — where it acts on the
+  // link WITHOUT consulting `defaultPrevented`. So preventing the default is
+  // not enough to keep the press: the propagation has to stop here, at
+  // `document`, or the reader gets the scroll AND a navigation. Other listeners
+  // on this same node still run, which is what lets the nav press paint see the
+  // prevented default and correctly paint nothing.
+  event.stopPropagation()
   window.scrollTo({ top: 0, behavior: reducedMotion() ? "auto" : "smooth" })
 })

@@ -43,6 +43,12 @@ defmodule VutuvWeb.Router do
     plug(Plugs.Locale)
     # The daily text ad between navigation and content (1/hour per session).
     plug(Plugs.AdBanner)
+    # Last: a `live` route that also serves agent documents (or an ActivityPub
+    # representation) hands those to the controller named in its `:private` map
+    # and halts; an HTML request falls through to the LiveView with the
+    # alternates in its head. See VutuvWeb.Plug.AgentRoute — it is what lets
+    # /feed be a live route inside `live_session :default` and keep /feed.md.
+    plug(Plugs.AgentRoute)
   end
 
   # Pages that are routable but must not be indexed, without the rest of a
@@ -735,13 +741,6 @@ defmodule VutuvWeb.Router do
     # profile catch-all further down.
     get("/system/permalinks/users/:user_id", PermalinkController, :user)
 
-    # The signed-in member's newsfeed. A controller (not a bare `live`) so it
-    # can negotiate the agent-format siblings (/feed.md/.txt/.json/.xml,
-    # VutuvWeb.AgentDocs) and live_render the LiveView for HTML. A literal route
-    # before the /:slug catch-all ("feed" is a ReservedSlug). Named
-    # NewsfeedController so it doesn't collide with FeedController (the RSS one).
-    get("/feed", NewsfeedController, :index)
-
     # Verified organization pages (issue #929). Controllers (not bare `live`) so
     # /organizations and /organizations/:slug negotiate their agent-format siblings
     # (.md/.txt/.json/.xml, VutuvWeb.AgentDocs) and live_render the LiveView for
@@ -1059,10 +1058,22 @@ defmodule VutuvWeb.Router do
       live("/messages/organization/:slug", MessageLive.Index, :new_organization)
       live("/messages/:id", MessageLive.Index, :show)
 
+      # The signed-in member's newsfeed, and the reason this session exists at
+      # all: it is where people spend their time, so a bottom-tab press has to
+      # reach it without rebuilding the document (issue #1731). A literal route
+      # before the /:slug catch-all ("feed" is a ReservedSlug). Its agent-format
+      # siblings (/feed.md/.txt/.json/.xml) still need a conn to negotiate, so
+      # the route names NewsfeedController in its `:private` map and
+      # VutuvWeb.Plug.AgentRoute hands those requests over — HTML falls through
+      # to the LiveView here.
+      # Spelled out in full: the scope's `VutuvWeb` alias is applied to the
+      # route's own module, never to the contents of its `:private` map.
+      live("/feed", PostLive.Feed, :index,
+        private: %{vutuv_agent_route: {VutuvWeb.NewsfeedController, :index}}
+      )
+
       # The post editor ("posts" is a ReservedSlug). Auth is checked in the
-      # mounts. The newsfeed itself is NOT here: it serves agent-format
-      # siblings (/feed.md/.txt/.json/.xml) too, which need a controller in
-      # front to negotiate the format, so it lives under FeedController below.
+      # mounts.
       live("/posts/:id/edit", PostLive.Edit, :edit)
       live("/posts/:id/reply", PostLive.Reply, :new)
 
