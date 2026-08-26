@@ -40,9 +40,16 @@ defmodule Vutuv.PageScreenshot.Cdp do
   wall offers no reject at all) gives up after `@consent_finish_ms` rather than
   burning the whole budget. Every one of those waits is additionally capped by
   `capture_seconds/0`, so no capture can outlast the OS kill.
+
+  Whenever the shutter falls, `Vutuv.PageScreenshot.ConsentSweep` runs first:
+  autoconsent only clears the dialogs it has a rule for, and a rule that has
+  gone stale looks exactly like a site it never knew.
   """
 
+  require Logger
+
   alias Vutuv.PageScreenshot.Consent
+  alias Vutuv.PageScreenshot.ConsentSweep
 
   # One request/response round trip. Generous: it covers `Page.captureScreenshot`
   # encoding a full-window PNG.
@@ -59,6 +66,11 @@ defmodule Vutuv.PageScreenshot.Cdp do
   @consent_finish_ms 10_000
   # Between "the dialog is gone" and the shutter, so its removal is painted.
   @paint_grace_ms 800
+  # The same wait after the sweep, which is a much smaller thing to paint: the
+  # grace above covers a CMP's own animated dismissal, while `display: none`
+  # needs a frame. It is also spent on the pages that already waited longest,
+  # so it comes out of the budget nearest the OS kill.
+  @sweep_paint_ms 150
   # How long a wait may block before re-testing its stop condition. Several of
   # those conditions are about elapsed time rather than an incoming message —
   # "the page loaded and stayed quiet" is the common one — and a page that has
@@ -101,7 +113,7 @@ defmodule Vutuv.PageScreenshot.Cdp do
 
   defp run(state, url, out_path) do
     with {:ok, state} <- open_page(state) do
-      state |> navigate(url) |> screenshot(out_path)
+      state |> navigate(url) |> sweep_consent(url) |> screenshot(out_path)
     end
   end
 
@@ -182,6 +194,45 @@ defmodule Vutuv.PageScreenshot.Cdp do
 
   defp consent_settled(_state, _now), do: nil
 
+  # The floor under autoconsent's rule set, run once the shutter is open: hide
+  # whatever consent dialog is still covering the page
+  # (`Vutuv.PageScreenshot.ConsentSweep`). The top frame is the only place it
+  # needs to run — a dialog served from another origin reaches this document as
+  # an `<iframe>` element, and that element is the thing worth hiding.
+  #
+  # A capture that did not ask for consent handling is never edited (moderation
+  # evidence). A browser that has already died needs no clause of its own: the
+  # request below answers `{:error, {:browser_exited, _}}` without waiting, and
+  # the `_no_answer` branch takes the picture attempt anyway.
+  defp sweep_consent(%{consent: false} = state, _url), do: state
+
+  defp sweep_consent(state, url) do
+    params = %{expression: ConsentSweep.expression(), returnByValue: true}
+
+    case request(state, "Runtime.evaluate", params, state.session) do
+      {:ok, %{"result" => %{"value" => value}}, state} ->
+        after_sweep(state, url, ConsentSweep.hidden(value))
+
+      # An expression that threw, a timeout, a browser that went away: the
+      # sweep is a cosmetic improvement on a best-effort capture, so take the
+      # picture either way.
+      _no_answer ->
+        state
+    end
+  end
+
+  defp after_sweep(state, _url, []), do: state
+
+  defp after_sweep(state, url, hidden) do
+    # A page that gets this far is one autoconsent did not clear — a stale rule
+    # or an unlisted site — and that is the only place it can be observed, so
+    # say which page and what was hidden.
+    Logger.info("consent sweep hid #{Enum.join(hidden, ", ")} on #{url}")
+
+    {_deadline, state} = pump(state, fn _state -> nil end, deadline(state, @sweep_paint_ms))
+    state
+  end
+
   defp screenshot(state, out_path) do
     case request(state, "Page.captureScreenshot", %{format: "png"}, state.session) do
       {:ok, %{"data" => data}, _state} -> write(data, out_path)
@@ -200,7 +251,8 @@ defmodule Vutuv.PageScreenshot.Cdp do
   ## Protocol plumbing
 
   defp new_state(port, opts) do
-    injection = if Keyword.get(opts, :consent, false), do: Consent.injection(), else: :disabled
+    consent? = Keyword.get(opts, :consent, false)
+    injection = if consent?, do: Consent.injection(), else: :disabled
 
     %{
       port: port,
@@ -217,9 +269,14 @@ defmodule Vutuv.PageScreenshot.Cdp do
       # CDP request id -> the autoconsent eval it is answering
       evals: %{},
       injection: injection,
-      # With no blocker injected there is no dialog conversation to wait for,
-      # so the page is shot as soon as it has painted.
-      probe_ms: if(injection == :disabled, do: @settle_ms, else: @consent_probe_ms),
+      # Whether this capture may edit the page at all. Not the same question as
+      # `injection`: a tree that never vendored the bundle still gets the sweep
+      # below, which needs no vendored files — and still has to wait for a
+      # dialog to appear before it can hide one.
+      consent: consent?,
+      # With no dialog to wait for there is nothing to wait for at all, so the
+      # page is shot as soon as it has painted.
+      probe_ms: if(consent?, do: @consent_probe_ms, else: @settle_ms),
       session: nil,
       loaded_at: nil,
       cmp_at: nil,

@@ -197,6 +197,51 @@ autoconsent rejects everything rejectable, reports success, and the dialog
 stays. Those pages belong on the blocklist below, which is where heise already
 is.
 
+### The sweep under the rule set
+
+A rule set is only as current as the sites it names. `zdf.de` redesigned its
+consent manager: the vendored rule still looks for `#zdf-cmp-banner-sdk`, the
+page no longer has it, so autoconsent detects nothing, reports nothing, and the
+capture was a picture of "Deine Datenschutzeinstellungen". A **stale rule and a
+site nobody wrote a rule for fail identically**, and both fail silently.
+
+So `Vutuv.PageScreenshot.ConsentSweep` runs in the top frame just before the
+shutter, on every capture that asked for consent handling: it looks for the
+elements covering the page and sets `display: none` on the ones that are a
+consent notice. Three gates, all of which have to pass, because a false
+positive here deletes part of a page from the picture:
+
+1. it is laid **over** the page — `position: fixed`/`sticky`, visible, and
+   covering at least 4% of the viewport;
+2. its text **talks about consent**, in the languages a member is likely to
+   link to;
+3. it offers a **consent action** — an accept/reject/allow/decline control,
+   which is what a dialog has and an article about the GDPR does not.
+
+A cross-origin CMP iframe has no text we may read, and a CMP that mounts itself
+in a shadow root (Usercentrics, OneTrust) has none in the light DOM, so those
+are recognised by the *element's own* id, class, title and `src` instead —
+which is also the half that keeps working outside the languages gate 2 knows.
+That vocabulary is bounded (German and English first, then the other EU
+languages a member is likely to link to), so an installation whose members link
+elsewhere gets the CMP-name half and not the text half; widening it is a matter
+of adding words to `ConsentSweep`. Once
+a notice is found, the dimming backdrop behind it goes with it and the scroll
+lock (plus any blur) on `html`/`body` is released — a hidden dialog over a
+dimmed, blurred, frozen page trades one useless picture for another.
+
+It **hides, and never clicks**. Autoconsent clicks reject against a rule that
+names the button; a sweep can only guess from a label, and the button beside
+the one you meant says "Accept". Hiding is both the more conservative and the
+more private answer: nothing is consented to, no CMP cookie is written, and the
+edit lives for the few hundred milliseconds the throwaway capture browser has
+left. It follows that it does not help against a consent-or-pay wall — there is
+no page behind that one to photograph.
+
+A page that needs the sweep is a page whose autoconsent rule has gone stale, so
+the driver logs what it hid at `:info` (`LOG_LEVEL=info` to see it in
+production).
+
 One exception skips Chromium entirely: a **YouTube video link** in a post
 stores the thumbnail YouTube publishes for every video instead
 (`Vutuv.YoutubeThumbnail`: keyless oEmbed existence check, then
