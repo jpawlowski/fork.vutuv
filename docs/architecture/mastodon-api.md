@@ -368,6 +368,35 @@ a direct read, and a cached reply is named only while it is public: a reply
 addressed to one member cannot be answered at all, so a private one here was
 narrowed afterwards and its id would answer 404 to everybody but that member.
 
+**A status itself names its parent too, not only `/context`** (issue #1622):
+`in_reply_to_id`/`in_reply_to_account_id` used to fill only for a local reply, so
+a client received `null` on every answer that crossed the border and drew it as
+a standalone post — while `/context` beside it named the parent, which is worse
+for a client than both being empty. `Presenter.status/3` now fills the same
+three border-crossing shapes `/context` walks: a cached reply (`%Note{}`) names
+the local post it answers, a followed account's self-reply names its cached
+parent (same account, `own_thread?/2`'s own rule), and a vutuv post answering a
+cached post names that post.
+
+One rule governs all three: **name a parent only when the reader may actually
+fetch it.** For the local case that is `Posts.visible_posts_by_ids/2` — the
+note's own visibility says nothing about the post it answers, which its author
+can have narrowed since. For a cached one it is
+`Fediverse.readable_remote_post_ids/2`, `remote_post_readable?/2` asked once for
+a whole page: an open audience, or this reader's own **accepted** follow. A
+pending follow does not count, and the near-namesake
+`followed_remote_account_ids/2` is not the gate — that one is the card menus'
+question, which counts a follow that has only been asked for because Mute and
+Unfollow both act on a pending row. An id that answers 404 for the reader
+holding it is worse than none, and naming a followers-only parent at all tells
+that reader it exists.
+
+Everything is read for the whole page (`Presenter.page_context/2`), never a
+query per row, and the parents come from the `post_remote_replies` sidecar via
+`Fediverse.answered_objects/1` rather than off a `:remote_reply_ref` preload —
+a parent that silently depends on whether a caller remembered a preload is a
+shape that has bitten this codebase before.
+
 ### Photos
 
 `POST /api/v1/media` and `POST /api/v2/media` (multipart, the file in `file`,
