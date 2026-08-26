@@ -179,7 +179,10 @@ defmodule VutuvWeb.PostLive.Feed do
     socket = InitAssigns.assign_embedded(socket, session)
 
     if user = socket.assigns.current_user do
-      {:ok, mount_feed(socket, user, calendar_from_url(session))}
+      {:ok,
+       socket
+       |> mount_feed(user, calendar_from_url(session))
+       |> maybe_open_composer(session)}
     else
       {:ok,
        socket
@@ -187,6 +190,15 @@ defmodule VutuvWeb.PostLive.Feed do
        |> redirect(to: ~p"/login")}
     end
   end
+
+  # The launcher shortcut's flag, put into the session by
+  # VutuvWeb.NewsfeedController.compose_session/1. Runs after mount_feed/3 so it
+  # wins over the collapsed default that apply_feed_payload/2 assigns; a stored
+  # draft opens the panel anyway.
+  defp maybe_open_composer(socket, %{"compose" => true}),
+    do: assign(socket, :composer_open?, true)
+
+  defp maybe_open_composer(socket, _session), do: socket
 
   defp mount_feed(socket, user, {day, open?}) do
     # The sources they left on (issue #1499). It opens the page *and* keys the

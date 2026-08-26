@@ -731,6 +731,29 @@ document.addEventListener("click", (event) => {
   window.dispatchEvent(new CustomEvent("vutuv:tab-teaser", { detail: { frames: frames } }))
 })
 
+// The unread total on the installed app's icon (issue #1732): the same number
+// ShellLive already pushes for the browser tab, so the Home Screen badge and the
+// "(3) " in front of the title can never disagree — one owner on the server
+// (`push_badge/1`), one channel to here.
+//
+// Failure is the normal case rather than an error, and nothing falls back: most
+// browsers do not carry the API, and where they do the platform itself ignores
+// the write outside an installed app. Deliberately NOT gated on a display-mode
+// probe of our own — such a probe can only ever subtract, and an installed app
+// that reports a mode the list forgot would lose its badge for good, which is a
+// worse failure than the no-op it saves.
+function applyAppBadge(count) {
+  if (!("setAppBadge" in navigator)) return
+
+  try {
+    Promise.resolve(count > 0 ? navigator.setAppBadge(count) : navigator.clearAppBadge()).catch(
+      () => {}
+    )
+  } catch (_error) {
+    // A context that declares the API and refuses to use it.
+  }
+}
+
 // Keeps /feed's address bar in step with the calendar, so the day on screen is
 // the day a copied link reopens.
 //
@@ -986,6 +1009,7 @@ const Hooks = {
       this.handleEvent("tab:badge", ({ unread }) => {
         this.unread = unread || 0
         this.apply()
+        applyAppBadge(this.unread)
       })
 
       // A new feed post only earns the dot when the member isn't looking here.
@@ -1059,6 +1083,13 @@ const Hooks = {
       this.reportVisibility()
     },
     reportVisibility() {
+      // Server-set, and only for a signed-in member: the answer feeds the tab
+      // teaser alone (ShellLive's `teasing?/1`), so for the logged-out shell —
+      // which renders this hook purely to be told a zero — the round trip would
+      // buy nothing. It runs on every mount and every reconnect, so "nothing"
+      // here is once per anonymous page view.
+      if (!this.el.dataset.reportVisibility) return
+
       this.pushEvent("tab:visibility", { hidden: document.hidden })
     },
     // The indicator string: "•(3) ", "(3) ", "• " or "" when nothing is new.

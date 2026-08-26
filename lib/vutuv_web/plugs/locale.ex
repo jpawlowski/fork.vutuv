@@ -26,16 +26,7 @@ defmodule VutuvWeb.Plug.Locale do
 
   defp handle_locale(conn, %User{locale: nil}), do: handle_locale(conn, nil)
 
-  defp handle_locale(conn, nil) do
-    # Get locales from header
-    Plug.Conn.get_req_header(conn, "accept-language")
-    # Split header to a list of supported locales
-    |> process_header
-    # Cross reference list with supported locales and return supported locale, otherwise return most preferred locale
-    |> get_supported_locale
-    # Assign locale to conn assigns, and pass to gettext. Return conn struct.
-    |> assign_locale(conn)
-  end
+  defp handle_locale(conn, nil), do: conn |> resolve_locale() |> assign_locale(conn)
 
   defp handle_locale(conn, %User{locale: loc}) do
     assign_locale(loc, conn)
@@ -63,12 +54,34 @@ defmodule VutuvWeb.Plug.Locale do
     |> String.split(",")
   end
 
+  @doc """
+  The interface language this request's `Accept-Language` asks for — the first
+  entry whose base subtag this installation has, else `"en"`.
+
+  What the anonymous branch of `call/2` resolves, and public because one route
+  needs the answer without the plug: `/site.webmanifest` is served from the
+  `:machine_docs` pipeline, which has no session and no `current_user`, and its
+  shortcut labels are what a phone writes into the launcher's long-press menu,
+  so they have to be in the reader's language all the same.
+
+  """
+  def resolve_locale(conn) do
+    conn
+    |> get_req_header("accept-language")
+    |> process_header()
+    |> get_supported_locale()
+    |> supported_or_default()
+  end
+
   defp get_supported_locale([]), do: nil
 
   # Returns the first header locale whose base subtag the app supports,
   # else the visitor's most preferred locale.
   defp get_supported_locale(locales) do
-    Enum.find_value(locales, get_first_locale(locales), fn entry ->
+    # `||` rather than find_value/3's default, which is built eagerly and thrown
+    # away whenever the header does match — the normal case, and now also on
+    # every /site.webmanifest.
+    Enum.find_value(locales, fn entry ->
       base =
         entry
         |> String.split(";")
@@ -77,7 +90,7 @@ defmodule VutuvWeb.Plug.Locale do
         |> hd()
 
       if locale_supported?(base), do: base
-    end)
+    end) || get_first_locale(locales)
   end
 
   # Give locale data to all modules that require it. The locale also goes into
@@ -86,12 +99,8 @@ defmodule VutuvWeb.Plug.Locale do
   # `VutuvWeb.ShellLive`). Without that, /messages and /notifications flipped
   # the whole chrome back to English for German users.
   #
-  # An unsupported result (nil, or a browser subtag like "fr" that no config
-  # locale matches) falls back to "en" rather than being put into Gettext, the
-  # `<html lang>` and the session as a dead value that renders English content
-  # under a foreign lang tag.
   defp assign_locale(locale, conn) do
-    locale = if locale_supported?(locale), do: locale, else: "en"
+    locale = supported_or_default(locale)
     Gettext.put_locale(VutuvWeb.Gettext, locale)
 
     conn
@@ -106,6 +115,12 @@ defmodule VutuvWeb.Plug.Locale do
       _ -> conn
     end
   end
+
+  # An unsupported value (nil, or a browser subtag like "fr" that no config
+  # locale matches) becomes "en" rather than travelling on into Gettext, the
+  # `<html lang>` and the session as a dead value that renders English content
+  # under a foreign lang tag.
+  defp supported_or_default(locale), do: if(locale_supported?(locale), do: locale, else: "en")
 
   # Gets the first locale provided
   defp get_first_locale(locales) do

@@ -825,6 +825,32 @@ defmodule VutuvWeb.PostFeedLiveTest do
       refute has_element?(live, "#composer-trigger.flex")
     end
 
+    test "the launcher's \"Write a post\" shortcut opens it already unfolded", %{conn: conn} do
+      {conn, _user} = create_and_login_user(conn)
+
+      # The installed app's long-press menu (issue #1732) points at
+      # /feed?compose=1. Both renders, because the dead one is what the member
+      # looks at while the socket connects — a panel that unfolds a moment later
+      # is a flicker.
+      dead = get(conn, ~p"/feed?compose=1")
+      html = html_response(dead, 200)
+      assert html =~ ~s(id="composer-trigger")
+      refute html =~ ~s(id="composer-panel" class="hidden")
+
+      {:ok, live, _html} = live(conn, ~p"/feed?compose=1")
+
+      refute has_element?(live, "#composer-panel.hidden")
+      assert has_element?(live, "#composer-trigger.hidden")
+    end
+
+    test "a compose value we do not recognise leaves it collapsed", %{conn: conn} do
+      {conn, _user} = create_and_login_user(conn)
+      {:ok, live, _html} = live(conn, ~p"/feed?compose=nonsense")
+
+      assert has_element?(live, "#composer-panel.hidden")
+      assert has_element?(live, "#composer-trigger.flex")
+    end
+
     test "the composer submits on Cmd/Ctrl+Enter like the message composer", %{conn: conn} do
       {conn, _user} = create_and_login_user(conn)
       {:ok, live, _html} = live(conn, ~p"/feed")

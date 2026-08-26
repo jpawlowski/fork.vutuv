@@ -11,6 +11,8 @@ defmodule VutuvWeb.PageController do
   alias VutuvWeb.AgentDocs.ListDocs
   alias VutuvWeb.ControllerHelpers
   alias VutuvWeb.LandingExperiment
+  alias VutuvWeb.OpenGraph
+  alias VutuvWeb.Plug.Locale
   alias VutuvWeb.RateLimit
 
   def index(conn, _params) do
@@ -131,24 +133,59 @@ defmodule VutuvWeb.PageController do
   Android's launcher shape can crop it to a circle without cutting the "v" —
   without a maskable icon the whole square is shrunk inside the shape instead,
   which reads as a sticker rather than an app icon.
+
+  The **shortcuts** are what a long press on the installed icon offers (issue
+  #1732). Their labels are the one part of this document a person reads, so the
+  request's `Accept-Language` decides the language — see
+  `VutuvWeb.Plug.Locale.resolve_locale/1` for why the answer is fetched rather
+  than assigned. That makes this the one discovery document whose body is not
+  the same bytes for everybody, hence the `vary` header and its own cache line.
   """
   def webmanifest(conn, _params) do
+    locale = Locale.resolve_locale(conn)
+    document = Gettext.with_locale(VutuvWeb.Gettext, locale, fn -> web_app_manifest(locale) end)
+
     conn
     |> discovery_cache_headers()
+    |> put_resp_header("vary", "accept-language")
     |> put_resp_content_type("application/manifest+json")
-    |> send_resp(200, Jason.encode!(web_app_manifest()))
+    |> send_resp(200, Jason.encode!(document))
   end
 
-  defp web_app_manifest do
+  defp web_app_manifest(locale) do
     name = Application.fetch_env!(:vutuv, :node_name)
 
     %{
       id: "/",
       name: name,
       short_name: name,
+      # The sentence the install dialog prints under the name: the site's own
+      # pitch, so what it claims to be is written once.
+      #
+      # Deliberately NOT `:node_description`, though that is the operator's own
+      # sentence and sits one fetch_env! away. That string has no notion of
+      # language (docs/ADMINS.md tells operators to write it in the one their
+      # visitors read), and this document now varies per Accept-Language — so on
+      # vutuv.de, which never sets it, taking it would trade a German sentence
+      # for an English one in the dialog German members read. The cost is that a
+      # third-party operator's dialog says what vutuv is rather than what THEY
+      # are; the site-wide <meta name="description"> already reads that way, so
+      # this follows the page rather than diverging from it. Worth revisiting
+      # together with that one, not alone.
+      description: OpenGraph.default_description(),
+      lang: locale,
+      # Both languages this installation ships are left-to-right. An operator
+      # who translates it into an rtl one changes this line and nothing else.
+      dir: "ltr",
+      # An app-store style hint, used by the few launchers that group by it.
+      categories: ["social", "business"],
       start_url: "/",
       scope: "/",
       display: "standalone",
+      # Read before `display` by browsers that understand it: `minimal-ui` keeps
+      # a reload control and the address the page is on, which is the better
+      # fallback than the plain browser tab `display` alone would drop to.
+      display_override: ["standalone", "minimal-ui"],
       # The splash screen behind the app while it starts, and the launcher
       # background: the page canvas (slate-50) and the light theme-color the
       # document already ships, so the start does not flash a colour the app
@@ -164,16 +201,34 @@ defmodule VutuvWeb.PageController do
           type: "image/png",
           purpose: "maskable"
         }
-      ]
+      ],
+      shortcuts: shortcuts()
     }
   end
 
-  # robots.txt, llms.txt and the manifest answer every visitor with the same
-  # bytes and carry nothing personal, so they are `public` cacheable like
-  # /sitemap.xml and /.well-known/security.txt beside them in the router (an
-  # hour, short enough
+  # The long-press menu on the installed icon. Four entries, because that is
+  # what a launcher shows, and deliberately **not** the feed: `start_url` is
+  # "/", which for a signed-in member is the feed already, so a shortcut to it
+  # would spend one of the four on the thing opening the app does anyway.
+  # Every label is a msgid the navigation already uses, in the same voice.
+  defp shortcuts do
+    [
+      %{name: gettext("Write a post"), url: ~p"/feed?compose=1"},
+      %{name: gettext("Search"), url: ~p"/search"},
+      %{name: gettext("Messages"), url: ~p"/messages"},
+      %{name: gettext("Notifications"), url: ~p"/notifications"}
+    ]
+  end
+
+  # robots.txt and llms.txt answer every visitor with the same bytes and carry
+  # nothing personal, so they are `public` cacheable like /sitemap.xml and
+  # /.well-known/security.txt beside them in the router (an hour, short enough
   # that flipping :ai_crawler_policy reaches crawlers promptly; Googlebot keeps
   # its own robots.txt copy for up to 24h regardless).
+  #
+  # A caller whose body is not byte-identical per visitor adds its own `vary` on
+  # top (the manifest does, for its translated shortcut labels), so this helper
+  # promises the cache lifetime and not the sameness.
   #
   # This is NOT what makes them readable in Safari, though it was the first
   # suspect: the `nosniff` header is, and it comes from the :machine_docs
