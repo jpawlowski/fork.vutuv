@@ -21,6 +21,7 @@ defmodule VutuvWeb.ComposerLinkPreviewTest do
 
   alias Vutuv.Posts
   alias Vutuv.Posts.Post
+  alias Vutuv.Posts.PostScreenshot
   alias Vutuv.Posts.Screenshots
   alias Vutuv.Repo
 
@@ -236,6 +237,57 @@ defmodule VutuvWeb.ComposerLinkPreviewTest do
       |> render_click()
 
       assert Posts.draft_link_preview(Posts.get_draft(user)).status == "pending"
+    end
+  end
+
+  describe "taking the link back out" do
+    test "the preview goes with it, and the post does not inherit it", %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+      {:ok, live, _html} = live(conn, ~p"/feed")
+
+      type(live, "Schau mal: #{@first}")
+      Screenshots.deliver_due(force: true)
+      assert Posts.draft_link_preview(Posts.get_draft(user))
+
+      # The link is gone. Waiting for the candidates to "settle" would wait
+      # forever — [] never differs from [] again — so the row would outlive the
+      # link and be handed to the post on publish.
+      html = type(live, "Schau mal, doch ohne Link.")
+
+      refute html =~ "data-composer-link-preview"
+      assert Posts.draft_link_preview(Posts.get_draft(user)) == nil
+      assert Repo.aggregate(PostScreenshot, :count) == 0
+
+      live
+      |> form("#composer-form", %{"post" => %{"body" => "Schau mal, doch ohne Link."}})
+      |> render_submit()
+
+      post = Repo.one!(from(p in Post, where: p.user_id == ^user.id))
+      assert Repo.preload(post, :screenshot, force: true).screenshot == nil
+    end
+
+    test "swapping the link between the last autosave and Post republishes nothing stale", %{
+      conn: conn
+    } do
+      {conn, user} = create_and_login_user(conn)
+      {:ok, live, _html} = live(conn, ~p"/feed")
+
+      type(live, "Schau mal: #{@first}")
+      Screenshots.deliver_due(force: true)
+      assert Posts.draft_link_preview(Posts.get_draft(user)).url == @first
+
+      # Submitted params are the truth; the draft still names the old link.
+      live
+      |> form("#composer-form", %{"post" => %{"body" => "Doch lieber: #{@second}"}})
+      |> render_submit()
+
+      post = Repo.one!(from(p in Post, where: p.user_id == ^user.id))
+      adopted = Repo.preload(post, :screenshot, force: true).screenshot
+
+      # Adoption alone would have published the first page's card under a body
+      # that names the second.
+      assert adopted.url == @second
+      assert adopted.title == nil
     end
   end
 

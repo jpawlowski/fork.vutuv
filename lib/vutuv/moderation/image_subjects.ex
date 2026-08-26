@@ -26,6 +26,7 @@ defmodule Vutuv.Moderation.ImageSubjects do
   alias Vutuv.Posts.PostImage
   alias Vutuv.Posts.PostReview
   alias Vutuv.Posts.PostScreenshot
+  alias Vutuv.Posts.Screenshots
   alias Vutuv.Profiles.Qualification
   alias Vutuv.Profiles.Url
   alias Vutuv.QualificationDocument
@@ -367,10 +368,14 @@ defmodule Vutuv.Moderation.ImageSubjects do
         ps = Repo.get!(PostScreenshot, scan.subject_id)
         Vutuv.Screenshot.promote_from_quarantine(ps)
         # The card upgrade was deliberately held back at capture time; the
-        # screenshot is only announced once it is released. A remote-owned row
-        # (`remote_post_id`) has no member post and nobody watching — its card
-        # simply shows the screenshot on the next feed load.
-        if ps.post_id, do: Vutuv.Posts.broadcast_screenshot_ready(ps.post_id)
+        # preview is only announced once it is released. Who gets told is
+        # `Vutuv.Posts.Screenshots.announce_ready/1`'s business, not this
+        # module's: a post's readers, or the member still writing the draft it
+        # belongs to (a remote-owned row has nobody watching). Spelling the
+        # owners out here is how the composer's preview came to be released
+        # without anybody being told, since this path is the normal one with
+        # `:moderate_images` on.
+        Screenshots.announce_ready(ps)
         :ok
 
       _ ->

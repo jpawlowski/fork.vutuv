@@ -425,8 +425,24 @@ defmodule Vutuv.Posts.Screenshots do
             |> Repo.update!()
           end)
 
-        if PostScreenshot.ready?(adopted), do: announce_ready(adopted)
+        # The submitted body is the truth and the draft is only written on a
+        # debounce, so a member who changed the link and pressed Post inside
+        # that window would otherwise publish a preview for a URL their text no
+        # longer carries. One reconcile settles it: the same URL is left alone,
+        # a changed one re-fetches, a removed one takes the row with it.
+        adopted = post |> Repo.preload(:screenshot, force: true) |> reconcile_kept(adopted)
+
+        if adopted && PostScreenshot.ready?(adopted), do: announce_ready(adopted)
         :ok
+    end
+  end
+
+  # Reconcile the freshly adopted row against the post that now owns it, and
+  # answer with the row if it survived.
+  defp reconcile_kept(post, adopted) do
+    case reconcile_loaded(post) do
+      {:ok, %PostScreenshot{} = kept} -> kept
+      _dropped -> if Repo.get(PostScreenshot, adopted.id), do: adopted
     end
   end
 
@@ -793,23 +809,34 @@ defmodule Vutuv.Posts.Screenshots do
     ready
   end
 
+  @doc """
+  Tells whoever is watching this preview that it can be shown now — the post's
+  readers, or the one member still writing the draft it belongs to.
+
+  Public because the release does not always happen here: a capture held by the
+  AI image scan is announced by `Vutuv.Moderation.ImageSubjects.apply_approved/1`
+  once the verdict lands, and that is the **normal** path with
+  `:moderate_images` on. Both callers go through this one function so a new
+  owner cannot be announced on one path and forgotten on the other.
+  """
+  def announce_ready(%PostScreenshot{} = row), do: announce(row)
+
   # Open feeds/profiles upgrade a member post's card to show the screenshot
   # with no reload. A cached remote post has no author watching their fresh
   # post and no topic of its own, so it simply shows the screenshot on the
   # next feed load — no broadcast.
-  defp announce_ready(%PostScreenshot{post_id: post_id}) when is_binary(post_id),
+  defp announce(%PostScreenshot{post_id: post_id}) when is_binary(post_id),
     do: Vutuv.Posts.broadcast_screenshot_ready(post_id)
 
   # A draft's preview goes to the one member writing it, on their own
   # `Vutuv.Activity` topic: it belongs to an unpublished draft, so nobody else
   # has any business hearing about it. `VutuvWeb.Live.DraftPreview` turns that
   # into a `send_update/2` for the composer.
-  defp announce_ready(%PostScreenshot{post_draft_id: draft_id} = row)
-       when is_binary(draft_id) do
+  defp announce(%PostScreenshot{post_draft_id: draft_id} = row) when is_binary(draft_id) do
     Vutuv.Activity.broadcast(owner_user_id(row), {:draft_preview_ready, draft_id})
   end
 
-  defp announce_ready(%PostScreenshot{}), do: :ok
+  defp announce(%PostScreenshot{}), do: :ok
 
   # The AI scan's owning member: the post's author, or nobody for a remote
   # post's capture (the same ownerless shape the "remote_post_image" and

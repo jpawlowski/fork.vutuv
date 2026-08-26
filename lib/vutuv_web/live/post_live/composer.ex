@@ -277,9 +277,11 @@ defmodule VutuvWeb.PostLive.Composer do
       |> assign(:restored_draft?, true)
       # A draft that came back with a link in it already has its preview; show
       # it at once rather than making the author type another character to see
-      # what they had (issue #1714).
-      |> assign(:link_candidates, Screenshots.candidate_urls(draft))
-      |> assign(:link_preview, Posts.draft_link_preview(draft))
+      # what they had (issue #1714). It may have none yet — a reload inside the
+      # settle window comes back with the link and no row — so the settle timer
+      # is armed here too, or the panel would say "Fetching" until the next
+      # keystroke.
+      |> restore_link_preview(draft)
     else
       _no_draft -> socket
     end
@@ -381,19 +383,34 @@ defmodule VutuvWeb.PostLive.Composer do
       %PostDraft{} = draft ->
         candidates = Screenshots.candidate_urls(draft)
         settled? = candidates == socket.assigns.link_candidates
+        # The last link just left the text. That is not a "wait and see" — the
+        # preview has to go, files and all, and waiting for a settle that will
+        # never say anything different would leave the row behind for the
+        # draft's whole life and hand it to the post on publish.
+        emptied? = candidates == [] and socket.assigns.link_candidates != []
 
-        if settled? and candidates != [] do
+        if emptied? or (settled? and candidates != []) do
           Posts.reconcile_draft_preview(draft)
         end
 
         socket
         |> assign(:link_candidates, candidates)
         |> assign(:link_preview, Posts.draft_link_preview(draft))
-        |> settle_later(settled?)
+        |> settle_later(settled? or candidates == [])
 
       nil ->
         clear_link_preview(socket)
     end
+  end
+
+  defp restore_link_preview(socket, draft) do
+    candidates = Screenshots.candidate_urls(draft)
+    preview = Posts.draft_link_preview(draft)
+
+    socket
+    |> assign(:link_candidates, candidates)
+    |> assign(:link_preview, preview)
+    |> settle_later(candidates == [] or preview != nil)
   end
 
   defp settle_later(socket, true), do: socket

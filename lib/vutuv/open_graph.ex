@@ -142,7 +142,7 @@ defmodule Vutuv.OpenGraph do
   guard rails, this is the reading.
   """
   def parse(html, page_url) when is_binary(html) do
-    tags = html |> head_slice() |> strip_comments() |> meta_tags()
+    tags = html |> capped() |> strip_comments() |> head_slice() |> meta_tags()
 
     %{
       title: pick(tags, ["og:title", "twitter:title"], @max_title),
@@ -176,16 +176,18 @@ defmodule Vutuv.OpenGraph do
     end)
   end
 
-  # The tags live in the document head, so cut there before doing any work: the
-  # body is where the megabytes are and none of it can carry a preview.
-  # `binary_slice/3` and `:binary.match/2` are byte operations — `String.slice/3`
-  # counts graphemes and would walk the whole buffer to answer the same thing.
-  defp head_slice(html) do
-    capped = binary_slice(html, 0, @max_head_bytes)
+  # `binary_slice/3` rather than `String.slice/3`: this is a byte cap, and
+  # counting graphemes would walk the whole buffer to answer the same thing.
+  defp capped(html), do: binary_slice(html, 0, @max_head_bytes)
 
-    case :binary.match(capped, ["</head", "</HEAD", "<body", "<BODY"]) do
-      {at, _length} -> binary_part(capped, 0, at)
-      :nomatch -> capped
+  # The tags live in the document head, so cut there: the body is where the
+  # megabytes are and none of it can carry a preview. Runs **after**
+  # `strip_comments/1`, because a commented-out `<!-- <body …> -->` sitting
+  # above the real tags would otherwise cut the head short and lose them.
+  defp head_slice(html) do
+    case :binary.match(html, ["</head", "</HEAD", "<body", "<BODY"]) do
+      {at, _length} -> binary_part(html, 0, at)
+      :nomatch -> html
     end
   end
 
