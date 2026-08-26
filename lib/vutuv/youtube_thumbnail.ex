@@ -17,6 +17,7 @@ defmodule Vutuv.YoutubeThumbnail do
   """
 
   alias Vutuv.SocialFeed.Http
+  alias Vutuv.SocialFeed.Post
 
   @req_options_key :youtube_thumbnail_req_options
 
@@ -83,16 +84,24 @@ defmodule Vutuv.YoutubeThumbnail do
   defp validate(_missing), do: :error
 
   @doc """
-  The best available thumbnail for a video id: `{:ok, jpeg_bytes}` or
-  `:error`. Two or three requests: the oEmbed endpoint first — a keyless
-  existence check, so a deleted or private video reports `:error` (and the
-  caller screenshots the page) instead of storing YouTube's grey placeholder
-  tile — then `maxresdefault.jpg` (HD uploads only) with `hqdefault.jpg`
-  (always present) as the fallback.
+  The best available thumbnail for a video id, with the words YouTube publishes
+  beside it: `{:ok, jpeg_bytes, meta}` or `:error`. Two or three requests: the
+  oEmbed endpoint first — a keyless existence check, so a deleted or private
+  video reports `:error` (and the caller screenshots the page) instead of
+  storing YouTube's grey placeholder tile — then `maxresdefault.jpg` (HD
+  uploads only) with `hqdefault.jpg` (always present) as the fallback.
+
+  `meta` is shaped like `Vutuv.OpenGraph.fetch/1`'s answer — `title`,
+  `description`, `site_name`, `host` — so a link preview can be built from
+  either source by one function. It is the **oEmbed** answer rather than the
+  watch page's own `og:` tags on purpose: that request is already being made
+  for the existence check, and the watch page frequently answers a consent
+  redirect, which is the very reason this branch exists.
   """
   def fetch(video_id) do
-    with :ok <- confirm_video(video_id) do
-      Enum.find_value(@sizes, :error, &thumbnail(video_id, &1))
+    with {:ok, meta} <- confirm_video(video_id),
+         {:ok, bytes} <- Enum.find_value(@sizes, :error, &thumbnail(video_id, &1)) do
+      {:ok, bytes, meta}
     end
   end
 
@@ -101,10 +110,34 @@ defmodule Vutuv.YoutubeThumbnail do
     query = URI.encode_query(url: watch_url, format: "json")
 
     case get("https://www.youtube.com/oembed?" <> query) do
-      {:ok, %Req.Response{status: 200}} -> :ok
+      {:ok, %Req.Response{status: 200, body: body}} -> {:ok, oembed_meta(body)}
       _other -> :error
     end
   end
+
+  # The oEmbed body was fetched anyway and then thrown away. Reading it is what
+  # lets a video link render as the same card every other link gets, instead of
+  # a bare picture with no headline anywhere.
+  #
+  # Best-effort by design: an unparseable or surprising answer still yields a
+  # thumbnail, it just yields no words with it. The request runs with
+  # `decode_body: false` (see `get/1`), so the body is the raw JSON.
+  defp oembed_meta(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, %{} = json} ->
+        %{
+          title: Post.presence(json["title"]),
+          description: nil,
+          site_name: Post.presence(json["provider_name"]),
+          host: "youtube.com"
+        }
+
+      _other ->
+        nil
+    end
+  end
+
+  defp oembed_meta(_body), do: nil
 
   defp thumbnail(video_id, size) do
     case get("https://img.youtube.com/vi/#{video_id}/#{size}.jpg") do

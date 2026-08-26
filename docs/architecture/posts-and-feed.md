@@ -1523,8 +1523,10 @@ below the post, picture left and words right.
 
 **Where each half of that card comes from is invisible to the reader, and that
 is deliberate.** The `source` column records where the *picture* came from: the
-artwork the page publishes about itself (`open_graph`) or a headless-Chromium
-`screenshot` of it. The words are assembled per field, best source first:
+artwork the page publishes about itself (`open_graph`), the artwork a video
+publishes about itself (`youtube`, off the oEmbed endpoint), or a
+headless-Chromium `screenshot` of the page. The words are assembled per field,
+best source first:
 
 | the card's… | first choice | fallback | last resort |
 | --- | --- | --- | --- |
@@ -1702,32 +1704,50 @@ falls back to the ordinary capture below. Tests stub the fetch via the
 the pre-existing banner captures is `Vutuv.Release.requeue_youtube_screenshots/0`
 (`Screenshots.requeue_youtube/0`).
 
-**Hovering a preview says what the page is about.** A 400×264 picture of the
+**The oEmbed answer carries the video's title, and that is read rather than
+discarded** (`source: "youtube"`). It costs no extra request — that call is
+already being made for the existence check — and it is what lets a video render
+as the same card every other link gets. Without it the row had a picture and no
+headline, so `card?/1` was false and a YouTube link was the one kind that
+stayed a bare float while everything else became a card: which branch happened
+to run first was deciding the layout, the exact thing `card?/1` exists to stop
+deciding. The watch page's own `og:` tags are deliberately **not** read
+instead — it answers a consent redirect often enough that the request would
+usually buy nothing, which is the reason this branch exists at all.
+
+**A page that publishes no teaser gets one written for it.** A picture of the
 top of a page is often a navigation bar and a hero image, so
-`Vutuv.LinkSummary` (issue #1709) fills the tile's `title`: the page is fetched
-once more (the same `Http` guard rails, `text/html`, 512 KB cap), reduced to
-text by `Vutuv.RemoteHtml` — which drops `<script>`/`<style>` **with their
-contents**, the difference between a page's prose and its prose with the
+`Vutuv.LinkSummary` (issue #1709) fills the card's teaser line: the page is
+reduced to text by `Vutuv.RemoteHtml` — which drops `<script>`/`<style>` **with
+their contents**, the difference between a page's prose and its prose with the
 JavaScript spelled out in it — and a local Ollama text model is asked for one
 sentence of at most 200 characters, in the page's own language. It is stored in
-`post_screenshots.summary` beside the capture.
+`post_screenshots.summary`, and `PostScreenshot.teaser/1` is what decides
+between it and the publisher's own words.
 
-Deliberately **not** the page's `og:description`: that is the publisher's blurb
-about itself, and a page that publishes one is a case for the Open Graph card
-(issue #1706). This is for the pages that publish nothing, which is where a
-reader learns least.
+It normally makes **no request of its own**: the metadata fetch already
+downloaded the page and hands the HTML to `summarize_html/2`. `summarize/1`
+fetching for itself is the fallback for a caller holding no body — it used to
+be the only path, which meant a second full download of the same page per
+capture, on the operator's egress and against the target's rate limit.
+
+Deliberately **not** a replacement for the page's `og:description`: that is the
+publisher's blurb, written by somebody who knows the page, and it always wins.
+`Screenshots.summarize/2` does not even ask the model when a description is
+already there, so the model call is spent only where the card would otherwise
+have no second line.
 
 It runs **after** the row is `ready`, as a second small write. The picture is
 what a reader is waiting for, and `Vutuv.Posts.ScreenshotWorker` drains one job
-at a time — putting a model call in front of `mark_ready/4` would hold this
-member's finished preview, its temp file and every capture behind it for a
-value that only shows on hover.
+at a time — putting a model call in front of `mark_ready/2` would hold this
+member's finished preview, its temp file and every capture behind it.
 
 Off by default (`:summarize_links`, `SUMMARIZE_LINKS=true`), best-effort, and
 **never retried**: flag off, Ollama down, nothing readable on the page, junk
-back from the model — each leaves `summary` `nil` and the preview exactly as it
-was, because a capture is not worth losing over a tooltip and a tooltip is not
-worth a queue of its own. The YouTube branch has no page to read and never gets
+back from the model — each leaves `summary` `nil` and the card showing its
+headline and picture alone, because a capture is not worth losing over a
+sentence and a sentence is not worth a queue of its own. The YouTube branch has
+no page to read (its words come from oEmbed) and never gets
 one. One answer gets a fixed 30 s under the shared `:ollama_timeout`; it is the
 least valuable model call this installation makes, so it is not given the
 fleet-wide patience and has no knob of its own. The answer is untrusted text throughout: a page can steer what is written

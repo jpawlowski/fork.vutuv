@@ -51,11 +51,17 @@ defmodule Vutuv.Posts.PostScreenshot do
 
   use VutuvWeb, :model
 
+  alias Vutuv.LinkSummary
   alias Vutuv.Moderation.ImageScans
   alias Vutuv.OpenGraph
 
   @statuses ~w(pending capturing ready failed dismissed)
-  @sources ~w(screenshot open_graph)
+  # Where the card's PICTURE came from — never what it looks like, which
+  # `card?/1` decides. `youtube` is the publisher's own artwork like
+  # `open_graph`, but fetched from the oEmbed endpoint rather than read off the
+  # page, because a watch page answers a consent redirect often enough that
+  # capturing it is pointless.
+  @sources ~w(screenshot open_graph youtube)
 
   schema "post_screenshots" do
     belongs_to(:post, Vutuv.Posts.Post)
@@ -138,6 +144,36 @@ defmodule Vutuv.Posts.PostScreenshot do
   def teaser(%__MODULE__{summary: summary}) when is_binary(summary), do: summary
   def teaser(%__MODULE__{}), do: nil
 
+  # Every column that describes the linked PAGE rather than the job. Named once
+  # because four places need the same list and they had already drifted: the
+  # refresh reset cleared `summary`, the dismiss reset did not, so a tombstone
+  # kept the previous page's sentence — which since `teaser/1` renders it would
+  # have put one page's description under another page's headline. A fifth card
+  # column later is one edit here, not four across two modules.
+  @card_fields [:source, :title, :description, :site_name, :summary]
+
+  @doc "The card columns a capture result may write; `no_card/0` clears them."
+  def card_fields, do: @card_fields
+
+  @doc """
+  The card half of a row, blanked: no words, and `source` back to the plain
+  capture default. What a refresh writes (the row is about to describe a
+  different page) and what a dismissal writes (there is no card any more).
+  """
+  def no_card, do: Map.new(@card_fields, &{&1, nil}) |> Map.put(:source, "screenshot")
+
+  @doc """
+  Whether the author said no to this preview — the tombstone the composer's
+  **No preview** button and the edit page's Remove button both write.
+
+  Beside `card?/1` and `ready?/1` for the same reason those exist: the literal
+  `"dismissed"` is a state of this schema, and the render path asking for it by
+  string is the copy that gets missed when the status is ever renamed.
+  """
+  def dismissed?(%__MODULE__{status: "dismissed"}), do: true
+  def dismissed?(%__MODULE__{}), do: false
+  def dismissed?(nil), do: false
+
   @doc """
   Whether a captured screenshot is ready to render — captured **and**
   released by the AI image scan (a captured-but-unreleased screenshot shows
@@ -168,13 +204,7 @@ defmodule Vutuv.Posts.PostScreenshot do
     |> validate_required([:url])
     |> validate_length(:url, max: 2000)
     |> validate_inclusion(:status, @statuses)
-    |> change(%{
-      source: "screenshot",
-      title: nil,
-      description: nil,
-      site_name: nil,
-      summary: nil
-    })
+    |> change(no_card())
   end
 
   @doc """
@@ -188,10 +218,11 @@ defmodule Vutuv.Posts.PostScreenshot do
   """
   def result_changeset(post_screenshot, attrs) do
     post_screenshot
-    |> cast(attrs, [:source, :title, :description, :site_name])
+    |> cast(attrs, @card_fields)
     |> validate_inclusion(:source, @sources)
     |> validate_length(:title, max: OpenGraph.max_title())
     |> validate_length(:description, max: OpenGraph.max_description())
     |> validate_length(:site_name, max: OpenGraph.max_site_name())
+    |> validate_length(:summary, max: LinkSummary.max_chars())
   end
 end

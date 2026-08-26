@@ -72,6 +72,18 @@ defmodule VutuvWeb.PostLive.Composer do
 
   @presets ~w(public followers connections only_me custom)
 
+  @doc """
+  The DOM id every host renders this component under, and the address
+  `send_update/2` needs to reach it.
+
+  It lives here rather than being spelled at each call site because
+  `VutuvWeb.Live.DraftPreview` has to name it from outside: a host that
+  rendered the composer under some other id would get a link preview that never
+  stops saying "Fetching", with no error anywhere to say why. There is never
+  more than one composer on a page, so one id is enough.
+  """
+  def dom_id, do: "composer"
+
   # The debounced autosave firing (issue #1148): `schedule_draft_save/1` sends
   # this to the component itself via `send_update_after/3`, so the write happens
   # once the member pauses rather than once per keystroke, and no host LiveView
@@ -394,9 +406,8 @@ defmodule VutuvWeb.PostLive.Composer do
         end
 
         socket
-        |> assign(:link_candidates, candidates)
-        |> assign(:link_preview, Posts.draft_link_preview(draft))
-        |> settle_later(settled? or candidates == [])
+        |> assign_link_preview(draft, candidates)
+        |> await_settle(candidates != [] and not settled?)
 
       nil ->
         clear_link_preview(socket)
@@ -405,24 +416,44 @@ defmodule VutuvWeb.PostLive.Composer do
 
   defp restore_link_preview(socket, draft) do
     candidates = Screenshots.candidate_urls(draft)
-    preview = Posts.draft_link_preview(draft)
-
-    socket
-    |> assign(:link_candidates, candidates)
-    |> assign(:link_preview, preview)
-    |> settle_later(candidates == [] or preview != nil)
+    socket = assign_link_preview(socket, draft, candidates)
+    await_settle(socket, candidates != [] and socket.assigns.link_preview == nil)
   end
 
-  defp settle_later(socket, true), do: socket
-  defp settle_later(socket, false), do: schedule_settle(socket)
+  # Re-read what the author is looking at, without touching the queue: the hook
+  # calls this when a fetch has landed.
+  defp show_link_preview(socket) do
+    case current_draft(socket) do
+      %PostDraft{} = draft -> assign_link_preview(socket, draft)
+      nil -> clear_link_preview(socket)
+    end
+  end
+
+  # The panel's two assigns, in one place. They are always read together and
+  # always from the same draft, and three call sites each deriving them was
+  # three places to edit when a third assign joins — with a half-updated panel
+  # invisible, because each path is reachable only from a different event.
+  defp assign_link_preview(socket, draft, candidates \\ nil) do
+    socket
+    |> assign(:link_candidates, candidates || Screenshots.candidate_urls(draft))
+    |> assign(:link_preview, Posts.draft_link_preview(draft))
+  end
 
   # The links changed this round, so they are not fetched yet — but the member
   # may simply have stopped typing, and then no further autosave would ever come
   # to confirm them. One shot, guarded by its own flag so a burst of typing
   # cannot stack timers (the same shape as `schedule_draft_save/1` beside it).
-  defp schedule_settle(%{assigns: %{link_settle_scheduled?: true}} = socket), do: socket
+  #
+  # The argument says whether there is something to wait FOR, which is the way
+  # round the name reads. It used to take the negation, so both call sites
+  # passed a "we're done" expression to a function called "settle later" — the
+  # shape somebody eventually "fixes" by flipping a call site, turning the
+  # debounce off (a fetch per keystroke) with no test failing, since the tests
+  # drive whole settle cycles.
+  defp await_settle(socket, false), do: socket
+  defp await_settle(%{assigns: %{link_settle_scheduled?: true}} = socket, true), do: socket
 
-  defp schedule_settle(socket) do
+  defp await_settle(socket, true) do
     send_update_after(
       __MODULE__,
       [id: socket.assigns.id, settle_link_preview: true],
@@ -430,20 +461,6 @@ defmodule VutuvWeb.PostLive.Composer do
     )
 
     assign(socket, :link_settle_scheduled?, true)
-  end
-
-  # Re-read what the author is looking at, without touching the queue: the hook
-  # calls this when a fetch has landed.
-  defp show_link_preview(socket) do
-    case current_draft(socket) do
-      %PostDraft{} = draft ->
-        socket
-        |> assign(:link_candidates, Screenshots.candidate_urls(draft))
-        |> assign(:link_preview, Posts.draft_link_preview(draft))
-
-      nil ->
-        clear_link_preview(socket)
-    end
   end
 
   defp clear_link_preview(socket),
@@ -973,7 +990,9 @@ defmodule VutuvWeb.PostLive.Composer do
       case current_draft(socket) do
         %PostDraft{} = draft ->
           Posts.choose_draft_preview(draft, decode_choice(choice))
-          show_link_preview(socket)
+          # The draft is already in hand; `show_link_preview/1` would look it
+          # up a second time to answer the same question.
+          assign_link_preview(socket, draft)
 
         nil ->
           socket
@@ -1469,7 +1488,7 @@ defmodule VutuvWeb.PostLive.Composer do
     assigns =
       assigns
       |> assign(:state, preview_state(assigns.preview))
-      |> assign(:dismissed?, match?(%PostScreenshot{status: "dismissed"}, assigns.preview))
+      |> assign(:dismissed?, PostScreenshot.dismissed?(assigns.preview))
       |> assign(:chosen, assigns.preview && assigns.preview.url)
 
     ~H"""

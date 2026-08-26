@@ -1676,7 +1676,7 @@ defmodule VutuvWeb.PostLive.Feed do
           <div id="composer-panel" class={[!@composer_open? && "hidden"]}>
             <.live_component
               module={VutuvWeb.PostLive.Composer}
-              id="composer"
+              id={VutuvWeb.PostLive.Composer.dom_id()}
               current_user={@current_user}
               acting_as={@acting_as}
               post={nil}

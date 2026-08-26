@@ -708,6 +708,36 @@ defmodule Vutuv.Posts.ScreenshotsTest do
       assert File.exists?(Path.join([tmp, "screenshots", job.id, thumb_name]))
     end
 
+    test "a video renders as the same card every other link gets", %{jpeg: jpeg} do
+      post = youtube_post(user())
+      {:ok, job} = Screenshots.reconcile(post)
+
+      stub_youtube(fn conn ->
+        if conn.request_path == "/oembed" do
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.send_resp(200, ~s({"title":"Ein Videotitel","provider_name":"YouTube"}))
+        else
+          conn
+          |> Plug.Conn.put_resp_content_type("image/jpeg", nil)
+          |> Plug.Conn.send_resp(200, jpeg)
+        end
+      end)
+
+      stub_probe(500)
+      Screenshots.deliver_due(force: true)
+
+      # The words come off the oEmbed answer the existence check already
+      # fetched. Without them this row had a picture and no headline, so
+      # `card?/1` was false and a YouTube link — the most-shared kind on the
+      # site — was the one link that stayed a bare float.
+      job = Screenshots.get_job!(job.id)
+      assert job.source == "youtube"
+      assert job.title == "Ein Videotitel"
+      assert job.site_name == "YouTube"
+      assert PostScreenshot.card?(job)
+    end
+
     test "falls back to the page capture when YouTube doesn't know the video" do
       post = youtube_post(user())
       {:ok, job} = Screenshots.reconcile(post)

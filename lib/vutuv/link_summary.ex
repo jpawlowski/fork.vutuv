@@ -3,18 +3,20 @@ defmodule Vutuv.LinkSummary do
   One short sentence answering "what is behind this link", read off the whole
   page rather than off the part a screenshot happens to show.
 
-  A link preview is a 400×264 picture of the top of a page. On a good day that
-  is a headline; on an ordinary one it is a navigation bar, a hero image and
-  some small print, and a reader learns nothing from hovering it. This produces
-  the sentence the tooltip shows (issue #1709): the page is fetched, reduced to
+  A link preview is a picture of a page. On a good day that is a headline; on an
+  ordinary one it is a navigation bar, a hero image and some small print, and a
+  reader learns nothing from it. This produces the sentence that fills the
+  preview card's **teaser** line (issue #1709): the page is fetched, reduced to
   text, and a **local** Ollama text model is asked what it is about, in at most
   `max_chars/0` characters.
 
-  Deliberately **not** the page's own `og:description`: that one is the
-  publisher's blurb about itself, and a page that publishes one gets a whole
-  card built from it elsewhere (issue #1706). This is for the pages that
-  publish nothing, which is exactly where a reader learns least — so the source
-  is the page's own body text, all of it, not a meta tag.
+  Deliberately **not** a replacement for the page's own `og:description`: that
+  one is the publisher's blurb, written by somebody who knows the page, and it
+  always wins (`Vutuv.Posts.PostScreenshot.teaser/1` owns that order, and
+  `Screenshots.summarize/2` never even asks the model when a description is
+  already there). This is for the pages that publish nothing, which is exactly
+  where a reader learns least — so the source is the page's own body text, all
+  of it, not a meta tag.
 
   ## Where it runs, and what it costs
 
@@ -25,14 +27,18 @@ defmodule Vutuv.LinkSummary do
 
   Strictly best-effort: one attempt, no queue of its own, and every failure —
   the flag is off, no Ollama, a page that answers nothing readable, a model
-  that answered junk — leaves `summary` `nil` and the preview exactly as it is
-  today. Nothing retries it, because a missing tooltip is not worth a second
-  round of machinery; a re-queued capture summarises again.
+  that answered junk — leaves `summary` `nil` and the card showing its headline
+  and picture alone. Nothing retries it, because a missing teaser is not worth
+  a second round of machinery; a re-queued capture summarises again.
 
-  It runs **after** `ensure_http_ok/1` has established that the URL answers a
-  plain 200 without redirecting, which is why the fetch here needs no redirect
-  handling of its own. The host is re-checked against `Vutuv.Ssrf` all the
-  same: the answer can have changed since the probe, and a fetch is a fetch.
+  Usually it does **not** fetch at all: the capture path already downloaded the
+  page for its Open Graph metadata and hands the HTML over
+  (`summarize_html/2`). `summarize/1` fetching for itself is the fallback for a
+  caller holding no body. That path runs after `ensure_http_ok/1` has
+  established that the URL answers a plain 200 without redirecting, which is why
+  it needs no redirect handling of its own; the host is re-checked against
+  `Vutuv.Ssrf` all the same, because the answer can have changed since the
+  probe and a fetch is a fetch.
 
   Off by default (`:summarize_links`). An installation without an Ollama that
   can carry a text model simply never turns it on, and nothing about the link
@@ -49,12 +55,13 @@ defmodule Vutuv.LinkSummary do
   `<title>` and its own `og:description`, and both are shown by everyone. What
   matters is that the answer is treated as **untrusted text everywhere it
   goes**: it is plain text, HEEx escapes it, it is capped at `max_chars/0`
-  characters so no page can push a wall of text into a member's post, and it
-  reaches a reader only through a `title` attribute — never markup, never a
-  link, never a page of its own.
+  characters so no page can push a wall of text into a member's post, and it is
+  rendered as text — never markup, never a link target, never a page of its
+  own. It reaches a reader as the card's teaser line, clamped to two lines, and
+  as the floated capture's hover tooltip on a preview that has no card.
 
-  The model can also be wrong, in the ordinary way models are. The tooltip is a
-  hint about where a link goes, next to a picture of the same page and the URL
+  The model can also be wrong, in the ordinary way models are. The sentence is
+  a hint about where a link goes, beside a picture of the same page and the URL
   itself; it is not a claim vutuv makes about the page.
   """
 
@@ -95,7 +102,7 @@ defmodule Vutuv.LinkSummary do
 
   @max_chars 200
 
-  @doc "The tooltip's hard length limit, in characters."
+  @doc "The summary's hard length limit, in characters — a card teaser, not an essay."
   def max_chars, do: @max_chars
 
   @doc """
@@ -111,11 +118,32 @@ defmodule Vutuv.LinkSummary do
     * `{:service, reason}` — Ollama is unreachable or failed;
     * `{:content, reason}` — the model answered nothing usable.
 
-  Never raises: it runs inside a capture that must not be lost over a tooltip.
+  Never raises: it runs inside a capture that must not be lost over a sentence.
   """
   def summarize(url) when is_binary(url) do
     with :ok <- enabled(),
-         {:ok, html} <- fetch(url),
+         {:ok, html} <- fetch(url) do
+      summarize_html(url, html)
+    end
+  rescue
+    error ->
+      Logger.warning("link summary crashed for #{url}: #{inspect(error)}")
+      {:error, :exception}
+  end
+
+  @doc """
+  `summarize/1` for a caller that already holds the page's HTML — same answers,
+  one fewer request.
+
+  The capture path is exactly that caller: `Vutuv.Posts.Screenshots` fetches the
+  page once for its Open Graph metadata, and a summary is only ever wanted for a
+  page whose metadata carried no description, so re-fetching it here meant a
+  second full download of the same page per capture — on the operator's egress,
+  against the target's rate limit, and with a second chance for the target to
+  serve the summariser something the previewer never saw.
+  """
+  def summarize_html(url, html) when is_binary(url) and is_binary(html) do
+    with :ok <- enabled(),
          {:ok, text} <- readable(html) do
       ask(url, text)
     end

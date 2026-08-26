@@ -80,6 +80,23 @@ defmodule VutuvWeb.PostComponents do
   @square_ratio_min 0.8
   @square_ratio_max 1.25
 
+  # The link preview's landscape strip, shared by `link_preview_card/1` and the
+  # `link_preview_skeleton/1` that stands in for it while the fetch runs. One
+  # string because the placeholder's whole job is to be the shape the card
+  # fades into: written out twice, the two sat ninety lines and three doc
+  # blocks apart, so a height or radius tweak would silently apply to one of
+  # them and the composer would jump when the card landed after all.
+  # Read through the two functions below, never as `@link_strip` inside a
+  # template — in HEEx that would be an assign, not this.
+  @link_strip "flex h-20 items-center overflow-hidden rounded-xl bg-slate-50 ring-1 ring-slate-200 sm:h-28 dark:bg-slate-800/60 dark:ring-slate-800"
+
+  # The strip's picture cell: fixed width, full height, never shrinking. Also
+  # shared, and for the same reason.
+  @link_strip_thumb "h-full w-24 shrink-0 sm:w-40"
+
+  defp link_strip, do: @link_strip
+  defp link_strip_thumb, do: @link_strip_thumb
+
   attr(:post, :any, required: true, doc: "preloaded %Vutuv.Posts.Post{}")
   attr(:viewer, :any, default: nil)
 
@@ -4990,16 +5007,18 @@ defmodule VutuvWeb.PostComponents do
   attr(:class, :string, default: nil)
 
   def link_preview_card(assigns) do
+    # Once, not twice: the `:if` and the paragraph it guards read the same
+    # value, and computing it in both places is how one of them grows a clamp
+    # the other does not have.
+    assigns = assign(assigns, :teaser, PostScreenshot.teaser(assigns.card))
+
     ~H"""
     <.link
       href={@card.url}
       target="_blank"
       rel="noopener nofollow ugc"
       data-link-card
-      class={[
-        "flex h-20 items-center overflow-hidden rounded-xl bg-slate-50 ring-1 ring-slate-200 transition hover:ring-brand-400 sm:h-28 dark:bg-slate-800/60 dark:ring-slate-800",
-        @class
-      ]}
+      class={[link_strip(), "transition hover:ring-brand-400", @class]}
     >
       <%!-- The strip's height is FIXED (5rem on a phone, 7rem from `sm`) and
       the thumbnail is cropped to fill it. Deliberately not "as tall as its
@@ -5011,7 +5030,7 @@ defmodule VutuvWeb.PostComponents do
       its place with the same badge the floated capture wears (issue #1720) —
       the card's words are ours to show either way, so hiding the whole strip
       would lose them for nothing. --%>
-      <span :if={@pixelated_url} class="relative block h-full w-24 shrink-0 sm:w-40">
+      <span :if={@pixelated_url} class={["relative block", link_strip_thumb()]}>
         <img
           src={@pixelated_url}
           width="400"
@@ -5029,7 +5048,7 @@ defmodule VutuvWeb.PostComponents do
         height="264"
         loading="lazy"
         alt=""
-        class="h-full w-24 shrink-0 object-cover sm:w-40"
+        class={[link_strip_thumb(), "object-cover"]}
       />
       <%!-- Normal flow, not a nested `flex-col`: a column flex item shrinks
       along the MAIN axis, so inside the fixed-height strip the three lines
@@ -5052,11 +5071,8 @@ defmodule VutuvWeb.PostComponents do
         reader is deciding on, so the teaser is not rendered at all there.
         `sm:line-clamp-2` re-shows it, because `line-clamp` sets its own
         `display` and so beats `hidden` from the same cascade. --%>
-        <p
-          :if={PostScreenshot.teaser(@card)}
-          class="m-0 hidden text-xs text-slate-600 sm:line-clamp-2 dark:text-slate-400"
-        >
-          {PostScreenshot.teaser(@card)}
+        <p :if={@teaser} class="m-0 hidden text-xs text-slate-600 sm:line-clamp-2 dark:text-slate-400">
+          {@teaser}
         </p>
       </div>
     </.link>
@@ -5075,27 +5091,23 @@ defmodule VutuvWeb.PostComponents do
   preview arriving; reserving the shape means the card fades in where the
   placeholder stood.
 
-  It shares the strip's classes with `link_preview_card/1` above by sitting
-  next to it: two elements this close have to be read together to be kept
-  together, and no amount of extraction makes that true from a distance.
+  It wears the card's own strip and picture-cell classes (`link_strip/0`,
+  `link_strip_thumb/0`) rather than a copy of them: the placeholder's whole job
+  is to be the shape the card fades into, so a height or radius tweak that
+  reached only one of the two would put the jump back.
 
   `role="status"` announces the wait on its own rather than having the whole
   composer re-read; the message says which wait it is.
   """
   attr(:message, :string, required: true)
-  attr(:class, :string, default: nil)
 
   def link_preview_skeleton(assigns) do
     ~H"""
-    <div
-      role="status"
-      data-link-preview-skeleton
-      class={[
-        "flex h-20 items-center overflow-hidden rounded-xl bg-slate-50 ring-1 ring-slate-200 sm:h-28 dark:bg-slate-800/60 dark:ring-slate-800",
-        @class
-      ]}
-    >
-      <span class="flex h-full w-24 shrink-0 items-center justify-center bg-slate-200 sm:w-40 dark:bg-slate-700">
+    <div role="status" data-link-preview-skeleton class={link_strip()}>
+      <span class={[
+        link_strip_thumb(),
+        "flex items-center justify-center bg-slate-200 dark:bg-slate-700"
+      ]}>
         <.hourglass class="h-5 w-5 text-slate-500 dark:text-slate-400" />
       </span>
       <%!-- `m-0` for the same reason the card's lines carry it: `components.css`
@@ -5119,11 +5131,14 @@ defmodule VutuvWeb.PostComponents do
   and sets the width.
 
   `title` is the hover tooltip (issue #1709): what the linked page is about,
-  read off the whole page by `Vutuv.LinkSummary` rather than off the part the
-  picture shows. It sits on the link rather than on the image so the tooltip
-  covers the whole tile, and `nil` renders no attribute at all — which is what
-  every capture taken before this, and every installation that does not
-  summarise links, has.
+  through `PostScreenshot.teaser/1` — the one owner of "what text describes this
+  page", so the float and the card can never answer it differently. It sits on
+  the link rather than on the image so the tooltip covers the whole tile, and
+  `nil` renders no attribute at all — which is what every capture taken before
+  this, and every installation that does not summarise links, has.
+
+  This float is what a page with **no headline at all** falls back to; anything
+  with words renders as `link_preview_card/1` instead.
   """
   attr(:screenshot, :any, required: true)
   attr(:pixelated_url, :any, default: nil, doc: "set while the AI scan holds the capture")
@@ -5133,7 +5148,7 @@ defmodule VutuvWeb.PostComponents do
     ~H"""
     <.link
       href={@screenshot.url}
-      title={@screenshot.summary}
+      title={PostScreenshot.teaser(@screenshot)}
       target="_blank"
       rel="noopener"
       aria-hidden="true"

@@ -88,6 +88,9 @@ defmodule Vutuv.OpenGraph do
   followed, matching the capture path's rule), it is not HTML, or it declares
   neither `og:title` nor a `<title>`. The caller then captures the page and
   shows it without a headline, as it did before any of this.
+
+  `meta` also carries `:host` and the fetched `:html`, so a caller that needs
+  the page for a second reason does not fetch it twice.
   """
   def fetch(url) when is_binary(url) do
     with true <- enabled?(),
@@ -97,7 +100,12 @@ defmodule Vutuv.OpenGraph do
          true <- html?(resp),
          body when is_binary(body) <- resp.body,
          %{title: title} = meta when is_binary(title) <- parse(body, url) do
-      {:ok, Map.put(meta, :host, host)}
+      # `:html` rides along so the caller does not have to fetch the same page
+      # again for a different reason. `Vutuv.LinkSummary` is exactly that
+      # caller, and it is only ever wanted for a page whose metadata carried no
+      # description — so without this, every such capture downloaded the page
+      # twice.
+      {:ok, meta |> Map.put(:host, host) |> Map.put(:html, body)}
     else
       _other -> :error
     end

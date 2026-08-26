@@ -87,9 +87,6 @@ defmodule Vutuv.Posts.Screenshots do
   # Admin page size — a gallery of thumbnails, so denser than the site-wide 250.
   @per_page 24
 
-  # "This row carries no card" — the state every reset returns to, written once.
-  @no_card %{source: "screenshot", title: nil, description: nil, site_name: nil}
-
   @doc "Retry cap before a transient failure is marked permanently `failed`."
   def max_attempts, do: @max_attempts
 
@@ -335,15 +332,16 @@ defmodule Vutuv.Posts.Screenshots do
 
     post_screenshot
     |> Ecto.Changeset.change(
-      status: "dismissed",
-      screenshot: nil,
-      width: nil,
-      height: nil,
-      captured_at: nil,
-      last_error: nil,
-      moderation: nil
+      Map.merge(PostScreenshot.no_card(), %{
+        status: "dismissed",
+        screenshot: nil,
+        width: nil,
+        height: nil,
+        captured_at: nil,
+        last_error: nil,
+        moderation: nil
+      })
     )
-    |> Ecto.Changeset.change(@no_card)
     |> Repo.update()
   end
 
@@ -581,7 +579,11 @@ defmodule Vutuv.Posts.Screenshots do
 
     case capture.(job) do
       {:ok, %{screenshot: _file} = result} ->
-        job |> mark_ready(result) |> summarize()
+        # `result[:html]` is the page the metadata fetch already downloaded, so
+        # the summariser does not go and get it a second time. `nil` for a
+        # `capture:` stub or a page that answered nothing readable, and
+        # `summarize/2` then falls back to fetching for itself.
+        job |> mark_ready(result) |> summarize(result[:html])
 
       {:error, reason} ->
         if permanent_failure?(reason),
@@ -608,12 +610,16 @@ defmodule Vutuv.Posts.Screenshots do
   # that; everything else — and any trouble along the way — takes the Chromium
   # path, exactly as before.
   defp capture_and_store(%PostScreenshot{} = job) do
+    # YouTube first, and it never reaches the metadata fetch: a watch page
+    # answers a consent redirect often enough that `OpenGraph.fetch/1` would
+    # spend a request to learn nothing, and the oEmbed endpoint the thumbnail
+    # branch already calls carries the video's title anyway.
     with :fallback <- youtube_capture(job) do
-      # Read once, use twice. Whether the page hands over an image decides only
-      # which branch supplies the card's PICTURE — its words are the same words
-      # either way, and fetching them a second time for the capture branch
-      # would be a second GET on the same page for an answer already in hand.
-      # `nil` when the page said nothing readable; both branches take that.
+      # Read once, use three times. Whether the page hands over an image
+      # decides only which branch supplies the card's PICTURE — its words are
+      # the same words either way — and the third use is the summariser, which
+      # would otherwise download the very same page again.
+      # `nil` when the page said nothing readable; every branch takes that.
       meta =
         case OpenGraph.fetch(job.url) do
           {:ok, meta} -> meta
@@ -623,8 +629,18 @@ defmodule Vutuv.Posts.Screenshots do
       with :fallback <- open_graph_capture(job, meta) do
         page_capture_and_store(job, meta)
       end
+      |> carry_html(meta)
     end
   end
+
+  # The fetched page travels with the result so `process/2` can hand it to the
+  # summariser. Deliberately on the result rather than on the row: it is a
+  # 512 KB binary that must not outlive this one job, and `mark_ready/2` writes
+  # only `PostScreenshot.card_fields/0`, so it never reaches the database.
+  defp carry_html({:ok, result}, %{html: html}) when is_binary(html),
+    do: {:ok, Map.put(result, :html, html)}
+
+  defp carry_html(result, _meta), do: result
 
   # The Open Graph branch: `{:ok, result}` with the page's own image stored and
   # its words carried alongside, or `:fallback` — the page declared no image, or
@@ -665,16 +681,24 @@ defmodule Vutuv.Posts.Screenshots do
 
   defp card_fields(source, nil), do: %{source: source}
 
-  # The YouTube branch: `{:ok, result}` with the stored thumbnail, or
-  # `:fallback` — not a YouTube video URL, a video oEmbed doesn't know
-  # (deleted, private), fetch or store trouble — and the caller then captures
-  # the page like any other link.
+  # The YouTube branch: `{:ok, result}` with the stored thumbnail **and the
+  # video's own words**, or `:fallback` — not a YouTube video URL, a video
+  # oEmbed doesn't know (deleted, private), fetch or store trouble — and the
+  # caller then captures the page like any other link.
+  #
+  # The words matter as much as the picture here. This branch used to return
+  # the thumbnail alone, so `mark_ready/2` merged `no_card/0` over it and a
+  # YouTube link — the most-shared link kind on the site — was the one kind
+  # that rendered as a bare float while every other link rendered as a card.
+  # Which branch happened to run first was deciding the layout, and that is
+  # exactly the thing `PostScreenshot.card?/1` exists to stop deciding.
   defp youtube_capture(%PostScreenshot{} = job) do
     with {:ok, video_id} <- YoutubeThumbnail.video_id(job.url),
-         {:ok, bytes} <- YoutubeThumbnail.fetch(video_id) do
-      store_remote_image(job, bytes, ".jpg")
+         {:ok, bytes, meta} <- YoutubeThumbnail.fetch(video_id),
+         {:ok, result} <- store_remote_image(job, bytes, ".jpg") do
+      {:ok, Map.merge(result, card_fields("youtube", meta))}
     else
-      :error -> :fallback
+      _other -> :fallback
     end
   end
 
@@ -791,15 +815,15 @@ defmodule Vutuv.Posts.Screenshots do
     |> Req.get()
   end
 
-  # The preview's hover tooltip (`Vutuv.LinkSummary`, issue #1709): what the
-  # linked page is about, read off the whole page rather than off the part the
-  # picture shows.
+  # The card's teaser for a page that published none of its own
+  # (`Vutuv.LinkSummary`, issue #1709): what the linked page is about, read off
+  # the whole page rather than off the part the picture shows.
   #
   # It runs **after** the row is `ready`, never before it. The picture is what
   # a reader is waiting for, and this is a model call — putting it in front of
-  # `mark_ready/4` would hold the finished preview, the temp file and (because
+  # `mark_ready/2` would hold the finished preview, the temp file and (because
   # `Vutuv.Posts.ScreenshotWorker` drains one job at a time) every capture
-  # behind it, all for a value that only shows on hover.
+  # behind it.
   #
   # Strictly best-effort and deliberately not a queue of its own: every way it
   # can come to nothing leaves `summary` `nil` and the preview exactly as it
@@ -810,21 +834,21 @@ defmodule Vutuv.Posts.Screenshots do
   # spending half a minute to overwrite a better sentence with a worse one.
   # This is the whole division of labour between the two: the publisher's blurb
   # when there is one, ours when the page offers nothing.
-  defp summarize(%PostScreenshot{description: description} = ready)
+  defp summarize(%PostScreenshot{description: description} = ready, _html)
        when is_binary(description),
        do: ready
 
-  defp summarize(%PostScreenshot{} = ready) do
+  defp summarize(%PostScreenshot{} = ready, html) do
     case YoutubeThumbnail.video_id(ready.url) do
       # A video's own artwork, not a photograph of a page: there is no page
       # here to read, and the watch page would answer a consent wall anyway.
       {:ok, _video_id} -> ready
-      :error -> store_summary(ready)
+      :error -> store_summary(ready, html)
     end
   end
 
-  defp store_summary(%PostScreenshot{url: url} = ready) do
-    case LinkSummary.summarize(url) do
+  defp store_summary(%PostScreenshot{url: url} = ready, html) do
+    case summarize_page(url, html) do
       {:ok, summary} ->
         write_summary(ready, summary)
 
@@ -836,6 +860,12 @@ defmodule Vutuv.Posts.Screenshots do
         ready
     end
   end
+
+  # The page is already in hand whenever the metadata fetch reached it, which
+  # is every case a summary is actually wanted for; fetching is the fallback,
+  # not the path.
+  defp summarize_page(url, html) when is_binary(html), do: LinkSummary.summarize_html(url, html)
+  defp summarize_page(url, _html), do: LinkSummary.summarize(url)
 
   # Written by id rather than through the struct we have been holding: the
   # model call is allowed to take half a minute, and in that time the author
@@ -878,7 +908,7 @@ defmodule Vutuv.Posts.Screenshots do
       # otherwise keep `source: "open_graph"` and the previous page's headline,
       # and render a Chromium photograph inside a card titled by an older fetch.
       |> PostScreenshot.result_changeset(
-        Map.merge(@no_card, Map.take(result, [:source, :title, :description, :site_name]))
+        Map.merge(PostScreenshot.no_card(), Map.take(result, PostScreenshot.card_fields()))
       )
       |> Ecto.Changeset.change(
         status: "ready",
@@ -910,24 +940,41 @@ defmodule Vutuv.Posts.Screenshots do
   `:moderate_images` on. Both callers go through this one function so a new
   owner cannot be announced on one path and forgotten on the other.
   """
-  def announce_ready(%PostScreenshot{} = row), do: announce(row)
-
   # Open feeds/profiles upgrade a member post's card to show the screenshot
   # with no reload. A cached remote post has no author watching their fresh
   # post and no topic of its own, so it simply shows the screenshot on the
   # next feed load — no broadcast.
-  defp announce(%PostScreenshot{post_id: post_id}) when is_binary(post_id),
+  def announce_ready(%PostScreenshot{post_id: post_id}) when is_binary(post_id),
     do: Vutuv.Posts.broadcast_screenshot_ready(post_id)
 
-  # A draft's preview goes to the one member writing it, on their own
-  # `Vutuv.Activity` topic: it belongs to an unpublished draft, so nobody else
-  # has any business hearing about it. `VutuvWeb.Live.DraftPreview` turns that
-  # into a `send_update/2` for the composer.
-  defp announce(%PostScreenshot{post_draft_id: draft_id} = row) when is_binary(draft_id) do
-    Vutuv.Activity.broadcast(owner_user_id(row), {:draft_preview_ready, draft_id})
+  # A draft's preview goes to the one member writing it, on a topic of its
+  # own — deliberately **not** their `Vutuv.Activity` topic. The feed already
+  # subscribes to that one, so a second subscription from
+  # `VutuvWeb.Live.DraftPreview` would hand the busiest LiveView in the app two
+  # copies of every unrelated activity event (`Phoenix.PubSub.subscribe/2` is a
+  # bare register on a duplicate registry — it does not dedupe), and each copy
+  # costs a full `get_post/1` preload chain. A private topic also stops a page
+  # being woken for events it discards.
+  def announce_ready(%PostScreenshot{post_draft_id: draft_id} = row) when is_binary(draft_id) do
+    Phoenix.PubSub.broadcast(
+      Vutuv.PubSub,
+      draft_preview_topic(owner_user_id(row)),
+      {:draft_preview_ready, draft_id}
+    )
   end
 
-  defp announce(%PostScreenshot{}), do: :ok
+  # A cached remote post has no author here watching for their fresh post and
+  # no topic of its own, so it simply shows the screenshot on the next feed
+  # load. By name, not as a catch-all, so a fourth owner raises rather than
+  # silently never being told (see `owner_user_id/1` below).
+  def announce_ready(%PostScreenshot{remote_post_id: id}) when is_binary(id), do: :ok
+
+  @doc """
+  The PubSub topic a member's draft previews are announced on, and the one
+  `VutuvWeb.Live.DraftPreview` subscribes to. Private to the member: the
+  preview belongs to a post nobody else can see yet.
+  """
+  def draft_preview_topic(user_id) when is_binary(user_id), do: "draft_preview:#{user_id}"
 
   # The AI scan's owning member: the post's author, or nobody for a remote
   # post's capture (the same ownerless shape the "remote_post_image" and
@@ -938,7 +985,11 @@ defmodule Vutuv.Posts.Screenshots do
   defp owner_user_id(%PostScreenshot{post_draft_id: draft_id}) when is_binary(draft_id),
     do: Repo.get!(PostDraft, draft_id).user_id
 
-  defp owner_user_id(%PostScreenshot{}), do: nil
+  # Spelled out rather than left as a catch-all: a cached remote post genuinely
+  # has no owning member here, and saying so by name means a **fourth** owner
+  # raises instead of quietly inheriting "nobody" — which for the announce path
+  # would be a preview that is captured and that nobody is ever told about.
+  defp owner_user_id(%PostScreenshot{remote_post_id: id}) when is_binary(id), do: nil
 
   defp mark_retry(%PostScreenshot{} = job, reason) do
     attempts = job.attempts + 1
@@ -989,7 +1040,7 @@ defmodule Vutuv.Posts.Screenshots do
   defp owner_label(%PostScreenshot{remote_post_id: id}) when is_binary(id),
     do: "remote post #{id}"
 
-  defp owner_label(%PostScreenshot{post_draft_id: id}), do: "draft #{id}"
+  defp owner_label(%PostScreenshot{post_draft_id: id}) when is_binary(id), do: "draft #{id}"
 
   ## Admin reads
 

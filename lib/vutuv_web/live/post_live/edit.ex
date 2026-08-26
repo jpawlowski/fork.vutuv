@@ -25,6 +25,7 @@ defmodule VutuvWeb.PostLive.Edit do
   alias Vutuv.Posts
   alias Vutuv.Posts.PostScreenshot
   alias VutuvWeb.Live.InitAssigns
+  alias VutuvWeb.PostComponents
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -84,8 +85,9 @@ defmodule VutuvWeb.PostLive.Edit do
 
   defp ready_screenshot(_post), do: nil
 
-  # The preview and, beside it, which of the two kinds it is — asked once here
-  # rather than at each of the four places the panel words itself.
+  # The preview and, beside it, whether it has a card to show — asked once here
+  # rather than at each of the three places the panel branches on it (the
+  # heading, the sentence under it, and which rendering to use).
   defp assign_screenshot(socket, post) do
     preview = ready_screenshot(post)
 
@@ -114,7 +116,7 @@ defmodule VutuvWeb.PostLive.Edit do
 
         <.live_component
           module={VutuvWeb.PostLive.Composer}
-          id="composer"
+          id={VutuvWeb.PostLive.Composer.dom_id()}
           current_user={@current_user}
           post={@post}
         />
@@ -140,19 +142,24 @@ defmodule VutuvWeb.PostLive.Edit do
                 )}
           </p>
 
-          <div class="mt-3 flex flex-wrap items-start gap-4">
+          <%!-- The real card, not a picture of one. The author is being asked
+          "does this fit what you wanted to share?", and answering it from a
+          bare thumbnail and a headline meant judging something readers never
+          see — the site label and the teaser were missing, and any change to
+          what a card shows had to be made here a third time. A row with no
+          headline has no card to show, so it keeps the plain thumbnail. --%>
+          <div class="mt-3">
+            <PostComponents.link_preview_card :if={@card?} card={@screenshot} />
             <img
+              :if={!@card?}
               src={Vutuv.Screenshot.url({@screenshot.screenshot, @screenshot}, :thumb)}
               width="200"
               height="132"
               alt=""
-              class="aspect-[400/264] w-40 shrink-0 rounded-lg object-cover ring-1 ring-slate-200 dark:ring-slate-800"
+              class="aspect-[400/264] w-40 rounded-lg object-cover ring-1 ring-slate-200 dark:ring-slate-800"
             />
-            <div class="min-w-0 flex-1">
-              <p :if={@screenshot.title} class="font-semibold text-slate-900 dark:text-slate-100">
-                {@screenshot.title}
-              </p>
-              <%!-- One wording for both kinds: the heading two lines above
+            <div class="min-w-0">
+              <%!-- One wording for both kinds: the heading above
               already says which one this is, and "preview" is true of a
               screenshot as well. Two more conditionals here would have bought
               two more one-word msgids — exactly the shape
