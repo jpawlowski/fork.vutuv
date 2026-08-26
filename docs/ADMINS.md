@@ -208,7 +208,7 @@ server-side from YouTube under this same flag), `:fetch_open_graph` (whether a
 post's link preview may read the page's **own** preview first — Open Graph's
 `og:title` / `og:description` / `og:image`, shown as a card instead of a
 screenshot; off means every preview is a Chromium capture, which is the
-behaviour before v7.367.0), and
+behaviour before v7.372.0), and
 `:serve_uploads_locally` (see nginx below).
 
 ## systemd
