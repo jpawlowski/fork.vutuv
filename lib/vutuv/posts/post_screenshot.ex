@@ -40,6 +40,14 @@ defmodule Vutuv.Posts.PostScreenshot do
     field(:url, :string)
     field(:status, :string, default: "pending")
     field(:screenshot, :string)
+
+    # One sentence saying what the linked page is about, for the preview's
+    # hover tooltip (`Vutuv.LinkSummary`, issue #1709). Written by a local
+    # model off the whole page, capped at 200 characters before it is stored,
+    # and `nil` whenever that did not happen — the installation does not
+    # summarise links, the page answered nothing readable, the model was not
+    # reachable. Never cast from member params; nothing user-facing writes it.
+    field(:summary, :string)
     field(:width, :integer)
     field(:height, :integer)
     field(:attempts, :integer, default: 0)

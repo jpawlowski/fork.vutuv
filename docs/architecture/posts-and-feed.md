@@ -1512,6 +1512,39 @@ falls back to the ordinary capture below. Tests stub the fetch via the
 the pre-existing banner captures is `Vutuv.Release.requeue_youtube_screenshots/0`
 (`Screenshots.requeue_youtube/0`).
 
+**Hovering a preview says what the page is about.** A 400×264 picture of the
+top of a page is often a navigation bar and a hero image, so
+`Vutuv.LinkSummary` (issue #1709) fills the tile's `title`: the page is fetched
+once more (the same `Http` guard rails, `text/html`, 512 KB cap), reduced to
+text by `Vutuv.RemoteHtml` — which drops `<script>`/`<style>` **with their
+contents**, the difference between a page's prose and its prose with the
+JavaScript spelled out in it — and a local Ollama text model is asked for one
+sentence of at most 200 characters, in the page's own language. It is stored in
+`post_screenshots.summary` beside the capture.
+
+Deliberately **not** the page's `og:description`: that is the publisher's blurb
+about itself, and a page that publishes one is a case for the Open Graph card
+(issue #1706). This is for the pages that publish nothing, which is where a
+reader learns least.
+
+It runs **after** the row is `ready`, as a second small write. The picture is
+what a reader is waiting for, and `Vutuv.Posts.ScreenshotWorker` drains one job
+at a time — putting a model call in front of `mark_ready/4` would hold this
+member's finished preview, its temp file and every capture behind it for a
+value that only shows on hover.
+
+Off by default (`:summarize_links`, `SUMMARIZE_LINKS=true`), best-effort, and
+**never retried**: flag off, Ollama down, nothing readable on the page, junk
+back from the model — each leaves `summary` `nil` and the preview exactly as it
+was, because a capture is not worth losing over a tooltip and a tooltip is not
+worth a queue of its own. The YouTube branch has no page to read and never gets
+one. One answer gets a fixed 30 s under the shared `:ollama_timeout`; it is the
+least valuable model call this installation makes, so it is not given the
+fleet-wide patience and has no knob of its own. The answer is untrusted text throughout: a page can steer what is written
+about it (as it already does with its own `<title>`), so the sentence is plain
+text, escaped by HEEx, capped at 200 characters, and reaches a reader only as a
+`title` attribute.
+
 A link that does **not answer a plain HTTP 200** is rejected at capture time by
 `ensure_http_ok/1`, a `redirect: false` GET probe the worker runs before Chromium
 (GET, not HEAD, so a server that 405s HEAD on a real 200 page isn't wrongly

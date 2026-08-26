@@ -57,6 +57,37 @@ defmodule VutuvWeb.PostScreenshotRenderTest do
       assert at(body_flow, "data-link-screenshot") < at(body_flow, @body_text)
     end
 
+    test "hovering it says what the linked page is about", %{conn: conn} do
+      user = author()
+
+      post =
+        post_with_screenshot(user,
+          status: "ready",
+          screenshot: "abcdef012345.avif",
+          summary: "Eine Übersicht der offenen Aufgaben im vutuv-Projekt."
+        )
+
+      html = html_response(get(conn, Posts.path(post)), 200)
+
+      # On the link, not on the image: the tooltip should cover the whole tile
+      # (issue #1709).
+      assert [tag] = Regex.run(~r/<a[^>]*data-link-screenshot[^>]*>/, html)
+      assert tag =~ "title="
+      assert html =~ "Eine Übersicht der offenen Aufgaben im vutuv-Projekt."
+    end
+
+    test "renders no title at all for a capture that has no summary", %{conn: conn} do
+      user = author()
+      post = post_with_screenshot(user, status: "ready", screenshot: "abcdef012345.avif")
+
+      html = html_response(get(conn, Posts.path(post)), 200)
+
+      # Every capture taken before #1709, and every installation that does not
+      # summarise links: an empty tooltip would be worse than none.
+      assert [tag] = Regex.run(~r/<a[^>]*data-link-screenshot[^>]*>/, html)
+      refute tag =~ "title="
+    end
+
     test "shows nothing while the screenshot is still pending", %{conn: conn} do
       user = author()
       post = post_with_screenshot(user, status: "pending")

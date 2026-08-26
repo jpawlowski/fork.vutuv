@@ -478,6 +478,19 @@ if config_env() == :prod do
     config :vutuv, :tag_merge_assist_model, model
   end
 
+  # The link-preview tooltip (issue #1709). Default off; SUMMARIZE_LINKS=true
+  # asks a local Ollama text model what a linked page is about and shows the
+  # answer on hover. LINK_SUMMARY_MODEL swaps the model; how long one answer
+  # may take is not a knob of its own, it is the fixed short budget in
+  # `Vutuv.LinkSummary` under the shared :ollama_timeout.
+  if System.get_env("SUMMARIZE_LINKS") == "true" do
+    config :vutuv, :summarize_links, true
+  end
+
+  if model = System.get_env("LINK_SUMMARY_MODEL") do
+    config :vutuv, :link_summary_model, model
+  end
+
   if ollama_model = System.get_env("OLLAMA_VISION_MODEL") do
     config :vutuv, :ollama_vision_model, ollama_model
   end
