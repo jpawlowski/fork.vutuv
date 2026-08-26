@@ -98,12 +98,38 @@ defmodule Vutuv.OpenGraphTest do
       assert meta.title == "Google’s “phone” — reviewed…"
     end
 
-    test "an entity this does not know is left as text, not swallowed" do
+    test "the long tail of named entities decodes too, and case is not folded" do
       meta =
-        html(~s(<meta property="og:title" content="Caf&eacute; &notanentity; open">))
+        html(~s(<meta property="og:title" content="Caf&eacute; &frac12; &Aacute;&aacute;">))
         |> OpenGraph.parse("https://example.test/")
 
-      assert meta.title == "Caf&eacute; &notanentity; open"
+      # `:mochiweb_charref` is the whole HTML5 table, so there is no edge to be
+      # one entity away from. `&Aacute;` and `&aacute;` are different letters —
+      # the hand-typed table this replaced downcased the name and would have
+      # answered the same character for both.
+      assert meta.title == "Café ½ Áá"
+    end
+
+    test "an entity nothing knows is left as text, not swallowed" do
+      meta =
+        html(~s(<meta property="og:title" content="a &notanentity; b">))
+        |> OpenGraph.parse("https://example.test/")
+
+      assert meta.title == "a &notanentity; b"
+    end
+
+    test "a NUL entity is refused rather than written into a title" do
+      meta =
+        html(~s(<meta property="og:title" content="a&#0;b">))
+        |> OpenGraph.parse("https://example.test/")
+
+      # A NUL byte is valid UTF-8 and Postgres is not: it answers 22021
+      # `character_not_in_repertoire`, so this would raise inside
+      # `mark_ready/2`'s `{:ok, _} = Repo.update()` and leave the job
+      # `capturing` for `resume_stuck/0` to hand back without counting an
+      # attempt — an unbounded retry loop driven by any page that emits `&#0;`.
+      refute String.contains?(meta.title, <<0>>)
+      assert meta.title == "a&#0;b"
     end
 
     test "a relative or protocol-relative image is resolved against the page" do

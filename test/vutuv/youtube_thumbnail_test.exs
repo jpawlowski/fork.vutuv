@@ -111,8 +111,13 @@ defmodule Vutuv.YoutubeThumbnailTest do
       assert {:ok, _bytes, meta} = YoutubeThumbnail.fetch(@id)
       assert meta.title == "stub"
       assert meta.site_name == "YouTube"
-      assert meta.description == nil
       assert meta.host == "youtube.com"
+
+      # Only what oEmbed said. A video has no teaser, but deciding that is a
+      # card's call, not this module's — `Screenshots.card_fields/2` reads a
+      # missing key as absent, so nothing has to write `description: nil` here
+      # to satisfy somebody else's dot-access.
+      refute Map.has_key?(meta, :description)
     end
 
     test "an oEmbed answer that is not readable JSON still yields the picture" do

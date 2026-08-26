@@ -86,16 +86,19 @@ defmodule VutuvWeb.PostComponents do
   # fades into: written out twice, the two sat ninety lines and three doc
   # blocks apart, so a height or radius tweak would silently apply to one of
   # them and the composer would jump when the card landed after all.
-  # Read through the two functions below, never as `@link_strip` inside a
-  # template — in HEEx that would be an assign, not this.
-  @link_strip "flex h-20 items-center overflow-hidden rounded-xl bg-slate-50 ring-1 ring-slate-200 sm:h-28 dark:bg-slate-800/60 dark:ring-slate-800"
+  # The link preview's landscape strip, shared by `link_preview_card/1` and the
+  # `link_preview_skeleton/1` that stands in for it while the fetch runs. One
+  # string because the placeholder's whole job is to be the shape the card fades
+  # into: written out twice, the two sat ninety lines and three doc blocks
+  # apart, so a height or radius tweak would silently apply to one of them and
+  # the composer would jump when the card landed after all.
+  defp link_strip_class,
+    do:
+      "flex h-20 items-center overflow-hidden rounded-xl bg-slate-50 ring-1 ring-slate-200 sm:h-28 dark:bg-slate-800/60 dark:ring-slate-800"
 
   # The strip's picture cell: fixed width, full height, never shrinking. Also
   # shared, and for the same reason.
-  @link_strip_thumb "h-full w-24 shrink-0 sm:w-40"
-
-  defp link_strip, do: @link_strip
-  defp link_strip_thumb, do: @link_strip_thumb
+  defp link_strip_thumb_class, do: "h-full w-24 shrink-0 sm:w-40"
 
   attr(:post, :any, required: true, doc: "preloaded %Vutuv.Posts.Post{}")
   attr(:viewer, :any, default: nil)
@@ -5018,7 +5021,7 @@ defmodule VutuvWeb.PostComponents do
       target="_blank"
       rel="noopener nofollow ugc"
       data-link-card
-      class={[link_strip(), "transition hover:ring-brand-400", @class]}
+      class={[link_strip_class(), "transition hover:ring-brand-400", @class]}
     >
       <%!-- The strip's height is FIXED (5rem on a phone, 7rem from `sm`) and
       the thumbnail is cropped to fill it. Deliberately not "as tall as its
@@ -5030,7 +5033,7 @@ defmodule VutuvWeb.PostComponents do
       its place with the same badge the floated capture wears (issue #1720) —
       the card's words are ours to show either way, so hiding the whole strip
       would lose them for nothing. --%>
-      <span :if={@pixelated_url} class={["relative block", link_strip_thumb()]}>
+      <span :if={@pixelated_url} class={["relative block", link_strip_thumb_class()]}>
         <img
           src={@pixelated_url}
           width="400"
@@ -5048,7 +5051,7 @@ defmodule VutuvWeb.PostComponents do
         height="264"
         loading="lazy"
         alt=""
-        class={[link_strip_thumb(), "object-cover"]}
+        class={[link_strip_thumb_class(), "object-cover"]}
       />
       <%!-- Normal flow, not a nested `flex-col`: a column flex item shrinks
       along the MAIN axis, so inside the fixed-height strip the three lines
@@ -5091,8 +5094,8 @@ defmodule VutuvWeb.PostComponents do
   preview arriving; reserving the shape means the card fades in where the
   placeholder stood.
 
-  It wears the card's own strip and picture-cell classes (`link_strip/0`,
-  `link_strip_thumb/0`) rather than a copy of them: the placeholder's whole job
+  It wears the card's own strip and picture-cell classes (`link_strip_class/0`,
+  `link_strip_thumb_class/0`) rather than a copy of them: the placeholder's job
   is to be the shape the card fades into, so a height or radius tweak that
   reached only one of the two would put the jump back.
 
@@ -5103,9 +5106,9 @@ defmodule VutuvWeb.PostComponents do
 
   def link_preview_skeleton(assigns) do
     ~H"""
-    <div role="status" data-link-preview-skeleton class={link_strip()}>
+    <div role="status" data-link-preview-skeleton class={link_strip_class()}>
       <span class={[
-        link_strip_thumb(),
+        link_strip_thumb_class(),
         "flex items-center justify-center bg-slate-200 dark:bg-slate-700"
       ]}>
         <.hourglass class="h-5 w-5 text-slate-500 dark:text-slate-400" />

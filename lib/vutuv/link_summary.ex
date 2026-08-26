@@ -126,9 +126,7 @@ defmodule Vutuv.LinkSummary do
       summarize_html(url, html)
     end
   rescue
-    error ->
-      Logger.warning("link summary crashed for #{url}: #{inspect(error)}")
-      {:error, :exception}
+    error -> crashed(url, error)
   end
 
   @doc """
@@ -148,9 +146,15 @@ defmodule Vutuv.LinkSummary do
       ask(url, text)
     end
   rescue
-    error ->
-      Logger.warning("link summary crashed for #{url}: #{inspect(error)}")
-      {:error, :exception}
+    error -> crashed(url, error)
+  end
+
+  # Both entry points need their own `rescue` — `fetch/1` can raise on the
+  # `summarize/1` path, before the inner one is reached — but the handler is one
+  # thing, and this module's whole contract is that it never raises.
+  defp crashed(url, error) do
+    Logger.warning("link summary crashed for #{url}: #{inspect(error)}")
+    {:error, :exception}
   end
 
   defp enabled do

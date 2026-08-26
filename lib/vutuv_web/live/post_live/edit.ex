@@ -142,39 +142,35 @@ defmodule VutuvWeb.PostLive.Edit do
                 )}
           </p>
 
-          <%!-- The real card, not a picture of one. The author is being asked
-          "does this fit what you wanted to share?", and answering it from a
-          bare thumbnail and a headline meant judging something readers never
-          see — the site label and the teaser were missing, and any change to
-          what a card shows had to be made here a third time. A row with no
-          headline has no card to show, so it keeps the plain thumbnail. --%>
+          <%!-- The real thing, not a picture of one — and **both** shapes come
+          from the components the post itself renders. The author is being asked
+          "does this fit what you wanted to share?", and answering that from a
+          hand-built thumbnail meant judging something readers never see: the
+          site label and the teaser were missing from the card, the float had no
+          teaser tooltip, and any change to either had to be made here a third
+          time. A row with no headline has no card to show, so it keeps the
+          float, exactly as the post will. --%>
           <div class="mt-3">
             <PostComponents.link_preview_card :if={@card?} card={@screenshot} />
-            <img
+            <PostComponents.link_screenshot_image
               :if={!@card?}
-              src={Vutuv.Screenshot.url({@screenshot.screenshot, @screenshot}, :thumb)}
-              width="200"
-              height="132"
-              alt=""
-              class="aspect-[400/264] w-40 rounded-lg object-cover ring-1 ring-slate-200 dark:ring-slate-800"
+              screenshot={@screenshot}
+              class="block w-40"
             />
-            <div class="min-w-0">
-              <%!-- One wording for both kinds: the heading above
-              already says which one this is, and "preview" is true of a
-              screenshot as well. Two more conditionals here would have bought
-              two more one-word msgids — exactly the shape
-              `gettext.extract --merge` fuzzy-fills with an unrelated German
-              sentence. --%>
-              <.button
-                id="remove-screenshot"
-                variant="danger"
-                class="mt-2"
-                phx-click="remove-screenshot"
-                data-confirm={gettext("Remove this preview from your post?")}
-              >
-                {gettext("Remove preview")}
-              </.button>
-            </div>
+            <%!-- One wording for both kinds: the heading above already says
+            which one this is, and "preview" is true of a screenshot as well.
+            Two more conditionals here would have bought two more one-word
+            msgids — exactly the shape `gettext.extract --merge` fuzzy-fills
+            with an unrelated German sentence. --%>
+            <.button
+              id="remove-screenshot"
+              variant="danger"
+              class="mt-3"
+              phx-click="remove-screenshot"
+              data-confirm={gettext("Remove this preview from your post?")}
+            >
+              {gettext("Remove preview")}
+            </.button>
           </div>
         </.card>
 

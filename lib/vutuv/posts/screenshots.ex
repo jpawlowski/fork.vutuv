@@ -375,7 +375,7 @@ defmodule Vutuv.Posts.Screenshots do
       # Choosing a link the author had already said no to has to lift the
       # tombstone; `enqueue/2`'s "same URL, leave it" clause would not, and the
       # control would do nothing.
-      match?(%PostScreenshot{status: "dismissed"}, draft.screenshot) ->
+      PostScreenshot.dismissed?(draft.screenshot) ->
         refresh(draft.screenshot, url)
 
       true ->
@@ -579,10 +579,9 @@ defmodule Vutuv.Posts.Screenshots do
 
     case capture.(job) do
       {:ok, %{screenshot: _file} = result} ->
-        # `result[:html]` is the page the metadata fetch already downloaded, so
-        # the summariser does not go and get it a second time. `nil` for a
-        # `capture:` stub or a page that answered nothing readable, and
-        # `summarize/2` then falls back to fetching for itself.
+        # `result[:html]` is `carry_html/2`'s page; `nil` for a `capture:` stub
+        # or a page that answered nothing readable, and `summarize/2` then
+        # falls back to fetching for itself.
         job |> mark_ready(result) |> summarize(result[:html])
 
       {:error, reason} ->
@@ -615,31 +614,30 @@ defmodule Vutuv.Posts.Screenshots do
     # spend a request to learn nothing, and the oEmbed endpoint the thumbnail
     # branch already calls carries the video's title anyway.
     with :fallback <- youtube_capture(job) do
-      # Read once, use three times. Whether the page hands over an image
-      # decides only which branch supplies the card's PICTURE — its words are
-      # the same words either way — and the third use is the summariser, which
-      # would otherwise download the very same page again.
-      # `nil` when the page said nothing readable; every branch takes that.
+      # Read once, use three times: which branch supplies the card's PICTURE,
+      # the words that go on it either way, and the page body the summariser
+      # would otherwise download all over again (`LinkSummary.summarize_html/2`
+      # explains that one). `nil` when the page said nothing readable; every
+      # branch takes that.
       meta =
         case OpenGraph.fetch(job.url) do
           {:ok, meta} -> meta
           :error -> nil
         end
 
-      with :fallback <- open_graph_capture(job, meta) do
-        page_capture_and_store(job, meta)
-      end
-      |> carry_html(meta)
+      result =
+        with :fallback <- open_graph_capture(job, meta) do
+          page_capture_and_store(job, meta)
+        end
+
+      carry_html(result, meta)
     end
   end
 
-  # The fetched page travels with the result so `process/2` can hand it to the
-  # summariser. Deliberately on the result rather than on the row: it is a
-  # 512 KB binary that must not outlive this one job, and `mark_ready/2` writes
-  # only `PostScreenshot.card_fields/0`, so it never reaches the database.
-  defp carry_html({:ok, result}, %{html: html}) when is_binary(html),
-    do: {:ok, Map.put(result, :html, html)}
-
+  # On the result rather than on the row: it is a 512 KB binary that must not
+  # outlive this one job, and `mark_ready/2` writes only
+  # `PostScreenshot.card_columns/0`, so it never reaches the database.
+  defp carry_html({:ok, result}, %{html: html}), do: {:ok, Map.put(result, :html, html)}
   defp carry_html(result, _meta), do: result
 
   # The Open Graph branch: `{:ok, result}` with the page's own image stored and
@@ -664,18 +662,23 @@ defmodule Vutuv.Posts.Screenshots do
   defp open_graph_capture(%PostScreenshot{}, _meta), do: :fallback
 
   # The card's words, from whichever branch got them. One function because the
-  # two branches differ in where the PICTURE comes from and in nothing else —
-  # writing the same three keys twice is how the screenshot card would drift
-  # away from the Open Graph one again.
+  # three branches differ in where the PICTURE comes from and in nothing else —
+  # writing the same keys once per branch is how the screenshot card drifted
+  # away from the Open Graph one in the first place.
   #
-  # A page that names no og:site_name is labelled by its host, which is what a
-  # reader is checking anyway ("where does this go?").
+  # A source that names no site is labelled by its host, which is what a reader
+  # is checking anyway ("where does this go?").
+  #
+  # Read with `meta[...]` rather than `meta.title`: a source that has nothing to
+  # say about a field should be able to leave the key out, instead of writing
+  # `description: nil` into its own map to satisfy this function's access — which
+  # is a card decision, and this is the only place that gets to make one.
   defp card_fields(source, %{} = meta) do
     %{
       source: source,
-      title: meta.title,
-      description: meta.description,
-      site_name: meta.site_name || meta.host
+      title: meta[:title],
+      description: meta[:description],
+      site_name: meta[:site_name] || meta[:host]
     }
   end
 
@@ -908,7 +911,7 @@ defmodule Vutuv.Posts.Screenshots do
       # otherwise keep `source: "open_graph"` and the previous page's headline,
       # and render a Chromium photograph inside a card titled by an older fetch.
       |> PostScreenshot.result_changeset(
-        Map.merge(PostScreenshot.no_card(), Map.take(result, PostScreenshot.card_fields()))
+        Map.merge(PostScreenshot.no_card(), Map.take(result, PostScreenshot.card_columns()))
       )
       |> Ecto.Changeset.change(
         status: "ready",
@@ -940,10 +943,8 @@ defmodule Vutuv.Posts.Screenshots do
   `:moderate_images` on. Both callers go through this one function so a new
   owner cannot be announced on one path and forgotten on the other.
   """
-  # Open feeds/profiles upgrade a member post's card to show the screenshot
-  # with no reload. A cached remote post has no author watching their fresh
-  # post and no topic of its own, so it simply shows the screenshot on the
-  # next feed load — no broadcast.
+  # Open feeds and profiles upgrade a member post's card to show the screenshot
+  # with no reload.
   def announce_ready(%PostScreenshot{post_id: post_id}) when is_binary(post_id),
     do: Vutuv.Posts.broadcast_screenshot_ready(post_id)
 
@@ -970,11 +971,19 @@ defmodule Vutuv.Posts.Screenshots do
   def announce_ready(%PostScreenshot{remote_post_id: id}) when is_binary(id), do: :ok
 
   @doc """
-  The PubSub topic a member's draft previews are announced on, and the one
-  `VutuvWeb.Live.DraftPreview` subscribes to. Private to the member: the
-  preview belongs to a post nobody else can see yet.
+  Listen for this member's draft previews becoming ready.
+
+  Both halves live here, the way every other context in the app owns its topic
+  (`Posts.subscribe_post/1`, `Fediverse.subscribe_counts/0`, …): a subscriber
+  should not have to name `Vutuv.PubSub` and spell the topic itself, and a
+  second one copying those two lines is how a topic rename becomes a two-module
+  edit.
   """
-  def draft_preview_topic(user_id) when is_binary(user_id), do: "draft_preview:#{user_id}"
+  def subscribe_draft_previews(user_id) when is_binary(user_id),
+    do: Phoenix.PubSub.subscribe(Vutuv.PubSub, draft_preview_topic(user_id))
+
+  # Private to the member: the preview belongs to a post nobody else can see yet.
+  defp draft_preview_topic(user_id), do: "draft_preview:#{user_id}"
 
   # The AI scan's owning member: the post's author, or nobody for a remote
   # post's capture (the same ownerless shape the "remote_post_image" and
@@ -985,10 +994,7 @@ defmodule Vutuv.Posts.Screenshots do
   defp owner_user_id(%PostScreenshot{post_draft_id: draft_id}) when is_binary(draft_id),
     do: Repo.get!(PostDraft, draft_id).user_id
 
-  # Spelled out rather than left as a catch-all: a cached remote post genuinely
-  # has no owning member here, and saying so by name means a **fourth** owner
-  # raises instead of quietly inheriting "nobody" — which for the announce path
-  # would be a preview that is captured and that nobody is ever told about.
+  # By name and not as a catch-all, for the reason `announce_ready/1` gives.
   defp owner_user_id(%PostScreenshot{remote_post_id: id}) when is_binary(id), do: nil
 
   defp mark_retry(%PostScreenshot{} = job, reason) do

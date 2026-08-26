@@ -100,12 +100,7 @@ defmodule Vutuv.OpenGraph do
          true <- html?(resp),
          body when is_binary(body) <- resp.body,
          %{title: title} = meta when is_binary(title) <- parse(body, url) do
-      # `:html` rides along so the caller does not have to fetch the same page
-      # again for a different reason. `Vutuv.LinkSummary` is exactly that
-      # caller, and it is only ever wanted for a page whose metadata carried no
-      # description — so without this, every such capture downloaded the page
-      # twice.
-      {:ok, meta |> Map.put(:host, host) |> Map.put(:html, body)}
+      {:ok, Map.merge(meta, %{host: host, html: body})}
     else
       _other -> :error
     end
@@ -231,90 +226,60 @@ defmodule Vutuv.OpenGraph do
     end
   end
 
-  # The markup five, plus the **punctuation** a real headline is full of. That
-  # second half is not a nicety: `&rsquo;` is the typographic apostrophe, so
-  # without it a card headline reads `Google&rsquo;s new phone` — and a page
-  # that writes its title in HTML entities writes *all* of them that way, so
-  # the same title usually carries `&ldquo;`, `&mdash;` and `&hellip;` too.
-  #
-  # Numeric entities need no table (`codepoint/2` builds those), which is what
-  # made the gap easy to miss: `&#8217;` and `&#x2019;` — the same apostrophe —
-  # already worked, so the failure only showed on the named spelling.
-  #
-  # Accented letters are deliberately **not** here. The full HTML5 list is over
-  # two thousand names, the tail of it does not appear in `og:` values (a page
-  # that can write `og:title` at all writes UTF-8), and an unknown entity is
-  # left standing as text rather than swallowed.
-  @entities %{
-    "amp" => "&",
-    "lt" => "<",
-    "gt" => ">",
-    "quot" => "\"",
-    "apos" => "'",
-    "nbsp" => " ",
-    # quotes
-    "lsquo" => "‘",
-    "rsquo" => "’",
-    "sbquo" => "‚",
-    "ldquo" => "“",
-    "rdquo" => "”",
-    "bdquo" => "„",
-    "laquo" => "«",
-    "raquo" => "»",
-    "lsaquo" => "‹",
-    "rsaquo" => "›",
-    "prime" => "′",
-    # dashes and spacing
-    "ndash" => "–",
-    "mdash" => "—",
-    "minus" => "−",
-    "shy" => "",
-    "ensp" => " ",
-    "emsp" => " ",
-    "thinsp" => " ",
-    # the rest of what turns up in a headline
-    "hellip" => "…",
-    "middot" => "·",
-    "bull" => "•",
-    "trade" => "™",
-    "copy" => "©",
-    "reg" => "®",
-    "deg" => "°",
-    "euro" => "€",
-    "pound" => "£",
-    "yen" => "¥",
-    "sect" => "§",
-    "para" => "¶"
-  }
+  @entity_regex ~r/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]*);/
 
-  @entity_regex ~r/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z]+);/
-
-  # The HTML entities that turn up in a `content` attribute, named and numeric.
-  # Without this a card headline reads `Bild &amp; Ton`, and an `&amp;` inside
-  # an `og:image` URL breaks the fetch.
+  # The HTML entities in a `content` attribute or a `<title>`. Without this a
+  # card headline reads `Bild &amp; Ton`, and an `&amp;` inside an `og:image`
+  # URL breaks the fetch.
   #
   # One pass, not a chain of replacements: a chain has to decode `&amp;` LAST or
   # a literal `&amp;amp;` unescapes twice, and that ordering is a rule somebody
   # has to remember (`Vutuv.RemoteHtml` states it in a comment for exactly this
-  # reason). A single pass cannot double-decode at all. An entity this does not
-  # know is left standing rather than swallowed.
+  # reason). A single pass cannot double-decode at all. An entity nothing knows
+  # is left standing rather than swallowed.
   defp decode_entities(value) do
     Regex.replace(@entity_regex, value, fn whole, body -> entity(body, whole) end)
   end
 
-  defp entity(<<?#, marker, digits::binary>>, whole) when marker in [?x, ?X],
-    do: digits |> Integer.parse(16) |> codepoint(whole)
-
-  defp entity(<<?#, digits::binary>>, whole), do: digits |> Integer.parse() |> codepoint(whole)
-  defp entity(name, whole), do: Map.get(@entities, String.downcase(name), whole)
+  # `:mochiweb_charref` is the full HTML5 table, and it already ships here —
+  # `:html_sanitize_ex` depends on it and `Vutuv.RemoteHtml` leans on it through
+  # `strip_tags/1`. It answers all three spellings the regex above captures
+  # (`rsquo`, `#8217`, `#x2019`) and `:undefined` for anything it does not know.
+  #
+  # This used to be a table typed out by hand, and the hand-typed version is
+  # what shipped `Google&rsquo;s new phone` into a card headline: a six-entry
+  # table where the web has two thousand. Extending it by another forty names
+  # would only have moved the edge — `&frac12;`, `&sup2;`, `&eacute;` were all
+  # one page away from the same bug.
+  #
+  # Case matters and is not folded: `&Aacute;` is Á and `&aacute;` is á.
+  defp entity(body, whole) do
+    case :mochiweb_charref.charref(body) do
+      :undefined -> whole
+      codepoint -> to_text(codepoint, whole)
+    end
+  end
 
   # A lone surrogate is not a codepoint `<<n::utf8>>` can build (it raises), and
-  # neither is a number past the Unicode range: leave those entities as text.
-  defp codepoint({number, ""}, _whole)
-       when number in 0..0xD7FF or number in 0xE000..0x10FFFF,
+  # neither is a number past the Unicode range: those stay text.
+  #
+  # **`0` is refused with them**, and that one is not theoretical: a NUL byte is
+  # valid UTF-8 but Postgres rejects it (`22021 character_not_in_repertoire`),
+  # so `&#0;` in a title would raise inside `mark_ready/2`'s `{:ok, _} =
+  # Repo.update()` and leave the job `capturing` for `resume_stuck/0` to hand
+  # back **without** counting an attempt — the unbounded retry loop
+  # `result_changeset/2` is written to avoid, driven by any page that emits it.
+  defp to_text(number, _whole)
+       when is_integer(number) and (number in 1..0xD7FF or number in 0xE000..0x10FFFF),
        do: <<number::utf8>>
 
-  defp codepoint(_parsed, whole), do: whole
+  # A few entities are two codepoints (`&NotEqualTilde;` is ≂ plus a combining
+  # slash); each half goes through the same guard.
+  defp to_text(numbers, whole) when is_list(numbers) do
+    Enum.map_join(numbers, &to_text(&1, whole))
+  end
+
+  defp to_text(_number, whole), do: whole
 
   # The first of `keys` the page declares: entities decoded, whitespace collapsed
   # to single spaces (a `content` attribute may hold newlines), trimmed, and

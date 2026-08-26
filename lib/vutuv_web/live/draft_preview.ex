@@ -16,15 +16,10 @@ defmodule VutuvWeb.Live.DraftPreview do
   `handle_info/2` at all: the hook runs before the LiveView's own clauses and
   halts on its own message, so a page opts in with one line and handles nothing.
 
-  The event rides a **topic of its own** (`Screenshots.draft_preview_topic/1`),
-  private to the one member writing the draft — nobody else has any business
-  hearing about an unpublished post. Deliberately not their `Vutuv.Activity`
-  topic, even though that is also private to them: `VutuvWeb.PostLive.Feed`
-  already subscribes to it, and `Phoenix.PubSub.subscribe/2` is a bare register
-  on a duplicate registry, so a second subscription here would hand the busiest
-  LiveView in the app two copies of every unrelated activity event — each
-  costing a full `get_post/1` preload chain. A topic nobody else holds cannot
-  be double-subscribed by a future host either.
+  The event rides a topic of its own (`Screenshots.subscribe_draft_previews/1`),
+  private to the one member writing the draft and deliberately not their
+  `Vutuv.Activity` topic — see that function's neighbour `announce_ready/1` for
+  why.
   """
 
   import Phoenix.LiveView, only: [attach_hook: 4, connected?: 1, send_update: 2]
@@ -36,21 +31,14 @@ defmodule VutuvWeb.Live.DraftPreview do
     # The dead render is thrown away the moment the socket connects, so
     # subscribing for it would be a subscription nobody reads.
     if connected?(socket) and socket.assigns[:current_user] do
-      Phoenix.PubSub.subscribe(
-        Vutuv.PubSub,
-        Screenshots.draft_preview_topic(socket.assigns.current_user.id)
-      )
-
+      Screenshots.subscribe_draft_previews(socket.assigns.current_user.id)
       {:cont, attach_hook(socket, :draft_preview, :handle_info, &forward/2)}
     else
       {:cont, socket}
     end
   end
 
-  # The composer is asked to re-read. Its id comes from the component that owns
-  # it rather than being spelled here: a host rendering it under another id
-  # would otherwise get a card that never stops saying "Fetching", with no
-  # error anywhere.
+  # The composer is asked to re-read, at the id it names for itself.
   defp forward({:draft_preview_ready, _draft_id}, socket) do
     send_update(Composer, id: Composer.dom_id(), refresh_link_preview: true)
     {:halt, socket}

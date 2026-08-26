@@ -415,9 +415,12 @@ defmodule VutuvWeb.PostLive.Composer do
   end
 
   defp restore_link_preview(socket, draft) do
-    candidates = Screenshots.candidate_urls(draft)
-    socket = assign_link_preview(socket, draft, candidates)
-    await_settle(socket, candidates != [] and socket.assigns.link_preview == nil)
+    socket = assign_link_preview(socket, draft)
+
+    await_settle(
+      socket,
+      socket.assigns.link_candidates != [] and socket.assigns.link_preview == nil
+    )
   end
 
   # Re-read what the author is looking at, without touching the queue: the hook
@@ -433,9 +436,17 @@ defmodule VutuvWeb.PostLive.Composer do
   # always from the same draft, and three call sites each deriving them was
   # three places to edit when a third assign joins — with a half-updated panel
   # invisible, because each path is reachable only from a different event.
-  defp assign_link_preview(socket, draft, candidates \\ nil) do
+  #
+  # Two heads rather than one with a `candidates \\ nil` default: `nil` meaning
+  # "work it out yourself" is a sentinel the reader has to decode, and only
+  # `sync_link_preview/1` has candidates already (it needs them for its own
+  # settled? comparison).
+  defp assign_link_preview(socket, draft),
+    do: assign_link_preview(socket, draft, Screenshots.candidate_urls(draft))
+
+  defp assign_link_preview(socket, draft, candidates) do
     socket
-    |> assign(:link_candidates, candidates || Screenshots.candidate_urls(draft))
+    |> assign(:link_candidates, candidates)
     |> assign(:link_preview, Posts.draft_link_preview(draft))
   end
 

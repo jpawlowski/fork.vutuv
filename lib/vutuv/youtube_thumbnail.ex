@@ -91,12 +91,14 @@ defmodule Vutuv.YoutubeThumbnail do
   storing YouTube's grey placeholder tile — then `maxresdefault.jpg` (HD
   uploads only) with `hqdefault.jpg` (always present) as the fallback.
 
-  `meta` is shaped like `Vutuv.OpenGraph.fetch/1`'s answer — `title`,
-  `description`, `site_name`, `host` — so a link preview can be built from
-  either source by one function. It is the **oEmbed** answer rather than the
-  watch page's own `og:` tags on purpose: that request is already being made
-  for the existence check, and the watch page frequently answers a consent
-  redirect, which is the very reason this branch exists.
+  `meta` carries what oEmbed said under the same key names
+  `Vutuv.OpenGraph.fetch/1` uses (`title`, `site_name`, `host`), so a link
+  preview can be built from either source by one function; it is `nil` when the
+  answer was not readable JSON, and a key it has nothing to say about is simply
+  absent. It is the **oEmbed** answer rather than the watch page's own `og:`
+  tags on purpose: that request is already being made for the existence check,
+  and the watch page frequently answers a consent redirect, which is the very
+  reason this branch exists.
   """
   def fetch(video_id) do
     with {:ok, meta} <- confirm_video(video_id),
@@ -121,13 +123,18 @@ defmodule Vutuv.YoutubeThumbnail do
   #
   # Best-effort by design: an unparseable or surprising answer still yields a
   # thumbnail, it just yields no words with it. The request runs with
-  # `decode_body: false` (see `get/1`), so the body is the raw JSON.
+  # `decode_body: false` (see `get/1`), so the body is the raw JSON, and
+  # `Http.decode/1` is the shared reader that refuses an oversized one.
+  #
+  # Only what oEmbed actually said, under this app's own key names. What a card
+  # does with it — that a video has no teaser, that `youtube.com` is the label
+  # when the answer names no provider — is not this module's call to make; see
+  # `Vutuv.Posts.Screenshots.card_fields/2`, which tolerates a missing key.
   defp oembed_meta(body) when is_binary(body) do
-    case Jason.decode(body) do
+    case Http.decode(body) do
       {:ok, %{} = json} ->
         %{
           title: Post.presence(json["title"]),
-          description: nil,
           site_name: Post.presence(json["provider_name"]),
           host: "youtube.com"
         }
@@ -136,8 +143,6 @@ defmodule Vutuv.YoutubeThumbnail do
         nil
     end
   end
-
-  defp oembed_meta(_body), do: nil
 
   defp thumbnail(video_id, size) do
     case get("https://img.youtube.com/vi/#{video_id}/#{size}.jpg") do
@@ -163,8 +168,9 @@ defmodule Vutuv.YoutubeThumbnail do
       receive_timeout: 10_000,
       connect_options: [timeout: 5_000],
       retry: false,
-      # The bodies are a JSON we never read and a JPEG stored verbatim, so Req
-      # must not decode either (`into:` does not disable the decode step).
+      # The bodies are a JSON `oembed_meta/1` reads itself and a JPEG stored
+      # verbatim, so Req must not decode either (`into:` does not disable the
+      # decode step).
       decode_body: false,
       into: Vutuv.Http.capped_collector(@max_bytes),
       headers: [{"user-agent", Http.user_agent()}]

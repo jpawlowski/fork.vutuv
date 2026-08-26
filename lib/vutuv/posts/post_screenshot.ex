@@ -51,7 +51,6 @@ defmodule Vutuv.Posts.PostScreenshot do
 
   use VutuvWeb, :model
 
-  alias Vutuv.LinkSummary
   alias Vutuv.Moderation.ImageScans
   alias Vutuv.OpenGraph
 
@@ -86,10 +85,17 @@ defmodule Vutuv.Posts.PostScreenshot do
     # One sentence saying what the linked page is about (`Vutuv.LinkSummary`,
     # issue #1709) — the card's teaser where the page published no
     # `og:description` of its own (`teaser/1`). Written by a local model off the
-    # whole page, capped at 200 characters before it is stored, and `nil`
-    # whenever that did not happen — the installation does not summarise links
-    # (off by default), the page answered nothing readable, the model was not
-    # reachable. Never cast from member params; nothing user-facing writes it.
+    # whole page and `nil` whenever that did not happen: the installation does
+    # not summarise links (off by default), the page answered nothing readable,
+    # the model was not reachable. Never cast from member params; nothing
+    # user-facing writes it.
+    #
+    # Its length cap lives in `LinkSummary.max_chars/0` and nowhere else. Unlike
+    # the three columns above it, this one never passes through
+    # `result_changeset/2` — `Screenshots.write_summary/2` writes it by id with
+    # `update_all`, deliberately, so a row that vanished during the model call
+    # is a no-op rather than a raise — so a `validate_length` here would read as
+    # a guarantee and enforce nothing.
     field(:summary, :string)
     field(:width, :integer)
     field(:height, :integer)
@@ -135,7 +141,7 @@ defmodule Vutuv.Posts.PostScreenshot do
 
   That order is the whole division of labour between the two, in one place: the
   publisher's blurb is written by someone who knows the page, our summary is a
-  stand-in for when nobody wrote one. `Vutuv.Posts.Screenshots.summarize/1`
+  stand-in for when nobody wrote one. `Vutuv.Posts.Screenshots.summarize/2`
   never asks the model when a description is already there, so in practice at
   most one of the two columns is filled — this stays an ordering rather than a
   race.
@@ -152,15 +158,24 @@ defmodule Vutuv.Posts.PostScreenshot do
   # column later is one edit here, not four across two modules.
   @card_fields [:source, :title, :description, :site_name, :summary]
 
-  @doc "The card columns a capture result may write; `no_card/0` clears them."
-  def card_fields, do: @card_fields
+  @doc """
+  The card columns a capture result may write; `no_card/0` clears them.
+
+  Called `card_columns` and not `card_fields` because
+  `Vutuv.Posts.Screenshots.card_fields/2` already means something else in the
+  same call chain — a map of card *values* built from a page's metadata — and
+  the two sat four lines apart there.
+  """
+  def card_columns, do: @card_fields
 
   @doc """
   The card half of a row, blanked: no words, and `source` back to the plain
   capture default. What a refresh writes (the row is about to describe a
   different page) and what a dismissal writes (there is no card any more).
   """
-  def no_card, do: Map.new(@card_fields, &{&1, nil}) |> Map.put(:source, "screenshot")
+  @no_card @card_fields |> Map.from_keys(nil) |> Map.put(:source, "screenshot")
+
+  def no_card, do: @no_card
 
   @doc """
   Whether the author said no to this preview — the tombstone the composer's
@@ -223,6 +238,5 @@ defmodule Vutuv.Posts.PostScreenshot do
     |> validate_length(:title, max: OpenGraph.max_title())
     |> validate_length(:description, max: OpenGraph.max_description())
     |> validate_length(:site_name, max: OpenGraph.max_site_name())
-    |> validate_length(:summary, max: LinkSummary.max_chars())
   end
 end
