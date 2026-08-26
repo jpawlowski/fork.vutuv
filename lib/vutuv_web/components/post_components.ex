@@ -4927,9 +4927,17 @@ defmodule VutuvWeb.PostComponents do
   end
 
   @doc """
-  The **link preview card**: what a linked page publishes about itself
-  (`Vutuv.OpenGraph`) — its image, the site it is on, its headline and the first
-  line or two of its teaser.
+  The **link preview card**: the site a link goes to, its headline, and the
+  first line or two of a teaser.
+
+  One shape for every link, whatever the page gave us. The picture is the
+  publisher's own `og:image` where they declare one and our capture of the page
+  where they do not; the headline is their `og:title` or, failing that, the
+  `<title>` every page has; the teaser is their `og:description` or, failing
+  that, the sentence `Vutuv.LinkSummary` wrote (`PostScreenshot.teaser/1` holds
+  that order). None of those distinctions is visible to a reader, and none of
+  them should be: letting them pick the layout is what made two posts linking
+  two ordinary pages look like two different features.
 
   A different shape from `link_screenshot_image/1` on purpose. A bare capture
   says nothing, so it is decorative and floats beside the prose at a third of
@@ -5016,13 +5024,58 @@ defmodule VutuvWeb.PostComponents do
         `sm:line-clamp-2` re-shows it, because `line-clamp` sets its own
         `display` and so beats `hidden` from the same cascade. --%>
         <p
-          :if={@card.description}
+          :if={PostScreenshot.teaser(@card)}
           class="m-0 hidden text-xs text-slate-600 sm:line-clamp-2 dark:text-slate-400"
         >
-          {@card.description}
+          {PostScreenshot.teaser(@card)}
         </p>
       </div>
     </.link>
+    """
+  end
+
+  @doc """
+  The card's **placeholder**, in the card's own shape — used by the composer
+  while the preview is still being made.
+
+  Deliberately the strip and not a line of prose where the strip will be. Once
+  the picture can come from a Chromium capture rather than from a page's own
+  `og:image`, the wait is seconds rather than milliseconds — and on an
+  installation that summarises links there is a model call after it. A text
+  note that is replaced by a 7rem strip reads as the page breaking, not as the
+  preview arriving; reserving the shape means the card fades in where the
+  placeholder stood.
+
+  It shares the strip's classes with `link_preview_card/1` above by sitting
+  next to it: two elements this close have to be read together to be kept
+  together, and no amount of extraction makes that true from a distance.
+
+  `role="status"` announces the wait on its own rather than having the whole
+  composer re-read; the message says which wait it is.
+  """
+  attr(:message, :string, required: true)
+  attr(:class, :string, default: nil)
+
+  def link_preview_skeleton(assigns) do
+    ~H"""
+    <div
+      role="status"
+      data-link-preview-skeleton
+      class={[
+        "flex h-20 items-center overflow-hidden rounded-xl bg-slate-50 ring-1 ring-slate-200 sm:h-28 dark:bg-slate-800/60 dark:ring-slate-800",
+        @class
+      ]}
+    >
+      <span class="flex h-full w-24 shrink-0 items-center justify-center bg-slate-200 sm:w-40 dark:bg-slate-700">
+        <.hourglass class="h-5 w-5 text-slate-500 dark:text-slate-400" />
+      </span>
+      <%!-- `m-0` for the same reason the card's lines carry it: `components.css`
+      gives every `p` a bottom margin, and inside a fixed-height strip that
+      pushes the text out of it. --%>
+      <div class="min-w-0 px-3 py-2">
+        <p class="m-0 text-sm text-slate-600 dark:text-slate-400">{@message}</p>
+      </div>
+    </div>
     """
   end
 

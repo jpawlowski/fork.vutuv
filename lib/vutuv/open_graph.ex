@@ -73,14 +73,21 @@ defmodule Vutuv.OpenGraph do
   def max_site_name, do: @max_site_name
 
   @doc """
-  The preview `url` publishes about itself: `{:ok, meta}` with at least
-  `:title` and `:image_url` set, or `:error`.
+  The words `url` publishes about itself: `{:ok, meta}` with at least a
+  `:title`, or `:error`.
 
-  `:error` covers everything that is not a usable card — the flag is off, the
+  **A usable `:image_url` is not required.** A page that declares `og:image`
+  gives the card its picture; one that does not still gives it a headline, and
+  the picture then comes from our own capture — the card is the same card
+  either way, which is the point (issue #1706). Only the caller knows which of
+  the two it is looking at, so this reports what the page said and decides
+  nothing.
+
+  `:error` covers everything that yields no words at all — the flag is off, the
   host is internal, the page did not answer a plain HTTP 200 (a redirect is not
-  followed, matching the capture path's rule), it is not HTML, or it declares no
-  title/image. The caller then captures the page as before, so a page without
-  Open Graph tags is exactly as well served as it is today.
+  followed, matching the capture path's rule), it is not HTML, or it declares
+  neither `og:title` nor a `<title>`. The caller then captures the page and
+  shows it without a headline, as it did before any of this.
   """
   def fetch(url) when is_binary(url) do
     with true <- enabled?(),
@@ -89,8 +96,7 @@ defmodule Vutuv.OpenGraph do
            get(url, "text/html,application/xhtml+xml", @max_head_bytes),
          true <- html?(resp),
          body when is_binary(body) <- resp.body,
-         %{title: title, image_url: image} = meta when is_binary(title) and is_binary(image) <-
-           parse(body, url) do
+         %{title: title} = meta when is_binary(title) <- parse(body, url) do
       {:ok, Map.put(meta, :host, host)}
     else
       _other -> :error
@@ -142,10 +148,11 @@ defmodule Vutuv.OpenGraph do
   guard rails, this is the reading.
   """
   def parse(html, page_url) when is_binary(html) do
-    tags = html |> capped() |> strip_comments() |> head_slice() |> meta_tags()
+    head = html |> capped() |> strip_comments() |> head_slice()
+    tags = meta_tags(head)
 
     %{
-      title: pick(tags, ["og:title", "twitter:title"], @max_title),
+      title: pick(tags, ["og:title", "twitter:title"], @max_title) || document_title(head),
       description: pick(tags, ["og:description", "twitter:description"], @max_description),
       site_name: pick(tags, ["og:site_name"], @max_site_name),
       image_url:
@@ -261,15 +268,36 @@ defmodule Vutuv.OpenGraph do
   # way. nil when none of the keys carries anything but whitespace.
   defp pick(tags, keys, max) do
     case Enum.find_value(keys, &Map.get(tags, &1)) do
-      value when is_binary(value) ->
-        value
-        |> decode_entities()
-        |> String.replace(~r/\s+/u, " ")
-        |> Post.presence()
-        |> clamp(max)
+      value when is_binary(value) -> normalise(value, max)
+      _missing -> nil
+    end
+  end
 
-      _missing ->
-        nil
+  defp normalise(value, max) do
+    value
+    |> decode_entities()
+    |> String.replace(~r/\s+/u, " ")
+    |> Post.presence()
+    |> clamp(max)
+  end
+
+  # `[^>]*` and not `.*?`, so an unclosed `<title` cannot swallow the head:
+  # `s` makes `.` match newlines, and a title element legitimately spans lines.
+  @title_regex ~r/<title[^>]*>(.*?)<\/title>/is
+
+  # The `<title>` element, standing in as the headline for a page that declares
+  # no `og:title` — which is most of the web, and the whole reason a card can be
+  # built for a page that publishes no preview at all: the picture then comes
+  # from our own capture, but the words still come from the page.
+  #
+  # It is a worse headline than `og:title` on purpose-built pages (it carries
+  # the site name, a separator, sometimes an SEO tail), which is exactly why it
+  # is the LAST choice rather than a peer. Same normalisation as a meta value:
+  # a `<title>` is entity-encoded and frequently indented across three lines.
+  defp document_title(head) do
+    case Regex.run(@title_regex, head, capture: :all_but_first) do
+      [text] -> normalise(text, @max_title)
+      _none -> nil
     end
   end
 

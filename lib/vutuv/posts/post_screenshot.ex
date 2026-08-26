@@ -4,13 +4,20 @@ defmodule Vutuv.Posts.PostScreenshot do
   once captured, the attachment record. Created for a post that carries a single
   URL and no image (see `Vutuv.Posts.Screenshots`).
 
-  **Two kinds of preview, one row.** `source` says which: `"open_graph"` is the
-  preview the linked page publishes about itself (`Vutuv.OpenGraph` — the
-  publisher's own `title`, `description`, `site_name` and image, rendered as a
-  card below the post), `"screenshot"` a headless-Chromium photograph of the
-  page (the fallback, floated beside the text). Both store their image in
-  `screenshot` through the same uploader, so everything downstream — storage,
-  moderation, retries, dismissal, the admin views — is shared.
+  **One card, two sources for its picture.** `source` says where the image came
+  from: `"open_graph"` is the artwork the linked page publishes about itself
+  (`Vutuv.OpenGraph`), `"screenshot"` a headless-Chromium photograph of the page.
+  Both store it in `screenshot` through the same uploader, so everything
+  downstream — storage, moderation, retries, dismissal, the admin views — is
+  shared, and both render as the same card.
+
+  What decides the **shape** is `card?/1` — whether there are words to put in
+  one — and not `source`. A page's `og:title` is the headline where it has one
+  and its `<title>` otherwise; the teaser is its `og:description` or, failing
+  that, `summary`. Only a page that answered nothing at all keeps the old bare
+  float. A reader cannot see which source a picture came from, so letting that
+  pick the layout made two posts linking two ordinary pages look like two
+  different features (issue #1706).
 
   **Three owners, one queue.** A row belongs to exactly one of a member's post
   (`post_id`), a cached fediverse post from a followed account
@@ -59,19 +66,23 @@ defmodule Vutuv.Posts.PostScreenshot do
     field(:status, :string, default: "pending")
     field(:source, :string, default: "screenshot")
 
-    # The linked page's own Open Graph preview, `nil` on a screenshot row. Read
-    # from the page by `Vutuv.OpenGraph`, which caps each value on ingest; the
-    # columns are `text` because a remote page's metadata is not ours to bound.
+    # What the linked page says about itself, on a row of either source: read by
+    # `Vutuv.OpenGraph`, which caps each value on ingest. `title` falls back to
+    # the `<title>` element, so a page with no meta tags at all still has a
+    # headline; `description` and `site_name` are Open Graph only, and `nil`
+    # where the page declares neither. The columns are `text` because a remote
+    # page's metadata is not ours to bound.
     field(:title, :string)
     field(:description, :string)
     field(:site_name, :string)
     field(:screenshot, :string)
 
-    # One sentence saying what the linked page is about, for the preview's
-    # hover tooltip (`Vutuv.LinkSummary`, issue #1709). Written by a local
-    # model off the whole page, capped at 200 characters before it is stored,
-    # and `nil` whenever that did not happen — the installation does not
-    # summarise links, the page answered nothing readable, the model was not
+    # One sentence saying what the linked page is about (`Vutuv.LinkSummary`,
+    # issue #1709) — the card's teaser where the page published no
+    # `og:description` of its own (`teaser/1`). Written by a local model off the
+    # whole page, capped at 200 characters before it is stored, and `nil`
+    # whenever that did not happen — the installation does not summarise links
+    # (off by default), the page answered nothing readable, the model was not
     # reachable. Never cast from member params; nothing user-facing writes it.
     field(:summary, :string)
     field(:width, :integer)
@@ -91,19 +102,41 @@ defmodule Vutuv.Posts.PostScreenshot do
   def statuses, do: @statuses
 
   @doc """
-  Whether this preview is the page's **own** card (Open Graph) rather than a
-  capture of it — the one question the render path asks, because the two are
-  laid out differently: a card carries text and gets the full width below the
-  post, a bare screenshot floats beside it.
+  Whether this preview has **words** — a headline — and so renders as a card
+  rather than as a bare floated capture. The one question the render path asks,
+  because the two are laid out differently: a card carries text and gets the
+  full width below the post, a bare capture floats beside it.
 
-  Matches on the `source` **column** and the presence of a title, never on a
-  preloaded association or on "does it happen to have a description": a row
-  that says `open_graph` but never got a headline has nothing card-shaped to
-  show.
+  Deliberately **not** "did the page publish Open Graph". Where the picture came
+  from is invisible to a reader, and making it decide the shape produced two
+  unrelated renderings of the same act — a member posts a link, and whether they
+  get a card depended on whether a stranger had maintained their meta tags. The
+  picture is the publisher's artwork when they offer one and our capture when
+  they do not; `source` records which, and the card looks the same either way.
+
+  Matches on the `title` **column**, never on a preloaded association: a row
+  that got no headline at all has nothing card-shaped to show and keeps the
+  float.
   """
-  def card?(%__MODULE__{source: "open_graph", title: title}) when is_binary(title), do: true
+  def card?(%__MODULE__{title: title}) when is_binary(title), do: true
   def card?(%__MODULE__{}), do: false
   def card?(nil), do: false
+
+  @doc """
+  The card's teaser: the publisher's own `og:description` where there is one,
+  otherwise the sentence `Vutuv.LinkSummary` wrote about the page (issue
+  #1709), otherwise `nil`.
+
+  That order is the whole division of labour between the two, in one place: the
+  publisher's blurb is written by someone who knows the page, our summary is a
+  stand-in for when nobody wrote one. `Vutuv.Posts.Screenshots.summarize/1`
+  never asks the model when a description is already there, so in practice at
+  most one of the two columns is filled — this stays an ordering rather than a
+  race.
+  """
+  def teaser(%__MODULE__{description: description}) when is_binary(description), do: description
+  def teaser(%__MODULE__{summary: summary}) when is_binary(summary), do: summary
+  def teaser(%__MODULE__{}), do: nil
 
   @doc """
   Whether a captured screenshot is ready to render — captured **and**
@@ -121,9 +154,13 @@ defmodule Vutuv.Posts.PostScreenshot do
   `url` is a bare `http(s)` string extracted from the post body (`text` column,
   but capped so a pathological URL can't blow past a sane length).
 
-  A refresh also clears the card fields and puts `source` back to `screenshot`:
-  the row is about to describe a **different page**, and a stale headline
-  surviving beside the new page's image would be the worst of both.
+  A refresh also clears **every** word on the row and puts `source` back to
+  `screenshot`: it is about to describe a **different page**, and a stale
+  headline surviving beside the new page's image would be the worst of both.
+  `summary` belongs in that reset for exactly the same reason the other three
+  do — it is a sentence about the old page, and since it now renders inside the
+  card (`teaser/1`) rather than in a hover tooltip, leaving it behind would put
+  one page's description under another page's headline.
   """
   def enqueue_changeset(post_screenshot, url) do
     post_screenshot
@@ -131,7 +168,13 @@ defmodule Vutuv.Posts.PostScreenshot do
     |> validate_required([:url])
     |> validate_length(:url, max: 2000)
     |> validate_inclusion(:status, @statuses)
-    |> change(%{source: "screenshot", title: nil, description: nil, site_name: nil})
+    |> change(%{
+      source: "screenshot",
+      title: nil,
+      description: nil,
+      site_name: nil,
+      summary: nil
+    })
   end
 
   @doc """

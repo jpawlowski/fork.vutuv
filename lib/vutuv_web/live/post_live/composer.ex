@@ -1485,15 +1485,12 @@ defmodule VutuvWeb.PostLive.Composer do
             post itself floats, so the composer cannot drift from what ships. --%>
             <PostComponents.link_screenshot_image screenshot={@preview} class="w-40" />
           <% {:note, message} -> %>
+            <%!-- A settled answer ("no preview", "this page offers none") is a
+            line of prose: nothing is going to appear, so reserving the strip's
+            height would leave a hole that never fills. --%>
             <p class="text-sm text-slate-600 dark:text-slate-400">{message}</p>
           <% {:waiting, message} -> %>
-            <p
-              class="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400"
-              role="status"
-            >
-              <.hourglass class="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
-              {message}
-            </p>
+            <PostComponents.link_preview_skeleton message={message} />
         <% end %>
       </div>
 

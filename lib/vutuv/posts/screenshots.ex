@@ -608,37 +608,62 @@ defmodule Vutuv.Posts.Screenshots do
   # that; everything else — and any trouble along the way — takes the Chromium
   # path, exactly as before.
   defp capture_and_store(%PostScreenshot{} = job) do
-    with :fallback <- youtube_capture(job),
-         :fallback <- open_graph_capture(job) do
-      page_capture_and_store(job)
+    with :fallback <- youtube_capture(job) do
+      # Read once, use twice. Whether the page hands over an image decides only
+      # which branch supplies the card's PICTURE — its words are the same words
+      # either way, and fetching them a second time for the capture branch
+      # would be a second GET on the same page for an answer already in hand.
+      # `nil` when the page said nothing readable; both branches take that.
+      meta =
+        case OpenGraph.fetch(job.url) do
+          {:ok, meta} -> meta
+          :error -> nil
+        end
+
+      with :fallback <- open_graph_capture(job, meta) do
+        page_capture_and_store(job, meta)
+      end
     end
   end
 
   # The Open Graph branch: `{:ok, result}` with the page's own image stored and
-  # its headline carried alongside, or `:fallback` — the flag is off, the page
-  # answered no usable metadata, or its image could not be fetched or stored.
+  # its words carried alongside, or `:fallback` — the page declared no image, or
+  # that image could not be fetched or stored, and the capture branch then
+  # supplies the picture for the same words.
   #
-  # Note this costs one extra GET on a page that publishes nothing: the fetch
-  # here and `ensure_http_ok/1` below are deliberately independent, so the
-  # capture path keeps its own status classification (which drives the retry
-  # cap) instead of inheriting a decision made for a different question.
-  defp open_graph_capture(%PostScreenshot{} = job) do
-    with {:ok, meta} <- OpenGraph.fetch(job.url),
-         {:ok, bytes, extension} <- OpenGraph.fetch_image(meta.image_url),
+  # Note the metadata GET and `ensure_http_ok/1` below are deliberately
+  # independent, so the capture path keeps its own status classification (which
+  # drives the retry cap) instead of inheriting a decision made for a different
+  # question.
+  defp open_graph_capture(%PostScreenshot{} = job, %{image_url: image} = meta)
+       when is_binary(image) do
+    with {:ok, bytes, extension} <- OpenGraph.fetch_image(image),
          {:ok, result} <- store_remote_image(job, bytes, extension) do
-      {:ok,
-       Map.merge(result, %{
-         source: "open_graph",
-         title: meta.title,
-         description: meta.description,
-         # A page that names no og:site_name is labelled by its host, which is
-         # what a reader is checking anyway ("where does this go?").
-         site_name: meta.site_name || meta.host
-       })}
+      {:ok, Map.merge(result, card_fields("open_graph", meta))}
     else
       _other -> :fallback
     end
   end
+
+  defp open_graph_capture(%PostScreenshot{}, _meta), do: :fallback
+
+  # The card's words, from whichever branch got them. One function because the
+  # two branches differ in where the PICTURE comes from and in nothing else —
+  # writing the same three keys twice is how the screenshot card would drift
+  # away from the Open Graph one again.
+  #
+  # A page that names no og:site_name is labelled by its host, which is what a
+  # reader is checking anyway ("where does this go?").
+  defp card_fields(source, %{} = meta) do
+    %{
+      source: source,
+      title: meta.title,
+      description: meta.description,
+      site_name: meta.site_name || meta.host
+    }
+  end
+
+  defp card_fields(source, nil), do: %{source: source}
 
   # The YouTube branch: `{:ok, result}` with the stored thumbnail, or
   # `:fallback` — not a YouTube video URL, a video oEmbed doesn't know
@@ -678,7 +703,7 @@ defmodule Vutuv.Posts.Screenshots do
   # The classic capture: capture only a plain HTTP-200 link, then reuse the
   # shared pipeline and store through the same uploader profile links use.
   # Returns the stored filename + display size.
-  defp page_capture_and_store(%PostScreenshot{} = job) do
+  defp page_capture_and_store(%PostScreenshot{} = job, meta) do
     with :ok <- ensure_http_ok(job.url),
          {:ok, framed_path} <- Vutuv.PageScreenshot.capture_framed(job.url, job.id) do
       upload = %Plug.Upload{
@@ -690,7 +715,11 @@ defmodule Vutuv.Posts.Screenshots do
       result =
         case Vutuv.Screenshot.store({upload, job}) do
           {:ok, file_name} ->
-            {:ok, %{screenshot: file_name, width: @display_width, height: @display_height}}
+            {:ok,
+             Map.merge(
+               %{screenshot: file_name, width: @display_width, height: @display_height},
+               card_fields("screenshot", meta)
+             )}
 
           {:error, reason} ->
             {:error, reason}

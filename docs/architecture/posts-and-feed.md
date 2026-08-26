@@ -1491,9 +1491,33 @@ licensable.
 
 A post that carries **at least one URL and no image attachment** gets an
 automatic preview of the linked page, built off the request path so the save is
-never slowed. There are two kinds, and which one a post gets is the `source`
-column on its row: the page's **own** preview (Open Graph) where it publishes
-one, a **screenshot** of it where it does not.
+never slowed. It renders as **one card** for every link — a landscape strip
+below the post, picture left and words right.
+
+**Where each half of that card comes from is invisible to the reader, and that
+is deliberate.** The `source` column records where the *picture* came from: the
+artwork the page publishes about itself (`open_graph`) or a headless-Chromium
+`screenshot` of it. The words are assembled per field, best source first:
+
+| the card's… | first choice | fallback | last resort |
+| --- | --- | --- | --- |
+| picture | `og:image` | our capture | — |
+| headline | `og:title` | the `<title>` element | *(no headline → no card)* |
+| teaser | `og:description` | `Vutuv.LinkSummary`'s sentence | *(none — the card shows two lines)* |
+| site | `og:site_name` | the URL's host | — |
+
+An earlier cut let `source` pick the *layout* — an Open Graph page got the card,
+everything else the old capture floated beside the prose. Two posts linking two
+ordinary pages then looked like two different features, and which one a member
+got depended on whether a stranger had maintained their meta tags. So the
+question the render path asks is `PostScreenshot.card?/1`: **are there words to
+put in a card** — not where the picture came from. Only a page that answered
+nothing at all (no `og:title`, no `<title>`) keeps the bare float.
+
+`PostScreenshot.teaser/1` owns the description-then-summary order in one place,
+and `Screenshots.summarize/1` never asks the model about a page that already
+published an `og:description` — the publisher's blurb is written by someone who
+knows the page, and ours is a stand-in for when nobody wrote one.
 
 **Which link, and who decides.** The preview is for the link the author chose,
 defaulting to the **first** one in the text (`candidate_urls/1` lists them in
@@ -1555,6 +1579,21 @@ links *did* change it arms a single one-shot timer (`settle_link_preview`) so a
 member who simply stops typing still gets their preview — the confirming
 autosave would otherwise never come, which is a bug this had until it was driven
 in a browser. The cost is that the card appears one pause after the text.
+
+**The wait has the card's shape** (`link_preview_skeleton/1`), not a line of
+prose where the card will be. Once the picture can come from a Chromium capture
+rather than from a page's own `og:image`, that wait is seconds rather than
+milliseconds — and on an installation that summarises links there is a model
+call after it. A text note replaced by a 7rem strip reads as the page breaking;
+reserving the shape means the card fades in where the placeholder stood, and the
+Post button below it never moves. A *settled* answer ("no preview", "this page
+offers none") stays a line of prose: nothing is coming, so reserving height
+would leave a hole that never fills.
+
+Note this moves the capture **earlier**, not extra: a draft's row is adopted by
+the post on publish, so the same page is captured once either way. Only an
+abandoned draft costs a capture that nothing ends up showing, and those are
+swept with their files (`delete_for_drafts/1`).
 
 On publish the row's owner simply **flips** from the draft to the post
 (`adopt_draft/2`, called from the composer before the draft is deleted): the row

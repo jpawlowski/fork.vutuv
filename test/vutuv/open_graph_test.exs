@@ -146,6 +146,46 @@ defmodule Vutuv.OpenGraphTest do
       assert OpenGraph.parse("<html><body>plain</body></html>", "https://example.test/") ==
                %{title: nil, description: nil, site_name: nil, image_url: nil}
     end
+
+    test "the <title> element stands in when og:title is missing" do
+      meta =
+        "<html><head><title>Plain old page</title></head><body>hi</body></html>"
+        |> OpenGraph.parse("https://example.test/article")
+
+      assert meta.title == "Plain old page"
+    end
+
+    test "og:title beats the <title> element" do
+      meta =
+        ~s(<html><head><title>SEO tail | Example</title>) <>
+          ~s(<meta property="og:title" content="The headline"></head></html>)
+
+      assert OpenGraph.parse(meta, "https://example.test/article").title == "The headline"
+    end
+
+    test "a <title> gets the same entity decoding and whitespace collapse as a meta value" do
+      meta =
+        "<html><head><title>\n  Bild &amp; Ton\n  </title></head></html>"
+        |> OpenGraph.parse("https://example.test/article")
+
+      assert meta.title == "Bild & Ton"
+    end
+
+    test "a commented-out <title> is not the page's headline either" do
+      meta =
+        "<html><head><!-- <title>Old draft</title> --><title>Real</title></head></html>"
+        |> OpenGraph.parse("https://example.test/article")
+
+      assert meta.title == "Real"
+    end
+
+    test "an empty <title> counts as absent" do
+      meta =
+        "<html><head><title>   </title></head></html>"
+        |> OpenGraph.parse("https://example.test/article")
+
+      assert meta.title == nil
+    end
   end
 
   describe "fetch/1" do
@@ -173,11 +213,27 @@ defmodule Vutuv.OpenGraphTest do
       assert meta.host == "example.test"
     end
 
-    test "a page that declares no image is not a card" do
+    test "a page that declares no image still yields its words" do
       stub(fn conn ->
         respond(conn, 200, "text/html", html(~s(<meta property="og:title" content="Just words">)))
       end)
 
+      assert {:ok, meta} = OpenGraph.fetch("https://example.test/article")
+      assert meta.title == "Just words"
+      assert meta.image_url == nil
+    end
+
+    test "a page with no meta tags at all is carried by its <title>" do
+      stub(fn conn ->
+        respond(conn, 200, "text/html", "<html><head><title>Plain page</title></head></html>")
+      end)
+
+      assert {:ok, meta} = OpenGraph.fetch("https://example.test/article")
+      assert meta.title == "Plain page"
+    end
+
+    test "a page with neither is no card at all" do
+      stub(fn conn -> respond(conn, 200, "text/html", html("")) end)
       assert OpenGraph.fetch("https://example.test/article") == :error
     end
 

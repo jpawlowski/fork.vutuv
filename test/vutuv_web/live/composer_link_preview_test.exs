@@ -106,8 +106,12 @@ defmodule VutuvWeb.ComposerLinkPreviewTest do
 
       html = type(live, "Schau mal: #{@first}")
 
-      # Fetching, said out loud rather than an empty box.
+      # Fetching, said out loud rather than an empty box — and in the card's
+      # own shape, so the finished card does not shove the Post button down the
+      # page when it lands. That matters more now the picture can come from a
+      # Chromium capture, which takes seconds rather than milliseconds.
       assert html =~ "data-composer-link-preview"
+      assert html =~ "data-link-preview-skeleton"
       assert html =~ "Fetching the preview"
 
       Screenshots.deliver_due(force: true)

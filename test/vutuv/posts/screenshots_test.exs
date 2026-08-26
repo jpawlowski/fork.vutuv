@@ -383,6 +383,74 @@ defmodule Vutuv.Posts.ScreenshotsTest do
       assert Repo.get_by!(PostScreenshot, post_id: post.id).summary == nil
     end
 
+    test "the model is never asked about a page that published its own teaser" do
+      post = url_post(user())
+      {:ok, _job} = Screenshots.reconcile(post)
+      test_pid = self()
+
+      stub_summary("Der Satz, den das Modell geschrieben hätte.")
+
+      Application.put_env(:vutuv, :link_summary_req_options,
+        plug: fn conn ->
+          send(test_pid, :page_read_for_summary)
+          Plug.Conn.send_resp(conn, 500, "")
+        end
+      )
+
+      Screenshots.deliver_due(
+        force: true,
+        capture: fn _job ->
+          {:ok,
+           %{
+             screenshot: "0123456789ab.avif",
+             width: 400,
+             height: 264,
+             source: "open_graph",
+             title: "Ein Titel",
+             description: "Der Klappentext des Verlegers.",
+             site_name: "Example Times"
+           }}
+        end
+      )
+
+      job = Repo.get_by!(PostScreenshot, post_id: post.id)
+      assert job.description == "Der Klappentext des Verlegers."
+      assert job.summary == nil
+      # Not merely "no summary was stored": the page was never even fetched, so
+      # this is a skipped model call rather than a failed one.
+      refute_received :page_read_for_summary
+    end
+
+    test "a captured page that carries words is the same card an og:image page gets" do
+      post = url_post(user())
+      {:ok, _job} = Screenshots.reconcile(post)
+
+      # What `page_capture_and_store/2` now returns for a page whose `<title>`
+      # was readable but which declared no og:image: our own picture, the
+      # page's own headline.
+      Screenshots.deliver_due(
+        force: true,
+        capture: fn _job ->
+          {:ok,
+           %{
+             screenshot: "0123456789ab.avif",
+             width: 400,
+             height: 264,
+             source: "screenshot",
+             title: "Eine ganz gewöhnliche Seite",
+             description: nil,
+             site_name: "example.com"
+           }}
+        end
+      )
+
+      job = Repo.get_by!(PostScreenshot, post_id: post.id)
+      assert job.source == "screenshot"
+      assert job.title == "Eine ganz gewöhnliche Seite"
+      assert job.site_name == "example.com"
+      assert PostScreenshot.card?(job)
+    end
+
     test "a transient failure keeps the job pending with backoff" do
       post = url_post(user())
       {:ok, _job} = Screenshots.reconcile(post)
@@ -908,6 +976,28 @@ defmodule Vutuv.Posts.ScreenshotsTest do
       assert job.title == nil
       assert job.description == nil
       assert job.site_name == nil
+    end
+
+    test "editing the link clears the summary too, not only the card's words" do
+      post = url_post(user())
+      {:ok, job} = Screenshots.reconcile(post)
+
+      # The state the summariser leaves behind: a sentence about the OLD page.
+      # It renders inside the card now (`PostScreenshot.teaser/1`) rather than
+      # in a hover tooltip, so leaving it on the row would put one page's
+      # description under the next page's headline.
+      {:ok, _summarised} =
+        job
+        |> Ecto.Changeset.change(status: "ready", summary: "Über die alte Seite.")
+        |> Repo.update()
+
+      {:ok, updated} =
+        Posts.update_post(Repo.preload(post, [:images, :tags]), %{
+          body: "Now this one: https://example.com/other"
+        })
+
+      {:ok, job} = Screenshots.reconcile(updated)
+      assert job.summary == nil
     end
 
     test "the author's removal takes the card's words with it", %{png: png} do

@@ -176,7 +176,7 @@ defmodule VutuvWeb.PostScreenshotRenderTest do
       refute html =~ "post-clamp--wrap"
     end
 
-    test "a row marked open_graph but carrying no headline is not a card", %{conn: conn} do
+    test "a row carrying no headline is not a card", %{conn: conn} do
       post = post_with_card(author(), title: nil)
 
       html = html_response(get(conn, Posts.path(post)), 200)
@@ -184,6 +184,69 @@ defmodule VutuvWeb.PostScreenshotRenderTest do
       refute html =~ "data-link-card"
       # It falls back to the float rather than rendering an empty card.
       assert html =~ "data-link-screenshot"
+    end
+  end
+
+  # The half of the contract that is easy to lose: for a reader the card is one
+  # thing, and where its picture came from is not a distinction they can see.
+  # Every assertion here would have passed just as well when `card?/1` asked
+  # `source == "open_graph"` — except the ones that use `source: "screenshot"`,
+  # which is the point.
+  describe "our own capture, in the same card" do
+    test "a captured page with a headline is a card, not a float", %{conn: conn} do
+      post =
+        post_with_screenshot(author(),
+          status: "ready",
+          screenshot: "abcdef012345.avif",
+          source: "screenshot",
+          title: "Die Überschrift der Seite",
+          site_name: "example.com"
+        )
+
+      html = html_response(get(conn, Posts.path(post)), 200)
+
+      assert html =~ "data-link-card"
+      assert html =~ "Die Überschrift der Seite"
+      assert html =~ "example.com"
+      refute html =~ "data-link-screenshot"
+    end
+
+    test "the summary stands in as the teaser where the page offered none", %{conn: conn} do
+      post =
+        post_with_screenshot(author(),
+          status: "ready",
+          screenshot: "abcdef012345.avif",
+          source: "screenshot",
+          title: "Die Überschrift der Seite",
+          summary: "Was auf dieser Seite steht, in einem Satz."
+        )
+
+      html = html_response(get(conn, Posts.path(post)), 200)
+
+      # As TEXT in the card, not as the float's `title=` tooltip. Asserting the
+      # bare sentence passes either way — the float carries the same words in
+      # an attribute — which is exactly how the first version of this test
+      # stayed green against the un-fixed code.
+      assert html =~ "data-link-card"
+      assert html =~ "Was auf dieser Seite steht, in einem Satz."
+      refute html =~ ~s(title="Was auf dieser Seite steht)
+    end
+
+    test "the publisher's own teaser wins over our summary", %{conn: conn} do
+      post =
+        post_with_screenshot(author(),
+          status: "ready",
+          screenshot: "abcdef012345.avif",
+          source: "open_graph",
+          title: "Ein Titel",
+          description: "Der Klappentext des Verlegers.",
+          summary: "Unser Ersatzsatz."
+        )
+
+      html = html_response(get(conn, Posts.path(post)), 200)
+
+      assert html =~ "Der Klappentext des Verlegers."
+      refute html =~ "Unser Ersatzsatz."
     end
   end
 
