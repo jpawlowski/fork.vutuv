@@ -213,7 +213,7 @@ post's link preview may read the linked page's own words — its `og:title` /
 is one card either way; this flag decides how much of that card the page itself
 fills in. Off, the picture is always a Chromium capture and the card has no
 headline, so it falls back to the small floated screenshot beside the post,
-which is the behaviour before v7.381.0), and
+which is the behaviour before v7.383.0), and
 `:serve_uploads_locally` (see nginx below).
 
 ## systemd
