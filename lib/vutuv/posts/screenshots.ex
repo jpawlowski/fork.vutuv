@@ -527,6 +527,37 @@ defmodule Vutuv.Posts.Screenshots do
   @doc "Loads one job by id, raising when it is gone (the admin views' reads)."
   def get_job!(id), do: Repo.get!(PostScreenshot, id)
 
+  @doc """
+  The link preview each of these posts carries — `post_ids` are members' posts,
+  `remote_post_ids` cached ones — keyed by the id of the post whose row it is.
+  Posts with no preview are simply absent.
+
+  One query for a whole page rather than one per row, because the caller is
+  `Vutuv.MastodonApi.Presenter`'s page renderer, which bundles everything else
+  it reads the same way. The two lists stay apart so each owner column is
+  probed only with the ids that could be in it; both carry a unique index.
+
+  **Deliberately not read off the `:screenshot` preload.** A dozen endpoints
+  hand that renderer posts from a dozen queries, and a card that silently
+  depends on whether one of them remembered a preload is the shape that has
+  bitten this codebase before — here it would not raise but answer "this link
+  has no preview", which is the very bug the caller exists to fix.
+
+  A post id and a cached post's id are both `Vutuv.UUIDv7`, so the two owner
+  columns share one map without a key ever meaning two things. A draft's row is
+  never named: nothing outside the composer may see a post that is not posted.
+  """
+  def preview_map([], []), do: %{}
+
+  def preview_map(post_ids, remote_post_ids)
+      when is_list(post_ids) and is_list(remote_post_ids) do
+    from(ps in PostScreenshot,
+      where: ps.post_id in ^post_ids or ps.remote_post_id in ^remote_post_ids
+    )
+    |> Repo.all()
+    |> Map.new(&{&1.post_id || &1.remote_post_id, &1})
+  end
+
   ## Draining the queue
 
   @doc """

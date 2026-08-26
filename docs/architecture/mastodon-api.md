@@ -256,6 +256,37 @@ rest). A cached *reply* carries no pictures at all — there is no note-image
 table and the inbox stores none — so its empty `media_attachments` is the
 answer, not a gap.
 
+**The link preview under a single-link post travels too** (issue #1715). It
+was on both sides of this adapter all along and only the website passed it on —
+`card` was hardcoded `nil` — so the same post showed a preview in a browser and
+a bare URL in an app. `Presenter.preview_card/1` builds Mastodon's `PreviewCard` from
+the `post_screenshots` row `Vutuv.Posts.Screenshots` already captured — the
+page's headline, its teaser and the site it belongs to — for a member's post
+and for a cached one alike. **The picture named is always ours**: our server
+fetched it and serves it under `/screenshots/`, so reading a status in an app
+tells the linked host nothing, which is the same care the website's card takes
+with its `rel="noreferrer"`.
+
+Whether there is a card at all is asked with the website's own predicates
+rather than a copy of them — `PostScreenshot.card?/1` (a row with no headline
+is a bare capture, and an empty `title` is a grey tile in every client) and
+`ready?/1` (captured *and* released by the AI image scan). A dismissal fails
+both, since the author's tombstone clears the words along with the picture. A
+status that names pictures carries no card either, which is the website's
+`images: []` gate asked against the attachments the payload actually holds:
+the queue never gives a post with a picture a preview row, so this catches only
+a stale one — the ordinary case on an installation with `:generate_screenshots`
+off, where nothing reconciles the row away after the edit that added it.
+
+Two deliberate stops: where the website shows a blurred stand-in while the scan
+is out, a client is given no card until the scan finishes — it has no badge to
+explain a blur; and a cached post behind a content warning gets none either,
+because a client hides `media_attachments` behind `sensitive` and has never
+hidden a card. The rows are batched for a whole page
+(`Screenshots.preview_map/2`) rather than read off the `:screenshot` preload:
+a dozen endpoints feed this renderer, and a missing preload would answer "this
+link has no preview" instead of raising.
+
 The three counts are `Vutuv.MastodonApi.AccountCounts`, one query per figure for
 a whole page rather than three per row — ours are real aggregates where
 Mastodon's are counter columns. Leaving them at the entity's zeroes was not "no

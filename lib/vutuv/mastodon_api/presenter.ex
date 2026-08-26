@@ -19,6 +19,8 @@ defmodule Vutuv.MastodonApi.Presenter do
   alias Vutuv.Posts
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostImage
+  alias Vutuv.Posts.PostScreenshot
+  alias Vutuv.Posts.Screenshots
   alias Vutuv.Profiles.Url
   alias Vutuv.Profiles.VerifiedLinks
   alias Vutuv.RemoteMedia
@@ -156,6 +158,12 @@ defmodule Vutuv.MastodonApi.Presenter do
       # `:images` is never preloaded on a `%RemotePost{}` — every surface in this
       # codebase batches them by id, and so does this one.
       remote_images: Fediverse.list_remote_images(remote_ids),
+      # The preview card under a single-link post, of either world (issue
+      # #1715), batched for the reason `Screenshots.preview_map/1` gives: a
+      # dozen endpoints feed this renderer, and reading the `:screenshot`
+      # preload would answer "this link has no preview" wherever one of them
+      # forgot it, rather than raise.
+      link_previews: Screenshots.preview_map(post_ids, remote_ids),
       # The local post each cached reply answers (issue #1622), batched and
       # already scoped to what `viewer` may see.
       note_parents: Posts.visible_posts_by_ids(viewer, note_parent_ids),
@@ -381,6 +389,7 @@ defmodule Vutuv.MastodonApi.Presenter do
     # inline copies and the attachments must reach the same file the same way.
     photo_viewer = if restricted?(post, engagement), do: context.viewer
     content = content_html(post, photo_viewer)
+    attachments = media_attachments(post, photo_viewer)
 
     fields =
       %{
@@ -390,7 +399,8 @@ defmodule Vutuv.MastodonApi.Presenter do
         url: MastodonApi.main_url(Posts.path(post)),
         uri: MastodonApi.main_url(Posts.path(post)),
         account: account(author),
-        media_attachments: media_attachments(post, photo_viewer),
+        media_attachments: attachments,
+        card: preview_card(attachments, context.link_previews[post.id]),
         visibility: visibility(post, engagement),
         language: post.language,
         edited_at: edited_at(post),
@@ -404,6 +414,8 @@ defmodule Vutuv.MastodonApi.Presenter do
   end
 
   defp status(%RemotePost{} = post, context) do
+    attachments = remote_attachments(post, context)
+
     fields =
       %{
         id: status_id(post),
@@ -412,7 +424,8 @@ defmodule Vutuv.MastodonApi.Presenter do
         url: post.origin_url || post.object_uri,
         uri: post.object_uri,
         account: account(post.remote_account),
-        media_attachments: remote_attachments(post, context),
+        media_attachments: attachments,
+        card: remote_preview_card(post, attachments, context),
         sensitive: post.sensitive,
         spoiler_text: post.summary || ""
       }
@@ -1076,6 +1089,109 @@ defmodule Vutuv.MastodonApi.Presenter do
 
     attachment(image, url, url, image.source_uri)
   end
+
+  # **The link preview a client is handed** (issue #1715). The preview was on
+  # both sides of this adapter all along and only the website passed it on —
+  # `card` was hardcoded `nil` — so the same single-link post showed a card in
+  # a browser and a bare URL in an app.
+  #
+  # Mastodon's `PreviewCard`, from the row `Vutuv.Posts.Screenshots` already
+  # captured — never a second fetch, and never the linked host's own address.
+  # The picture is one WE stored and serve, so reading a status in an app tells
+  # the linked site nothing, exactly as `link_preview_card/1` on the website
+  # takes care not to (its `rel="noreferrer"` and its `/screenshots/` `src`).
+  #
+  # The row gates are the website's own predicates rather than copies of them
+  # (`PostScreenshot.card?/1`, `ready?/1`), so a card can never mean one thing
+  # here and another there:
+  #
+  #   * **words** — a row with no headline is a bare capture on the website, and
+  #     a `PreviewCard` whose `title` is empty is a grey tile in every client.
+  #   * **ready** — captured *and* released by the AI image scan. A dismissal
+  #     (`Screenshots.dismiss/1`) fails this and `card?/1` both, since the
+  #     tombstone clears the words along with the picture, so the author's "no
+  #     preview" reaches a client by two independent routes.
+  #
+  # **A status that carries pictures carries no link card**, which is the
+  # website's `images: []` gate (`VutuvWeb.PostComponents.link_preview/1`) asked
+  # against the attachments this payload actually names. The queue never gives a
+  # post with a picture a preview row, so this only ever catches a stale one —
+  # and a stale row is not hypothetical on an installation with
+  # `:generate_screenshots` off, where `Posts.reconcile_screenshot/1` does not
+  # run at all and therefore never drops the row an edit invalidated.
+  #
+  # Where the website goes one step further and shows a blurred stand-in while
+  # the scan is out (issue #1720), this stops: the blur reads as a picture
+  # rather than as a wait without the badge beside it, and no client has a
+  # placecard for one. Such a post carries no card until the scan finishes,
+  # which is what `card: null` has always meant to a client — "nothing to draw"
+  # — rather than something it must interpret.
+  defp preview_card([], %PostScreenshot{} = preview) do
+    if PostScreenshot.card?(preview) and PostScreenshot.ready?(preview) do
+      # Once per card and not three times: naming the file asks the disk for it
+      # (`Vutuv.Screenshot.url/2`), and the two dimensions describe that same
+      # picture, so they fall to zero with it.
+      image = card_image(preview)
+
+      %{
+        url: preview.url,
+        title: preview.title,
+        description: PostScreenshot.teaser(preview) || "",
+        # Always `link`. `photo`/`video`/`rich` promise a client an embed to
+        # play in place (`html`, `embed_url`), and we hold none — a YouTube
+        # card here is the thumbnail and the video's title, which is a link.
+        type: "link",
+        # The site as the card's own top line prints it: the page's
+        # `og:site_name`, or the host where it publishes none.
+        provider_name: preview.site_name || "",
+        image: image,
+        # Mastodon types these as strings, not as nullable ones, and a client
+        # decoding the card into non-optional fields drops the whole card over
+        # a null — the same trap `fallback_header/0` exists for.
+        author_name: "",
+        author_url: "",
+        provider_url: "",
+        html: "",
+        embed_url: "",
+        blurhash: nil,
+        # The card's display size, which is what a client reserves space with;
+        # the stored AVIF is 2x it for HiDPI, so the ratio is the same either
+        # way. Zero, Mastodon's own "unknown", when there is no picture.
+        width: card_dimension(image, preview.width),
+        height: card_dimension(image, preview.height)
+      }
+    end
+  end
+
+  # No row, or a status whose pictures are the thing to look at.
+  defp preview_card(_attachments, _no_card), do: nil
+
+  # The same for a cached post, plus the one gate a member's post cannot fail:
+  # **a content warning closes the card too.** The queue already refuses a
+  # warned post (`Vutuv.Posts.Screenshots`), so this catches the row whose post
+  # was warned by a later `Update` — and it matters more here than on the
+  # website, because a client hides `media_attachments` behind `sensitive` and
+  # has never hidden a card. Propping open a lid its author closed is precisely
+  # what the preview must not do.
+  defp remote_preview_card(%RemotePost{} = post, attachments, context) do
+    if RemotePost.warned?(post),
+      do: nil,
+      else: preview_card(attachments, context.link_previews[post.id])
+  end
+
+  # Our own stored thumb, absolute like every other URL here. `nil` rather than
+  # `Vutuv.Screenshot.placeholder_url/0` for a row whose file is not on disk:
+  # the website draws the bundled stand-in in the card's picture cell, where it
+  # reads as "no screenshot", and a client drawing that same tile has no such
+  # cell to explain it. The words are still true, so the card stays.
+  defp card_image(%PostScreenshot{} = preview) do
+    path = Vutuv.Screenshot.url({preview.screenshot, preview}, :thumb)
+
+    if path != Vutuv.Screenshot.placeholder_url(), do: MastodonApi.main_url(path)
+  end
+
+  defp card_dimension(nil, _no_picture), do: 0
+  defp card_dimension(_image, value), do: value || 0
 
   defp safe_html(value), do: value |> Safe.to_iodata() |> IO.iodata_to_binary()
 
