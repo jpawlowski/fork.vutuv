@@ -1491,7 +1491,7 @@ defmodule VutuvWeb.PostLive.Composer do
               class="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400"
               role="status"
             >
-              <PostComponents.hourglass class="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+              <.hourglass class="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
               {message}
             </p>
         <% end %>
