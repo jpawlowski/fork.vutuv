@@ -5004,6 +5004,15 @@ defmodule VutuvWeb.PostComponents do
   bare URL in the prose above, so a screen reader gains a line rather than
   hearing the same address twice. `nofollow ugc` because the target is a
   member-supplied outbound link.
+
+  `noreferrer` is the load-bearing one, and it is not decoration: the *picture*
+  cannot be tracked (our server fetched it and this `img src` is our own
+  `/screenshots/` path, so a reader's device never speaks to the linked host),
+  which leaves the click as the single moment the target learns a vutuv reader
+  exists. `VutuvWeb.Markdown` already withholds the referrer from the autolinked
+  URL two lines above this card; without the same `rel` here, which of the two
+  copies of one address a reader happened to click would decide what the target
+  gets told.
   """
   attr(:card, :any, required: true)
   attr(:pixelated_url, :any, default: nil, doc: "set while the AI scan holds the card's image")
@@ -5019,7 +5028,7 @@ defmodule VutuvWeb.PostComponents do
     <.link
       href={@card.url}
       target="_blank"
-      rel="noopener nofollow ugc"
+      rel="ugc nofollow noopener noreferrer"
       data-link-card
       class={[link_strip_class(), "transition hover:ring-brand-400", @class]}
     >
@@ -5153,7 +5162,7 @@ defmodule VutuvWeb.PostComponents do
       href={@screenshot.url}
       title={PostScreenshot.teaser(@screenshot)}
       target="_blank"
-      rel="noopener"
+      rel="noopener noreferrer"
       aria-hidden="true"
       tabindex="-1"
       data-link-screenshot

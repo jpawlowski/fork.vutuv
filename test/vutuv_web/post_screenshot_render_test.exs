@@ -164,6 +164,34 @@ defmodule VutuvWeb.PostScreenshotRenderTest do
       assert tag =~ "nofollow"
     end
 
+    test "the linked host learns nothing about the reader", %{conn: conn} do
+      post = post_with_card(author())
+
+      html = html_response(get(conn, Posts.path(post)), 200)
+
+      assert [card] = Regex.run(~r|<a[^>]*data-link-card.*?</a>|s, html)
+
+      # The picture is OURS, and the assertion is on the SHAPE of the address
+      # rather than on one path: `Vutuv.OpenGraph.fetch_image/1` downloaded the
+      # page's `og:image` on the server and `store_remote_image/2` wrote it
+      # under `/screenshots/`, and where that file is missing or held by the AI
+      # scan the strip shows a local stand-in instead — three paths, all of
+      # them ours, and the invariant that matters is that none of them is
+      # absolute. The remote address is used once, in that fetch, and is not
+      # even a column on the row. So a reader's browser makes no request to the
+      # linked host while merely scrolling past — the same bargain
+      # `Vutuv.RemoteMedia` strikes for fediverse images.
+      assert [_img, src] = Regex.run(~r/<img[^>]*src="([^"]*)"/, card)
+      assert String.starts_with?(src, "/")
+      refute String.starts_with?(src, "//")
+
+      # Which leaves the click as the only moment the target hears from anyone,
+      # and it hears no more than the bare URL in the prose above already tells
+      # it: `VutuvWeb.Markdown` withholds the referrer there, and a reader who
+      # clicks the card instead of the text must not be worse off for it.
+      assert card =~ "noreferrer"
+    end
+
     test "the same card on the profile preview, and no float clamp with it", %{conn: conn} do
       user = author()
       _post = post_with_card(user)
