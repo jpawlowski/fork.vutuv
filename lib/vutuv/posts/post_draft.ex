@@ -50,6 +50,13 @@ defmodule Vutuv.Posts.PostDraft do
     belongs_to(:parent, Post)
     belongs_to(:remote_note, Vutuv.Fediverse.Note)
 
+    # The link preview the composer is showing for this draft, so the author
+    # sees the card before publishing and can pick which link it is for (issue
+    # #1714). It is the very same `post_screenshots` row the post will own
+    # after publishing — `Vutuv.Posts.Screenshots.adopt_draft/2` only moves the
+    # owner. Cascades with the draft, files and all.
+    has_one(:screenshot, Vutuv.Posts.PostScreenshot)
+
     field(:body, :string, default: "")
     field(:tags, :string, default: "")
     field(:license, :string)

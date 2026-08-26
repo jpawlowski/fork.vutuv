@@ -12,12 +12,19 @@ defmodule Vutuv.Posts.PostScreenshot do
   `screenshot` through the same uploader, so everything downstream — storage,
   moderation, retries, dismissal, the admin views — is shared.
 
-  **Two owners, one queue.** A row belongs to exactly one of a member's post
-  (`post_id`) or a cached fediverse post from a followed account
-  (`remote_post_id`, `Vutuv.Fediverse.RemotePost`) — a DB check constraint
-  enforces the exactly-one. Everything downstream (worker, capture, YouTube
-  thumbnail, retries, AI moderation, admin views) is shared; only the enqueue
-  trigger and the "who is told when it's ready" differ per owner.
+  **Three owners, one queue.** A row belongs to exactly one of a member's post
+  (`post_id`), a cached fediverse post from a followed account
+  (`remote_post_id`, `Vutuv.Fediverse.RemotePost`), or the composer draft the
+  post is still being written in (`post_draft_id`, `Vutuv.Posts.PostDraft`) — a
+  DB check constraint enforces the exactly-one. Everything downstream (worker,
+  capture, YouTube thumbnail, retries, AI moderation, admin views) is shared;
+  only the enqueue trigger and the "who is told when it's ready" differ.
+
+  The draft owner is what makes the preview visible **before** the post exists
+  (issue #1714). On publish the row's owner flips from the draft to the post
+  (`Vutuv.Posts.Screenshots.adopt_draft/2`) — the row keeps its id, so the
+  stored files stay where they are and the AI scan is not run a second time on
+  the same bytes.
 
   The row is the queue: a `pending`/`capturing`/`failed` row is work the
   `Vutuv.Posts.ScreenshotWorker` drains, so a restart or re-deploy loses
@@ -46,6 +53,7 @@ defmodule Vutuv.Posts.PostScreenshot do
   schema "post_screenshots" do
     belongs_to(:post, Vutuv.Posts.Post)
     belongs_to(:remote_post, Vutuv.Fediverse.RemotePost)
+    belongs_to(:post_draft, Vutuv.Posts.PostDraft)
 
     field(:url, :string)
     field(:status, :string, default: "pending")

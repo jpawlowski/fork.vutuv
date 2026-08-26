@@ -1464,18 +1464,29 @@ licensable.
 
 ## Link previews
 
-A post that carries **exactly one URL and no image attachment** gets an
+A post that carries **at least one URL and no image attachment** gets an
 automatic preview of the linked page, built off the request path so the save is
 never slowed. There are two kinds, and which one a post gets is the `source`
 column on its row: the page's **own** preview (Open Graph) where it publishes
-one, a **screenshot** of it where it does not. The subsystem is `Vutuv.Posts.Screenshots` with the
+one, a **screenshot** of it where it does not.
+
+**Which link, and who decides.** The preview is for the link the author chose,
+defaulting to the **first** one in the text (`candidate_urls/1` lists them in
+order, minus the internal and blocklisted ones; `qualifying_url/1` is that
+list's head). It used to be "exactly one URL or nothing", so a post with two
+links silently got no preview at all. The choice needs no column of its own: the
+row already records which page it describes, so `reconcile/1` keeps the URL that
+is on the row as long as it is still in the text, and falls back to the first
+otherwise. The subsystem is `Vutuv.Posts.Screenshots` with the
 `post_screenshots` table (one row per post, unique `post_id`), which is **both
 the durable queue and the attachment record**: a `pending`/`capturing`/`failed`
 row is work, a `ready` row carries the stored screenshot.
 
-The queue serves **two owners**: a member's post (`post_id`) and a cached
+The queue serves **three owners**: a member's post (`post_id`), a cached
 fediverse post from a followed account (`remote_post_id`,
-`Vutuv.Fediverse.RemotePost`; a check constraint enforces exactly one). The
+`Vutuv.Fediverse.RemotePost`) and the composer draft a post is still being
+written in (`post_draft_id`, see below; a check constraint enforces exactly
+one). The
 remote side's qualifying rule, wiring and cleanup live in
 `fediverse.md` ("Their link previews"); everything below — worker, probe,
 Open Graph branch, YouTube branch, retries, moderation, admin views — is shared.
@@ -1495,6 +1506,35 @@ link. Entries are domains or URLs — see
 [images.md](images.md) for the grammar. The same blocklist gates the
 profile-link previews inside `capture_framed/2` (returning `:blocklisted`, a
 permanent outcome).
+
+**The author sees it before publishing (issue #1714).** The queue serves a
+**third** owner: the composer draft the post is still being written in
+(`post_draft_id`, `Vutuv.Posts.PostDraft`). `VutuvWeb.PostLive.Composer`
+reconciles it from the **debounced draft autosave**, so somebody typing a URL
+costs one fetch when they pause rather than one per keystroke, and renders the
+card exactly as the post will (`Vutuv.Posts.reconcile_draft_preview/1`). Beneath
+it sits one button per link in the text plus **No preview**, all
+`aria-pressed`, so the current choice is visible rather than remembered
+(`choose/2`; a URL that is not in the author's own text is refused rather than
+fetched, since this arrives from the browser). Turning it off writes the same
+`dismissed` tombstone the edit page's Remove button writes — one answer to
+"they said no", not two — and pressing the link again lifts it.
+
+On publish the row's owner simply **flips** from the draft to the post
+(`adopt_draft/2`, called from the composer before the draft is deleted): the row
+keeps its id, so the stored image never moves, the AI verdict on those bytes
+still stands, and there is no gap where the just-published post has no preview.
+The `pending` row `create_post/2`'s own reconcile had just enqueued is dropped
+in the same transaction. A draft that is discarded or swept takes its preview's
+**files** with it (`Screenshots.delete_for_drafts/1`) — the row cascades, the
+files never do. Draft-owned rows are excluded from the `/admin/screenshots`
+views: they are somebody's unpublished half-written post, and have no page to
+link a row to.
+
+A LiveComponent cannot subscribe to PubSub, so rather than teach all four host
+LiveViews to forward a broadcast, the composer **polls** for its own row
+(`send_update_after/3`, 1.5s, at most 20 times, and only while a fetch is
+actually in flight).
 
 **The page's own preview comes first (issue #1706).** Most sites publish one —
 Open Graph's `og:title` / `og:description` / `og:site_name` / `og:image` — and

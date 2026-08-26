@@ -64,6 +64,8 @@ defmodule VutuvWeb.PostLive.Composer do
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostDraft
   alias Vutuv.Posts.PostImage
+  alias Vutuv.Posts.PostScreenshot
+  alias Vutuv.Posts.Screenshots
   alias Vutuv.Uploads.Spec
   alias VutuvWeb.ErrorHelpers
   alias VutuvWeb.PostComponents
@@ -76,6 +78,12 @@ defmodule VutuvWeb.PostLive.Composer do
   # needs a handler for it.
   @impl true
   def update(%{save_draft: true}, socket), do: {:ok, persist_draft(socket)}
+
+  # The link-preview poll (issue #1714). A LiveComponent cannot subscribe to
+  # PubSub itself, so instead of teaching all four host LiveViews to forward a
+  # broadcast, the composer asks again a few times while a fetch is in flight.
+  # It is a handful of cheap reads over a few seconds, and it stops by itself.
+  def update(%{check_link_preview: true}, socket), do: {:ok, refresh_link_preview(socket)}
 
   def update(assigns, socket) do
     socket =
@@ -175,6 +183,11 @@ defmodule VutuvWeb.PostLive.Composer do
     # True while an autosave is already queued, so a burst of keystrokes
     # schedules one write rather than one per character.
     |> assign(:draft_scheduled?, false)
+    # The link preview the author is looking at, the links they can point it
+    # at, and how many more times the poll above may ask (issue #1714).
+    |> assign(:link_preview, nil)
+    |> assign(:link_candidates, [])
+    |> assign(:preview_checks_left, 0)
     # Bumped only when the editor is meant to take `@body` again (the post-save
     # reset, "Discard draft"). Everything else that changes `@body` is the
     # member's own typing coming back, and the editor must keep the prose and
@@ -257,6 +270,11 @@ defmodule VutuvWeb.PostLive.Composer do
       |> assign(:layout, GalleryLayout.cast(draft.layout))
       |> assign(:fill?, draft.fill? == true)
       |> assign(:restored_draft?, true)
+      # A draft that came back with a link in it already has its preview; show
+      # it at once rather than making the author type another character to see
+      # what they had (issue #1714).
+      |> assign_link_preview(draft)
+      |> schedule_preview_check()
     else
       _no_draft -> socket
     end
@@ -333,7 +351,106 @@ defmodule VutuvWeb.PostLive.Composer do
       })
     end
 
-    assign(socket, :draft_scheduled?, false)
+    socket
+    |> assign(:draft_scheduled?, false)
+    |> sync_link_preview()
+  end
+
+  ## Link preview (issue #1714)
+
+  # The draft's preview follows the draft: this runs on the same debounced
+  # autosave, so somebody typing a URL causes one fetch when they pause rather
+  # than one per keystroke. The draft is re-read because `save_draft/3` deletes
+  # an emptied one, and then there is nothing to preview either.
+  defp sync_link_preview(socket) do
+    case current_draft(socket) do
+      %PostDraft{} = draft ->
+        Posts.reconcile_draft_preview(draft)
+        socket |> assign_link_preview(draft) |> schedule_preview_check()
+
+      nil ->
+        assign(socket, link_preview: nil, link_candidates: [], preview_checks_left: 0)
+    end
+  end
+
+  defp current_draft(socket) do
+    assigns = socket.assigns
+
+    if draftable?(assigns),
+      do: Posts.get_draft(assigns.current_user, draft_context(assigns))
+  end
+
+  defp assign_link_preview(socket, %PostDraft{} = draft) do
+    socket
+    |> assign(:link_preview, Posts.draft_link_preview(draft))
+    |> assign(:link_candidates, Screenshots.candidate_urls(draft))
+  end
+
+  # Poll only while something is actually in flight, and only for a bounded
+  # while: a fetch is a second or two, a Chromium fallback rather more, and a
+  # job that has failed or been dismissed will never change on its own.
+  @preview_check_ms 1_500
+  @preview_checks 20
+
+  defp schedule_preview_check(socket) do
+    if pending_preview?(socket.assigns.link_preview) do
+      send_update_after(
+        __MODULE__,
+        [id: socket.assigns.id, check_link_preview: true],
+        @preview_check_ms
+      )
+
+      assign(socket, :preview_checks_left, @preview_checks)
+    else
+      assign(socket, :preview_checks_left, 0)
+    end
+  end
+
+  # Still going: the fetch itself, or the AI image check behind it. A stored
+  # picture that the scan has not released yet is `ready` on the row and not
+  # ready to show, and stopping the poll there would leave the author looking
+  # at a spinner that never resolves.
+  defp pending_preview?(%PostScreenshot{status: status} = preview),
+    do:
+      status in ~w(pending capturing) or
+        (status == "ready" and not PostScreenshot.ready?(preview))
+
+  defp pending_preview?(_preview), do: false
+
+  defp refresh_link_preview(socket) do
+    left = socket.assigns[:preview_checks_left] || 0
+
+    case current_draft(socket) do
+      %PostDraft{} = draft when left > 0 ->
+        socket = assign_link_preview(socket, draft)
+
+        if pending_preview?(socket.assigns.link_preview) do
+          send_update_after(
+            __MODULE__,
+            [id: socket.assigns.id, check_link_preview: true],
+            @preview_check_ms
+          )
+
+          assign(socket, :preview_checks_left, left - 1)
+        else
+          assign(socket, :preview_checks_left, 0)
+        end
+
+      _done ->
+        assign(socket, :preview_checks_left, 0)
+    end
+  end
+
+  # The published post takes over the preview the author was looking at, before
+  # the draft (and with it the row) is deleted — otherwise the card would blink
+  # out and be fetched a second time.
+  defp adopt_link_preview(socket, post) do
+    case current_draft(socket) do
+      %PostDraft{} = draft -> Posts.adopt_draft_preview(draft, post)
+      nil -> :ok
+    end
+
+    assign(socket, link_preview: nil, link_candidates: [], preview_checks_left: 0)
   end
 
   # Called once the post is really saved, and by the notice's "Discard".
@@ -833,6 +950,25 @@ defmodule VutuvWeb.PostLive.Composer do
     {:noreply, socket |> drop_draft() |> reset_composer()}
   end
 
+  def handle_event("choose-link-preview", %{"url" => choice}, socket) do
+    # The draft is written first: the member may have typed the link seconds
+    # ago and the debounced autosave may not have run yet, so without this the
+    # choice would be refused as "not one of the links in your text".
+    socket = persist_draft(socket)
+
+    socket =
+      case current_draft(socket) do
+        %PostDraft{} = draft ->
+          Posts.choose_draft_preview(draft, decode_choice(choice))
+          socket |> assign_link_preview(draft) |> schedule_preview_check()
+
+        nil ->
+          socket
+      end
+
+    {:noreply, socket}
+  end
+
   def handle_event("save", %{"post" => params} = payload, socket) do
     # The submitted texts are the truth (a keystroke may not have round-tripped
     # through `validate` yet), so merge them before writing.
@@ -985,8 +1121,9 @@ defmodule VutuvWeb.PostLive.Composer do
     # The post exists now, so the draft that was standing in for it goes. Doing
     # it here rather than in each branch below covers all four: three of them
     # navigate away and would otherwise leave a draft behind that reopens the
-    # composer with a copy of what was just published.
-    socket = drop_draft(socket)
+    # composer with a copy of what was just published. The preview moves over
+    # first — deleting the draft would take the row with it.
+    socket = socket |> adopt_link_preview(post) |> drop_draft()
 
     cond do
       socket.assigns.post ->
@@ -1243,6 +1380,136 @@ defmodule VutuvWeb.PostLive.Composer do
   # `input_class/0` is the shared Direction A field recipe, imported from
   # `VutuvWeb.UI` (also used by the auth pages) so the look stays in one place.
 
+  defp decode_choice("none"), do: :none
+  defp decode_choice(url), do: url
+
+  # The composer's own view of the link preview: the finished card, or the line
+  # that says one is on its way — plus, when the text carries more than one
+  # link, which of them it is for.
+  attr(:id, :string, required: true)
+  attr(:preview, :any, default: nil)
+  attr(:candidates, :list, required: true)
+  attr(:myself, :any, required: true)
+
+  defp composer_link_preview(assigns) do
+    assigns =
+      assigns
+      |> assign(:ready?, assigns.preview && PostScreenshot.ready?(assigns.preview))
+      |> assign(:dismissed?, match?(%PostScreenshot{status: "dismissed"}, assigns.preview))
+      |> assign(:chosen, assigns.preview && assigns.preview.url)
+
+    ~H"""
+    <div class="mt-3" data-composer-link-preview>
+      <.section_title>{gettext("Link preview")}</.section_title>
+
+      <div class="mt-2">
+        <%= cond do %>
+          <% @dismissed? -> %>
+            <p class="text-sm text-slate-600 dark:text-slate-400">
+              {gettext("This post goes out without a link preview.")}
+            </p>
+          <% @ready? and PostScreenshot.card?(@preview) -> %>
+            <PostComponents.link_preview_card card={@preview} />
+          <% @ready? -> %>
+            <%!-- A capture, not the page's own card: shown at the size it will
+            have beside the text, so the author sees the real thing. --%>
+            <img
+              src={Vutuv.Screenshot.url({@preview.screenshot, @preview}, :thumb)}
+              width="200"
+              height="132"
+              alt=""
+              class="aspect-[400/264] w-40 rounded-lg object-cover ring-1 ring-slate-200 dark:ring-slate-800"
+            />
+          <% @preview && @preview.status == "failed" -> %>
+            <p class="text-sm text-slate-600 dark:text-slate-400">
+              {gettext("This page offers no preview. The post goes out with the plain link.")}
+            </p>
+          <%!-- Fetched, but the picture is still in the AI gate every image
+          goes through. Saying "fetching" here would be a lie about which of
+          the two waits the author is in, and the wording matches the one the
+          post card already uses for a photo. --%>
+          <% @preview && @preview.status == "ready" -> %>
+            <p
+              class="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400"
+              role="status"
+            >
+              <PostComponents.hourglass class="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+              {gettext("The preview image is being checked. It appears here by itself.")}
+            </p>
+          <% true -> %>
+            <p
+              class="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-400"
+              role="status"
+            >
+              <PostComponents.hourglass class="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+              {gettext("Fetching the preview…")}
+            </p>
+        <% end %>
+      </div>
+
+      <%!-- The choice: one button per link plus the off switch, all of them
+      pressed-or-not so the current state is visible rather than remembered.
+      The links are rendered even when there is only one — otherwise "No
+      preview" would be a switch with no way back, which is exactly what a test
+      caught. The label only appears once there is a real choice to make. --%>
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <span :if={length(@candidates) > 1} class="text-xs text-slate-600 dark:text-slate-400">
+          {gettext("Preview for:")}
+        </span>
+        <button
+          :for={url <- @candidates}
+          type="button"
+          phx-click="choose-link-preview"
+          phx-value-url={url}
+          phx-target={@myself}
+          aria-pressed={to_string(url == @chosen and not @dismissed?)}
+          class={[
+            "max-w-56 truncate rounded-lg px-2 py-1 text-xs font-semibold",
+            if(url == @chosen and not @dismissed?,
+              do: "bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-100",
+              else:
+                "bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+            )
+          ]}
+        >
+          {link_label(url)}
+        </button>
+        <button
+          type="button"
+          phx-click="choose-link-preview"
+          phx-value-url="none"
+          phx-target={@myself}
+          aria-pressed={to_string(@dismissed?)}
+          class={[
+            "rounded-lg px-2 py-1 text-xs font-semibold",
+            if(@dismissed?,
+              do: "bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-100",
+              else:
+                "bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+            )
+          ]}
+        >
+          {gettext("No preview")}
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  # A link as a person recognises it: the host without `www.`, then as much of
+  # the path as fits. The full URL is in the text above; this is a label on a
+  # button, not the address itself.
+  defp link_label(url) do
+    uri = URI.parse(url)
+    host = String.replace_prefix(uri.host || url, "www.", "")
+
+    case uri.path do
+      nil -> host
+      "/" -> host
+      path -> host <> path
+    end
+  end
+
   @impl true
   def render(assigns) do
     # Read off the per-photo state rather than kept beside it, so the select
@@ -1368,6 +1635,18 @@ defmodule VutuvWeb.PostLive.Composer do
           <%!-- The editor is always on screen: a post is one kind, words
           first, whether or not pictures join it below. --%>
           <.body_editor id={@id} body={@body} post={@post} seed={@editor_seed} />
+
+          <%!-- The link preview, as it will look on the card (issue #1714).
+          Shown while writing so nobody publishes a preview they have not seen,
+          and only in the composer that has a draft — the edit page keeps its
+          own Remove control instead. --%>
+          <.composer_link_preview
+            :if={@link_candidates != []}
+            id={@id}
+            preview={@link_preview}
+            candidates={@link_candidates}
+            myself={@myself}
+          />
 
           <%!-- The photo grid, whenever photos are attached: they come large
           in their own aspect ratio, with their caption and camera switch in

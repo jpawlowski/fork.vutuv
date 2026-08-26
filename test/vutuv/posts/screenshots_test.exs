@@ -77,13 +77,28 @@ defmodule Vutuv.Posts.ScreenshotsTest do
       assert Screenshots.qualifying_url(post) == :none
     end
 
-    test "does not qualify: zero or two URLs" do
+    test "does not qualify: no URL at all" do
       assert Screenshots.qualifying_url(%Posts.Post{images: [], body: "no link here"}) == :none
+      assert Screenshots.candidate_urls(%Posts.Post{images: [], body: "no link here"}) == []
+    end
 
-      assert Screenshots.qualifying_url(%Posts.Post{
-               images: [],
-               body: "https://a.test and https://b.test"
-             }) == :none
+    test "two URLs: the first is the default, both are offered (issue #1714)" do
+      post = %Posts.Post{images: [], body: "https://a.test and https://b.test"}
+
+      # This used to be `:none` — a post with two links silently got no
+      # preview. Now the first one is previewed and the author can switch.
+      assert Screenshots.qualifying_url(post) == {:ok, "https://a.test"}
+      assert Screenshots.candidate_urls(post) == ["https://a.test", "https://b.test"]
+    end
+
+    test "a blocklisted or own-internal link is not offered as a candidate" do
+      post = %Posts.Post{
+        images: [],
+        body: "#{own_url("/settings")} and https://a.test and https://reddit.com/r/x"
+      }
+
+      assert Screenshots.candidate_urls(post) == ["https://a.test"]
+      assert Screenshots.qualifying_url(post) == {:ok, "https://a.test"}
     end
 
     test "does not qualify: this installation's own /settings, /admin or /system page" do

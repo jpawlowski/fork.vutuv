@@ -5811,8 +5811,20 @@ defmodule Vutuv.Posts do
 
   @doc "Drops the member's draft for one context (the post was sent, or discarded)."
   def delete_draft(%User{} = author, context \\ nil) do
-    Repo.delete_all(from(d in PostDraft, where: ^draft_scope(author, context)))
+    scope = draft_scope(author, context)
+    purge_draft_previews(from(d in PostDraft, where: ^scope))
+    Repo.delete_all(from(d in PostDraft, where: ^scope))
     :ok
+  end
+
+  # A draft's link preview cascades with the row but its stored image does not,
+  # so the files go first. A draft that was published has already handed its
+  # row to the post, so this matches nothing for it.
+  defp purge_draft_previews(query) do
+    query
+    |> select([d], d.id)
+    |> Repo.all()
+    |> Screenshots.delete_for_drafts()
   end
 
   @doc """
@@ -5823,8 +5835,10 @@ defmodule Vutuv.Posts do
   """
   def sweep_drafts(max_age_days \\ draft_max_age_days()) do
     cutoff = NaiveDateTime.add(NaiveDateTime.utc_now(:second), -max_age_days * 86_400)
+    stale = from(d in PostDraft, where: d.updated_at < ^cutoff)
 
-    {count, _} = Repo.delete_all(from(d in PostDraft, where: d.updated_at < ^cutoff))
+    purge_draft_previews(stale)
+    {count, _} = Repo.delete_all(stale)
     count
   end
 
@@ -5993,6 +6007,49 @@ defmodule Vutuv.Posts do
   # is unaffected.
   defp new_post_event(%Post{} = post),
     do: {:new_post, %{post_id: post.id, author_id: post.user_id, at: post.inserted_at}}
+
+  @doc """
+  The link preview the composer should show for `draft`, or `nil` — the same
+  row the post will own once it is published (issue #1714).
+  """
+  def draft_link_preview(%PostDraft{} = draft),
+    do: Repo.preload(draft, :screenshot, force: true).screenshot
+
+  @doc """
+  Brings the draft's link preview in line with what the author has typed:
+  enqueues one for the chosen link (default the first), points an existing one
+  at a different page, or drops it when the text carries no link any more.
+
+  Called from the composer's **debounced** draft autosave, so a member typing a
+  URL character by character causes one fetch when they pause, not one per
+  keystroke. Gated by `:generate_screenshots` like every other enqueue.
+  """
+  def reconcile_draft_preview(%PostDraft{} = draft) do
+    if Application.get_env(:vutuv, :generate_screenshots, true) do
+      Screenshots.reconcile(draft)
+      ScreenshotWorker.nudge()
+    end
+
+    :ok
+  end
+
+  @doc """
+  The author's pick in the composer: one of the links in their text, or `:none`
+  for no card. See `Vutuv.Posts.Screenshots.choose/2`.
+  """
+  def choose_draft_preview(%PostDraft{} = draft, choice) do
+    result = Screenshots.choose(draft, choice)
+    ScreenshotWorker.nudge()
+    result
+  end
+
+  @doc """
+  Hands the draft's preview to the post published from it, so what the author
+  saw in the composer is what the card shows — no second fetch, no gap where
+  the post has no preview yet. A no-op when the draft had none.
+  """
+  def adopt_draft_preview(%PostDraft{} = draft, %Post{} = post),
+    do: Screenshots.adopt_draft(draft, post)
 
   @doc """
   Removes a post's auto-captured link screenshot on the author's request (the
