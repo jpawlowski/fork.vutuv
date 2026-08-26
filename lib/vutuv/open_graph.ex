@@ -231,13 +231,60 @@ defmodule Vutuv.OpenGraph do
     end
   end
 
+  # The markup five, plus the **punctuation** a real headline is full of. That
+  # second half is not a nicety: `&rsquo;` is the typographic apostrophe, so
+  # without it a card headline reads `Google&rsquo;s new phone` — and a page
+  # that writes its title in HTML entities writes *all* of them that way, so
+  # the same title usually carries `&ldquo;`, `&mdash;` and `&hellip;` too.
+  #
+  # Numeric entities need no table (`codepoint/2` builds those), which is what
+  # made the gap easy to miss: `&#8217;` and `&#x2019;` — the same apostrophe —
+  # already worked, so the failure only showed on the named spelling.
+  #
+  # Accented letters are deliberately **not** here. The full HTML5 list is over
+  # two thousand names, the tail of it does not appear in `og:` values (a page
+  # that can write `og:title` at all writes UTF-8), and an unknown entity is
+  # left standing as text rather than swallowed.
   @entities %{
     "amp" => "&",
     "lt" => "<",
     "gt" => ">",
     "quot" => "\"",
     "apos" => "'",
-    "nbsp" => " "
+    "nbsp" => " ",
+    # quotes
+    "lsquo" => "‘",
+    "rsquo" => "’",
+    "sbquo" => "‚",
+    "ldquo" => "“",
+    "rdquo" => "”",
+    "bdquo" => "„",
+    "laquo" => "«",
+    "raquo" => "»",
+    "lsaquo" => "‹",
+    "rsaquo" => "›",
+    "prime" => "′",
+    # dashes and spacing
+    "ndash" => "–",
+    "mdash" => "—",
+    "minus" => "−",
+    "shy" => "",
+    "ensp" => " ",
+    "emsp" => " ",
+    "thinsp" => " ",
+    # the rest of what turns up in a headline
+    "hellip" => "…",
+    "middot" => "·",
+    "bull" => "•",
+    "trade" => "™",
+    "copy" => "©",
+    "reg" => "®",
+    "deg" => "°",
+    "euro" => "€",
+    "pound" => "£",
+    "yen" => "¥",
+    "sect" => "§",
+    "para" => "¶"
   }
 
   @entity_regex ~r/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z]+);/

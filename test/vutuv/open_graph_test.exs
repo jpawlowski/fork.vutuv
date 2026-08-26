@@ -85,6 +85,27 @@ defmodule Vutuv.OpenGraphTest do
       assert meta.image_url == "https://example.test/c.jpg?a=1&b=2"
     end
 
+    test "the punctuation a real headline is written with decodes by name too" do
+      meta =
+        html("""
+        <meta property="og:title" content="Google&rsquo;s &ldquo;phone&rdquo; &mdash; reviewed&hellip;">
+        """)
+        |> OpenGraph.parse("https://example.test/")
+
+      # The named spellings, which a page that writes entities at all uses for
+      # everything. The numeric ones (`&#8217;`) already worked, which is
+      # exactly why a card headline could ship reading `Google&rsquo;s`.
+      assert meta.title == "Google’s “phone” — reviewed…"
+    end
+
+    test "an entity this does not know is left as text, not swallowed" do
+      meta =
+        html(~s(<meta property="og:title" content="Caf&eacute; &notanentity; open">))
+        |> OpenGraph.parse("https://example.test/")
+
+      assert meta.title == "Caf&eacute; &notanentity; open"
+    end
+
     test "a relative or protocol-relative image is resolved against the page" do
       assert OpenGraph.parse(
                html(~s(<meta property="og:image" content="/img/card.jpg">)),
