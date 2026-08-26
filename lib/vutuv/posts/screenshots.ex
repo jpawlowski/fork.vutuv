@@ -62,6 +62,7 @@ defmodule Vutuv.Posts.Screenshots do
 
   alias Vutuv.Fediverse
   alias Vutuv.Fediverse.RemotePost
+  alias Vutuv.LinkSummary
   alias Vutuv.Moderation.ImageScans
   alias Vutuv.OpenGraph
   alias Vutuv.Posts.Post
@@ -580,7 +581,7 @@ defmodule Vutuv.Posts.Screenshots do
 
     case capture.(job) do
       {:ok, %{screenshot: _file} = result} ->
-        mark_ready(job, result)
+        job |> mark_ready(result) |> summarize()
 
       {:error, reason} ->
         if permanent_failure?(reason),
@@ -759,6 +760,67 @@ defmodule Vutuv.Posts.Screenshots do
     ]
     |> Keyword.merge(Application.get_env(:vutuv, @probe_req_options_key, []))
     |> Req.get()
+  end
+
+  # The preview's hover tooltip (`Vutuv.LinkSummary`, issue #1709): what the
+  # linked page is about, read off the whole page rather than off the part the
+  # picture shows.
+  #
+  # It runs **after** the row is `ready`, never before it. The picture is what
+  # a reader is waiting for, and this is a model call — putting it in front of
+  # `mark_ready/4` would hold the finished preview, the temp file and (because
+  # `Vutuv.Posts.ScreenshotWorker` drains one job at a time) every capture
+  # behind it, all for a value that only shows on hover.
+  #
+  # Strictly best-effort and deliberately not a queue of its own: every way it
+  # can come to nothing leaves `summary` `nil` and the preview exactly as it
+  # was, and nothing retries it. `:disabled` is not logged — on an installation
+  # that never turned this on it would be a line per capture saying nothing.
+  # A page that publishes its own `og:description` has already said what it is
+  # about, in its author's words — the model has nothing to add and would be
+  # spending half a minute to overwrite a better sentence with a worse one.
+  # This is the whole division of labour between the two: the publisher's blurb
+  # when there is one, ours when the page offers nothing.
+  defp summarize(%PostScreenshot{description: description} = ready)
+       when is_binary(description),
+       do: ready
+
+  defp summarize(%PostScreenshot{} = ready) do
+    case YoutubeThumbnail.video_id(ready.url) do
+      # A video's own artwork, not a photograph of a page: there is no page
+      # here to read, and the watch page would answer a consent wall anyway.
+      {:ok, _video_id} -> ready
+      :error -> store_summary(ready)
+    end
+  end
+
+  defp store_summary(%PostScreenshot{url: url} = ready) do
+    case LinkSummary.summarize(url) do
+      {:ok, summary} ->
+        write_summary(ready, summary)
+
+      {:error, :disabled} ->
+        ready
+
+      {:error, reason} ->
+        Logger.info("no link summary for #{url}: #{inspect(reason)}")
+        ready
+    end
+  end
+
+  # Written by id rather than through the struct we have been holding: the
+  # model call is allowed to take half a minute, and in that time the author
+  # can delete the post (the row cascades with it) or the AI image scan can
+  # take the screenshot away. `Repo.update/1` answers a vanished row by RAISING
+  # `Ecto.StaleEntryError`, which would leave `deliver_due/1`'s loop and take
+  # the rest of the batch with it — for a tooltip. `update_all` on the id
+  # simply writes nothing.
+  defp write_summary(%PostScreenshot{} = ready, summary) do
+    {_count, _} =
+      from(ps in PostScreenshot, where: ps.id == ^ready.id)
+      |> Repo.update_all(set: [summary: summary, updated_at: NaiveDateTime.utc_now(:second)])
+
+    %{ready | summary: summary}
   end
 
   defp mark_capturing(%PostScreenshot{} = job) do

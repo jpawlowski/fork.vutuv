@@ -173,6 +173,20 @@ config :vutuv, :precompute_translations, true
 config :vutuv, :tag_merge_assist, true
 config :vutuv, :tag_merge_assist_model, "qwen3.5:9b"
 
+# The hover tooltip on a link preview (Vutuv.LinkSummary, issue #1709): one
+# sentence, at most 200 characters, saying what the linked page is about — read
+# off the WHOLE page by a local Ollama text model, not off the part the
+# screenshot happens to show and not out of the page's own og:description.
+#
+# Default OFF, like the translations above: it costs a model an installation
+# may not have. Fail-open in every direction — flag off, no Ollama, a page that
+# answers nothing readable — leaves the preview exactly as it is today, with no
+# tooltip. It is best-effort and never retried: a capture is not worth losing
+# over a tooltip. Runtime overrides: SUMMARIZE_LINKS, LINK_SUMMARY_MODEL,
+# LINK_SUMMARY_TIMEOUT (config/runtime.exs).
+config :vutuv, :summarize_links, false
+config :vutuv, :link_summary_model, "qwen3.5:9b"
+
 # Arbeitszeugnis analysis (Vutuv.References.Checks): a member may have an
 # uploaded employment reference reviewed by a text model against an open
 # skill. Shares :ollama_url with the image moderation above.

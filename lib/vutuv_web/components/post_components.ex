@@ -5035,6 +5035,13 @@ defmodule VutuvWeb.PostComponents do
   `aria-hidden` + `tabindex=-1`, so assistive tech and the tab order keep the
   one link in the prose — opening the page in a new tab. `class` positions it
   and sets the width.
+
+  `title` is the hover tooltip (issue #1709): what the linked page is about,
+  read off the whole page by `Vutuv.LinkSummary` rather than off the part the
+  picture shows. It sits on the link rather than on the image so the tooltip
+  covers the whole tile, and `nil` renders no attribute at all — which is what
+  every capture taken before this, and every installation that does not
+  summarise links, has.
   """
   attr(:screenshot, :any, required: true)
   attr(:pixelated_url, :any, default: nil, doc: "set while the AI scan holds the capture")
@@ -5044,6 +5051,7 @@ defmodule VutuvWeb.PostComponents do
     ~H"""
     <.link
       href={@screenshot.url}
+      title={@screenshot.summary}
       target="_blank"
       rel="noopener"
       aria-hidden="true"

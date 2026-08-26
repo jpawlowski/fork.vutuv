@@ -35,6 +35,34 @@ defmodule Vutuv.Posts.ScreenshotsTest do
   defp stub_probe(fun) when is_function(fun),
     do: Application.put_env(:vutuv, :post_screenshot_req_options, plug: fun)
 
+  # Turn the link summariser on and answer both of its halves — the page and
+  # the model — so the wiring can be asserted without a network or an Ollama.
+  # Paired with the describe's on_exit.
+  defp stub_summary(sentence) do
+    Application.put_env(:vutuv, :summarize_links, true)
+
+    Application.put_env(:vutuv, :link_summary_req_options,
+      plug: fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("text/html")
+        |> Plug.Conn.send_resp(
+          200,
+          "<html><body><p>#{String.duplicate("Seitentext. ", 30)}</p></body></html>"
+        )
+      end
+    )
+
+    Application.put_env(:vutuv, :link_summary_ollama_req_options,
+      plug: fn conn ->
+        answer = %{"message" => %{"content" => Jason.encode!(%{summary: sentence})}}
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(answer))
+      end
+    )
+  end
+
   # A post whose auto-screenshot has already been captured, stored and released
   # by the AI scan — the state the author sees on the card and wants gone.
   defp ready_post(author) do
@@ -291,6 +319,19 @@ defmodule Vutuv.Posts.ScreenshotsTest do
   end
 
   describe "deliver_due/1 (draining the queue)" do
+    setup do
+      # `stub_summary/1` flips :summarize_links, which is global application
+      # env the SQL sandbox does not roll back — and the whole module is
+      # already async: false for the same reason the other stubs here are.
+      on_exit(fn ->
+        Application.delete_env(:vutuv, :summarize_links)
+        Application.delete_env(:vutuv, :link_summary_req_options)
+        Application.delete_env(:vutuv, :link_summary_ollama_req_options)
+      end)
+
+      :ok
+    end
+
     test "is a no-op when :generate_screenshots is off (rows stay pending)" do
       post = url_post(user())
       {:ok, _job} = Screenshots.reconcile(post)
@@ -316,6 +357,30 @@ defmodule Vutuv.Posts.ScreenshotsTest do
 
       assert_receive {:post_screenshot_ready, %{post_id: ready_id}}
       assert ready_id == post.id
+    end
+
+    test "writes the tooltip summary onto the row that is already ready" do
+      # The row is marked `ready` first and summarised after (issue #1709), so
+      # the picture never waits behind a model call — the column is filled by a
+      # second write, not by the capture result.
+      post = url_post(user())
+      {:ok, _job} = Screenshots.reconcile(post)
+      stub_summary("Was auf der verlinkten Seite steht.")
+
+      Screenshots.deliver_due(force: true, capture: ok_capture())
+
+      job = Repo.get_by!(PostScreenshot, post_id: post.id)
+      assert job.status == "ready"
+      assert job.summary == "Was auf der verlinkten Seite steht."
+    end
+
+    test "an installation that does not summarise links stores no summary" do
+      post = url_post(user())
+      {:ok, _job} = Screenshots.reconcile(post)
+
+      Screenshots.deliver_due(force: true, capture: ok_capture())
+
+      assert Repo.get_by!(PostScreenshot, post_id: post.id).summary == nil
     end
 
     test "a transient failure keeps the job pending with backoff" do
