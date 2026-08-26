@@ -11,12 +11,13 @@ defmodule VutuvWeb.PostLive.Edit do
   liked, reposted or answered it, this page redirects to the post and says why. Deleting
   stays possible at any time.
 
-  A single-URL, image-less post also gets an auto-captured link screenshot
-  (`Vutuv.Posts.Screenshots`). When that capture is bad (a cookie banner
-  covering the page, say) the author can remove it here — a "Remove screenshot"
-  control shown only while a captured screenshot is on the card. Removing it
-  tombstones the screenshot so it stops rendering and is not re-captured on a
-  plain re-save (`Vutuv.Posts.dismiss_screenshot/1`).
+  A single-URL, image-less post also gets an automatic link preview
+  (`Vutuv.Posts.Screenshots`) — the page's own Open Graph card, or a capture of
+  the page when it publishes none. When it is bad (a cookie banner covering the
+  page, a headline that misses the point) the author can remove it here, a
+  control shown only while a preview is on the card. Removing it tombstones the
+  row so it stops rendering and is not re-created on a plain re-save
+  (`Vutuv.Posts.dismiss_screenshot/1`).
   """
 
   use VutuvWeb, :live_view
@@ -45,7 +46,7 @@ defmodule VutuvWeb.PostLive.Edit do
          socket
          |> assign(:page_title, gettext("Edit post"))
          |> assign(:post, post)
-         |> assign(:screenshot, ready_screenshot(post))}
+         |> assign_screenshot(post)}
     end
   end
 
@@ -70,7 +71,7 @@ defmodule VutuvWeb.PostLive.Edit do
     {:noreply,
      socket
      |> assign(:post, post)
-     |> assign(:screenshot, ready_screenshot(post))
+     |> assign_screenshot(post)
      |> put_flash(:info, gettext("Screenshot removed."))}
   end
 
@@ -82,6 +83,16 @@ defmodule VutuvWeb.PostLive.Edit do
   end
 
   defp ready_screenshot(_post), do: nil
+
+  # The preview and, beside it, which of the two kinds it is — asked once here
+  # rather than at each of the four places the panel words itself.
+  defp assign_screenshot(socket, post) do
+    preview = ready_screenshot(post)
+
+    socket
+    |> assign(:screenshot, preview)
+    |> assign(:card?, PostScreenshot.card?(preview))
+  end
 
   @impl true
   def render(assigns) do
@@ -108,12 +119,25 @@ defmodule VutuvWeb.PostLive.Edit do
           post={@post}
         />
 
+        <%!-- One panel for both kinds of automatic preview (issue #1706): the
+        page's own card, or a capture of it when the page publishes none. The
+        wording has to say which, because "it turned out wrong" means different
+        things — a capture can be a picture of a cookie banner, a card can carry
+        a headline the publisher wrote for a different audience. --%>
         <.card :if={@screenshot} id="post-screenshot-editor">
-          <.section_title>{gettext("Link preview screenshot")}</.section_title>
+          <.section_title>
+            {if @card?, do: gettext("Link preview card"), else: gettext("Link preview screenshot")}
+          </.section_title>
           <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            {gettext(
-              "This screenshot was captured automatically from the link in your post. If it turned out wrong (for example a cookie banner covering the page), you can remove it."
-            )}
+            {if @card?,
+              do:
+                gettext(
+                  "This preview comes from the linked page itself. If it does not fit what you wanted to share, you can remove it."
+                ),
+              else:
+                gettext(
+                  "This screenshot was captured automatically from the link in your post. If it turned out wrong (for example a cookie banner covering the page), you can remove it."
+                )}
           </p>
 
           <div class="mt-3 flex flex-wrap items-start gap-4">
@@ -124,14 +148,26 @@ defmodule VutuvWeb.PostLive.Edit do
               alt=""
               class="aspect-[400/264] w-40 shrink-0 rounded-lg object-cover ring-1 ring-slate-200 dark:ring-slate-800"
             />
-            <.button
-              id="remove-screenshot"
-              variant="danger"
-              phx-click="remove-screenshot"
-              data-confirm={gettext("Remove this screenshot from your post?")}
-            >
-              {gettext("Remove screenshot")}
-            </.button>
+            <div class="min-w-0 flex-1">
+              <p :if={@screenshot.title} class="font-semibold text-slate-900 dark:text-slate-100">
+                {@screenshot.title}
+              </p>
+              <%!-- One wording for both kinds: the heading two lines above
+              already says which one this is, and "preview" is true of a
+              screenshot as well. Two more conditionals here would have bought
+              two more one-word msgids — exactly the shape
+              `gettext.extract --merge` fuzzy-fills with an unrelated German
+              sentence. --%>
+              <.button
+                id="remove-screenshot"
+                variant="danger"
+                class="mt-2"
+                phx-click="remove-screenshot"
+                data-confirm={gettext("Remove this preview from your post?")}
+              >
+                {gettext("Remove preview")}
+              </.button>
+            </div>
           </div>
         </.card>
 

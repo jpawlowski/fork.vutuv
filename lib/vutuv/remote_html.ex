@@ -23,6 +23,11 @@ defmodule Vutuv.RemoteHtml do
   push arbitrary invisible text into a member's profile feed, and it would have
   put the same junk into a stored reply.
 
+  It also owns `tag_attributes/1`, the attribute-quoting grammar for the two
+  callers that read a stranger's tags without parsing the HTML around them
+  (`Vutuv.OpenGraph`'s `<meta>` scan, `Vutuv.WebVerification`'s `rel=me` scan) —
+  the same "one place, one rule" reason as the text reduction below.
+
   What comes out is plain text that HEEx escapes again on the way to the page,
   and that the agent-format siblings can carry unchanged. Links survive as bare
   URLs, which `VutuvWeb.Markdown` linkifies anyway — including the `@user@host`
@@ -83,6 +88,9 @@ defmodule Vutuv.RemoteHtml do
 
   def to_text(_html, _max, _tags), do: ""
 
+  # `name="value"` / `name='value'` / `name=value`, any order, any case.
+  @attribute_regex ~r/([a-zA-Z0-9_:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/
+
   defp clamp(text, nil), do: Post.truncate(text)
   defp clamp(text, max), do: Post.truncate(text, max)
 
@@ -97,6 +105,28 @@ defmodule Vutuv.RemoteHtml do
     |> String.replace("&#39;", "'")
     |> String.replace("&nbsp;", " ")
     |> String.replace("&amp;", "&")
+  end
+
+  @doc """
+  Every attribute of one HTML tag, as a map from the downcased attribute name to
+  its value — tolerating double, single and unquoted values in any order and
+  any case.
+
+  Here rather than in either caller because both read a stranger's markup
+  **without** parsing it (no HTML library is a dependency): `Vutuv.OpenGraph`
+  wants `property`/`name`/`content` off a `<meta>` tag and
+  `Vutuv.WebVerification` wants `rel`/`href` off an `<a>`/`<link>` one. Two
+  copies of the quoting grammar means a fix to one silently leaves the other
+  wrong, which is the whole reason this module exists for the text half.
+  """
+  def tag_attributes(tag) when is_binary(tag) do
+    @attribute_regex
+    |> Regex.scan(tag)
+    |> Enum.reduce(%{}, fn [_whole, name | values], acc ->
+      # The three value alternatives are mutually exclusive; the unmatched ones
+      # come back as "". First declaration of a name wins, as in a browser.
+      Map.put_new(acc, String.downcase(name), Enum.find(values, "", &(&1 != "")))
+    end)
   end
 
   defp expand_mentions(text, tags) do

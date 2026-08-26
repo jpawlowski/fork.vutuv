@@ -111,7 +111,14 @@ defmodule Vutuv.SocialFeed.Http do
       match?({:ok, %{safe?: true}}, Ollama.moderate_binary(body))
   end
 
-  defp content_type(resp) do
+  @doc """
+  A response's content type, without the `; charset=…` parameter, downcased —
+  `nil` when the server sent none. Public because every guarded fetch of a
+  remote body has to ask it (the avatar fetch here, `Vutuv.OpenGraph`'s HTML
+  and image checks), and a second copy is how the `decode_body:` rule above
+  drifted the last time.
+  """
+  def content_type(resp) do
     case Req.Response.get_header(resp, "content-type") do
       [value | _] -> value |> String.split(";") |> hd() |> String.trim() |> String.downcase()
       _ -> nil

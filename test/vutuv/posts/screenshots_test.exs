@@ -601,6 +601,254 @@ defmodule Vutuv.Posts.ScreenshotsTest do
     end
   end
 
+  describe "deliver_due/1 with a page that publishes its own preview (issue #1706)" do
+    # The REAL capture path, like the YouTube block above: the Open Graph fetch
+    # is stubbed through :open_graph_req_options, the page probe through
+    # :post_screenshot_req_options, and stored files land in a tmp uploads dir.
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "vutuv_og_shots_#{System.unique_integer([:positive])}")
+      previous_prefix = Application.fetch_env(:vutuv, :uploads_dir_prefix)
+      previous_flag = Application.fetch_env(:vutuv, :fetch_open_graph)
+      Application.put_env(:vutuv, :uploads_dir_prefix, tmp)
+      # Off in config/test.exs so nothing else can dial out; on here.
+      Application.put_env(:vutuv, :fetch_open_graph, true)
+
+      on_exit(fn ->
+        File.rm_rf(tmp)
+        restore(:uploads_dir_prefix, previous_prefix)
+        restore(:fetch_open_graph, previous_flag)
+        Application.delete_env(:vutuv, :open_graph_req_options)
+        Application.delete_env(:vutuv, :post_screenshot_req_options)
+      end)
+
+      # A real (tiny) PNG: the store path opens it with libvips.
+      fixture = Path.join(tmp, "fixture.png")
+      File.mkdir_p!(tmp)
+      {:ok, img} = Image.new(64, 36, color: [10, 90, 200])
+      {:ok, _written} = Image.write(img, fixture)
+
+      {:ok, tmp: tmp, png: File.read!(fixture)}
+    end
+
+    defp restore(key, {:ok, was}), do: Application.put_env(:vutuv, key, was)
+    defp restore(key, :error), do: Application.delete_env(:vutuv, key)
+
+    defp stub_open_graph(fun) when is_function(fun),
+      do: Application.put_env(:vutuv, :open_graph_req_options, plug: fun)
+
+    # A page answering the full Open Graph set, and its image.
+    defp stub_og_page(png, head) do
+      stub_open_graph(fn conn ->
+        case conn.request_path do
+          "/page" ->
+            conn
+            |> Plug.Conn.put_resp_content_type("text/html", nil)
+            |> Plug.Conn.send_resp(200, "<html><head>#{head}</head><body></body></html>")
+
+          "/card.png" ->
+            conn
+            |> Plug.Conn.put_resp_content_type("image/png", nil)
+            |> Plug.Conn.send_resp(200, png)
+        end
+      end)
+    end
+
+    @og_head """
+    <meta property="og:title" content="Ein Titel von der Seite selbst">
+    <meta property="og:description" content="Der Teaser, den die Seite anbietet.">
+    <meta property="og:site_name" content="Example Times">
+    <meta property="og:image" content="https://example.com/card.png">
+    """
+
+    test "stores the page's own card — its words and its image, no Chromium", %{
+      tmp: tmp,
+      png: png
+    } do
+      post = url_post(user())
+      {:ok, job} = Screenshots.reconcile(post)
+
+      stub_og_page(png, @og_head)
+      # If the classic path ran anyway this probe answer would mark the job for
+      # retry, never ready — so "ready with 0 attempts" proves the page was
+      # neither probed nor captured.
+      stub_probe(500)
+
+      Screenshots.deliver_due(force: true)
+
+      job = Screenshots.get_job!(job.id)
+      assert job.status == "ready"
+      assert job.attempts == 0
+      assert job.source == "open_graph"
+      assert job.title == "Ein Titel von der Seite selbst"
+      assert job.description == "Der Teaser, den die Seite anbietet."
+      assert job.site_name == "Example Times"
+      # The classic path stores .webp (framed capture); a supplied image keeps
+      # its own format.
+      assert String.ends_with?(job.screenshot, ".png")
+      assert PostScreenshot.card?(job)
+
+      thumb_name = "thumb-#{Path.rootname(job.screenshot)}.avif"
+      assert File.exists?(Path.join([tmp, "screenshots", job.id, thumb_name]))
+    end
+
+    test "a page that names no site falls back to its host", %{png: png} do
+      post = url_post(user())
+      {:ok, job} = Screenshots.reconcile(post)
+
+      stub_og_page(png, """
+      <meta property="og:title" content="Ein Titel">
+      <meta property="og:image" content="https://example.com/card.png">
+      """)
+
+      stub_probe(500)
+      Screenshots.deliver_due(force: true)
+
+      assert Screenshots.get_job!(job.id).site_name == "example.com"
+    end
+
+    test "a page with no Open Graph tags takes the capture path exactly as before" do
+      post = url_post(user())
+      {:ok, job} = Screenshots.reconcile(post)
+
+      stub_open_graph(fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("text/html", nil)
+        |> Plug.Conn.send_resp(200, "<html><head><title>plain</title></head><body></body></html>")
+      end)
+
+      # A 301 is a permanent refusal, so hitting exactly that state proves the
+      # classic path took over.
+      stub_probe(301)
+      Screenshots.deliver_due(force: true)
+
+      job = Screenshots.get_job!(job.id)
+      assert job.status == "failed"
+      assert job.last_error == ":redirect"
+      assert job.source == "screenshot"
+      refute PostScreenshot.card?(job)
+    end
+
+    test "the flag off means the linked page is never asked" do
+      Application.put_env(:vutuv, :fetch_open_graph, false)
+      post = url_post(user())
+      {:ok, job} = Screenshots.reconcile(post)
+
+      test_pid = self()
+
+      stub_open_graph(fn conn ->
+        send(test_pid, :open_graph_fetched)
+        Plug.Conn.send_resp(conn, 500, "")
+      end)
+
+      stub_probe(301)
+      Screenshots.deliver_due(force: true)
+
+      assert Screenshots.get_job!(job.id).status == "failed"
+      refute_received :open_graph_fetched
+    end
+
+    test "an og:image the uploader cannot store falls back to the capture", %{png: _png} do
+      post = url_post(user())
+      {:ok, job} = Screenshots.reconcile(post)
+
+      stub_open_graph(fn conn ->
+        case conn.request_path do
+          "/page" ->
+            conn
+            |> Plug.Conn.put_resp_content_type("text/html", nil)
+            |> Plug.Conn.send_resp(200, "<html><head>#{@og_head}</head></html>")
+
+          "/card.png" ->
+            conn
+            |> Plug.Conn.put_resp_content_type("image/avif", nil)
+            |> Plug.Conn.send_resp(200, "AVIFBYTES")
+        end
+      end)
+
+      stub_probe(301)
+      Screenshots.deliver_due(force: true)
+
+      job = Screenshots.get_job!(job.id)
+      assert job.status == "failed"
+      assert job.source == "screenshot"
+      assert job.title == nil
+    end
+
+    test "a re-capture as a plain screenshot cannot keep the old headline", %{png: png} do
+      post = url_post(user())
+      {:ok, job} = Screenshots.reconcile(post)
+      stub_og_page(png, @og_head)
+      stub_probe(500)
+      Screenshots.deliver_due(force: true)
+      assert Screenshots.get_job!(job.id).source == "open_graph"
+
+      # The AI scan rejects the page's image, which is what
+      # `Vutuv.Moderation.ImageSubjects.apply_rejected/1` leaves behind: the
+      # file gone, the row `failed` — and the headline still on it, because
+      # that path knows nothing about the card columns.
+      {:ok, _rejected} =
+        Screenshots.get_job!(job.id)
+        |> Ecto.Changeset.change(status: "failed", screenshot: nil)
+        |> Repo.update()
+
+      # An admin hands the dead job back and this time the capture path
+      # answers. The row must stop being a card: a Chromium photograph under
+      # the previous page's headline is the one output worse than either kind
+      # alone.
+      {:ok, _requeued} = Screenshots.requeue(Screenshots.get_job!(job.id))
+      Screenshots.deliver_due(force: true, capture: ok_capture())
+
+      job = Screenshots.get_job!(job.id)
+      assert job.status == "ready"
+      assert job.source == "screenshot"
+      assert job.title == nil
+      assert job.description == nil
+      assert job.site_name == nil
+      refute PostScreenshot.card?(job)
+    end
+
+    test "editing the post's link clears the old page's card", %{png: png} do
+      post = url_post(user())
+      {:ok, _job} = Screenshots.reconcile(post)
+      stub_og_page(png, @og_head)
+      stub_probe(500)
+      Screenshots.deliver_due(force: true)
+
+      # `Posts.update_post/2` reconciles behind the `:generate_screenshots`
+      # flag, which the test config keeps off, so the reconcile is called here
+      # the way the other reconcile tests in this file do.
+      {:ok, updated} =
+        Posts.update_post(Repo.preload(post, [:images, :tags]), %{
+          body: "Now this one: https://example.com/other"
+        })
+
+      {:ok, job} = Screenshots.reconcile(updated)
+      assert job.status == "pending"
+      assert job.source == "screenshot"
+      assert job.title == nil
+      assert job.description == nil
+      assert job.site_name == nil
+    end
+
+    test "the author's removal takes the card's words with it", %{png: png} do
+      post = url_post(user())
+      {:ok, _job} = Screenshots.reconcile(post)
+      stub_og_page(png, @og_head)
+      stub_probe(500)
+      Screenshots.deliver_due(force: true)
+
+      # Freshly loaded: `dismiss_screenshot/1` preloads without `force`, so a
+      # struct carrying the nil `:screenshot` it was created with would be a
+      # no-op here (the composer/edit page always hands it a fresh one).
+      {:ok, post} = Posts.dismiss_screenshot(Repo.get!(Posts.Post, post.id))
+
+      assert post.screenshot.status == "dismissed"
+      assert post.screenshot.title == nil
+      assert post.screenshot.source == "screenshot"
+      refute PostScreenshot.card?(post.screenshot)
+    end
+  end
+
   describe "requeue_youtube/0 (backfill after the thumbnail capture shipped)" do
     defp youtube_job(author, video_id, status) do
       post = create_post!(author, %{body: "https://youtu.be/#{video_id}"})

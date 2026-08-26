@@ -203,7 +203,7 @@ stores the thumbnail YouTube publishes for every video instead
 `maxresdefault.jpg` → `hqdefault.jpg`), frameless — the thumbnail YouTube
 publishes beats anything a capture of the watch page could produce, and costs
 no browser run at all. Any fetch failure falls back
-to the ordinary capture; see the link-screenshots section in
+to the ordinary capture; see the link-previews section in
 [posts-and-feed.md](posts-and-feed.md).
 
 Some pages still never yield a useful shot — a login wall, a bot check, or a

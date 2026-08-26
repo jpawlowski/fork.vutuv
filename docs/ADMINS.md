@@ -200,11 +200,15 @@ A few rarely-changed switches are compile-time settings in
 and the Content-Signal headers), `:fetch_gravatar`, `:fetch_mastodon_posts`,
 `:fetch_bluesky_posts`, `:fetch_code_stats` (the profile "Code" card's
 GitHub/GitLab/Codeberg and self-hosted Gitea/Forgejo statistics), `:generate_screenshots` (profile link
-previews **and** the auto-screenshot for single-link posts, including cached
+previews **and** the automatic preview for single-link posts, including cached
 fediverse posts in the feed — admins watch the
 capture queue and browse the gallery at `/admin/screenshots`; a YouTube video
 link stores the video's published thumbnail instead of a capture, fetched
-server-side from YouTube under this same flag), and
+server-side from YouTube under this same flag), `:fetch_open_graph` (whether a
+post's link preview may read the page's **own** preview first — Open Graph's
+`og:title` / `og:description` / `og:image`, shown as a card instead of a
+screenshot; off means every preview is a Chromium capture, which is the
+behaviour before v7.367.0), and
 `:serve_uploads_locally` (see nginx below).
 
 ## systemd
@@ -432,8 +436,11 @@ vutuv runs fine without internet access:
   plain links, and a self-hosted address is taken at its word because the
   instance cannot be asked), and
   `:generate_screenshots` (profile link-preview screenshots **and** the
-  auto-screenshot for single-link posts — these fetch the linked page and run
-  headless Chromium).
+  automatic preview for single-link posts — these fetch the linked page and run
+  headless Chromium). That one flag also stops the Open Graph metadata fetch,
+  because it stops the whole preview queue; `:fetch_open_graph` is the finer
+  switch for an installation that *does* have internet access but would rather
+  photograph a page than repeat what its publisher says about it.
 - Set `FETCH_BOOK_METADATA=false`: the cover fetch and the
   page-count/publisher lookup behind book-review posts call Open Library, and
   an audiobook's running time is read from a library catalogue (`DNB_SRU_URL`).

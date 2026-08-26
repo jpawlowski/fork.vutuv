@@ -306,6 +306,43 @@ defmodule VutuvWeb.PostEditLiveTest do
       assert job.screenshot == nil
     end
 
+    test "an Open Graph card is named as one, in German too", %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+      post = post_with_ready_card(user)
+
+      {:ok, _live, html} =
+        conn
+        |> Phoenix.ConnTest.recycle()
+        |> Plug.Conn.put_req_header("accept-language", "de-DE,de")
+        |> live(~p"/posts/#{post.id}/edit")
+
+      # The panel has to say WHICH kind of preview it is offering to remove: a
+      # capture can be a picture of a cookie banner, a card can carry a
+      # headline the publisher wrote for somebody else. German by name — the
+      # three labels came out of `gettext.extract --merge` fuzzy-filled with
+      # translations of unrelated strings ("Diese Antwort aus Ihrem Beitrag
+      # entfernen?" for this very confirm).
+      assert html =~ "Karte der Linkvorschau"
+      assert html =~ "Vorschau entfernen"
+      assert html =~ "Diese Vorschau aus Ihrem Beitrag entfernen?"
+      assert html =~ "Ein Titel von der Seite selbst"
+      refute html =~ "Screenshot der Linkvorschau"
+    end
+
+    test "a plain capture keeps the screenshot wording", %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+      post = post_with_ready_screenshot(user)
+
+      {:ok, _live, html} =
+        conn
+        |> Phoenix.ConnTest.recycle()
+        |> Plug.Conn.put_req_header("accept-language", "de-DE,de")
+        |> live(~p"/posts/#{post.id}/edit")
+
+      assert html =~ "Screenshot der Linkvorschau"
+      refute html =~ "Karte der Linkvorschau"
+    end
+
     test "no remove control when the post carries no screenshot", %{conn: conn} do
       {conn, user} = create_and_login_user(conn)
       {:ok, post} = Posts.create_post(user, %{body: "just words, no link"})
@@ -351,6 +388,22 @@ defmodule VutuvWeb.PostEditLiveTest do
       screenshot: "0123456789ab.avif",
       moderation: "approved"
     })
+
+    post
+  end
+
+  # The other kind of ready preview: the page's own Open Graph card.
+  defp post_with_ready_card(author) do
+    post = post_with_ready_screenshot(author)
+
+    Repo.get_by!(PostScreenshot, post_id: post.id)
+    |> Ecto.Changeset.change(
+      source: "open_graph",
+      title: "Ein Titel von der Seite selbst",
+      description: "Der Teaser, den die Seite anbietet.",
+      site_name: "Example Times"
+    )
+    |> Repo.update!()
 
     post
   end

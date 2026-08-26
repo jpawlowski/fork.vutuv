@@ -30,6 +30,13 @@ defmodule Vutuv.Screenshot do
   @extension_whitelist ~w(.jpg .png .webp)
 
   @doc """
+  The image formats this uploader will store. Read by `Vutuv.OpenGraph`, which
+  refuses an `og:image` of any other type at compile time rather than fetching
+  one it could never store.
+  """
+  def extension_whitelist, do: @extension_whitelist
+
+  @doc """
   Stores the screenshot versions for `{upload, url}` and returns
   `{:ok, "<hash><ext>"}` (to persist in the `screenshot` field), or
   `{:error, :invalid_file}`.

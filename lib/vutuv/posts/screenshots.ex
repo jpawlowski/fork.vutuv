@@ -1,8 +1,18 @@
 defmodule Vutuv.Posts.Screenshots do
   @moduledoc """
-  The post **link-screenshot** subsystem: when a post carries a single URL and
-  no image, capture a screenshot of that page off the request path and store it
-  as an attachment shown beside the post.
+  The post **link-preview** subsystem: when a post carries a single URL and no
+  image, build a preview of that page off the request path and store it as an
+  attachment shown with the post.
+
+  **The page's own preview comes first.** Most sites publish one — Open Graph's
+  `og:title` / `og:description` / `og:image` — and it beats a photograph of the
+  page every time: it is the headline the publisher chose, it is not covered by
+  a cookie dialog, and it costs one small GET instead of a Chromium run.
+  `Vutuv.OpenGraph` reads it, the image is fetched and stored server-side like
+  any capture (readers never talk to the linked host), and the row is marked
+  `source: "open_graph"` so the render path lays it out as a **card** rather
+  than a floated thumbnail. A page that publishes nothing usable falls straight
+  through to the screenshot below, so no link is worse off than before.
 
   **Durable queue.** Each qualifying post gets one `post_screenshots` row (see
   `Vutuv.Posts.PostScreenshot`), which is both the job and the result: a
@@ -42,6 +52,7 @@ defmodule Vutuv.Posts.Screenshots do
   alias Vutuv.Fediverse
   alias Vutuv.Fediverse.RemotePost
   alias Vutuv.Moderation.ImageScans
+  alias Vutuv.OpenGraph
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostScreenshot
   alias Vutuv.Repo
@@ -62,6 +73,9 @@ defmodule Vutuv.Posts.Screenshots do
   @stuck_after_seconds 600
   # Admin page size — a gallery of thumbnails, so denser than the site-wide 250.
   @per_page 24
+
+  # "This row carries no card" — the state every reset returns to, written once.
+  @no_card %{source: "screenshot", title: nil, description: nil, site_name: nil}
 
   @doc "Retry cap before a transient failure is marked permanently `failed`."
   def max_attempts, do: @max_attempts
@@ -261,6 +275,7 @@ defmodule Vutuv.Posts.Screenshots do
       last_error: nil,
       moderation: nil
     )
+    |> Ecto.Changeset.change(@no_card)
     |> Repo.update()
   end
 
@@ -397,8 +412,8 @@ defmodule Vutuv.Posts.Screenshots do
     job = mark_capturing(job)
 
     case capture.(job) do
-      {:ok, %{screenshot: file, width: width, height: height}} ->
-        mark_ready(job, file, width, height)
+      {:ok, %{screenshot: _file} = result} ->
+        mark_ready(job, result)
 
       {:error, reason} ->
         if permanent_failure?(reason),
@@ -419,13 +434,41 @@ defmodule Vutuv.Posts.Screenshots do
   defp permanent_failure?({:bad_status, _status}), do: true
   defp permanent_failure?(_reason), do: false
 
-  # The real capture. A YouTube video link stores the thumbnail YouTube itself
-  # publishes (a watch-page capture only ever shows the consent banner); every
-  # other link — and any YouTube fetch trouble — takes the Chromium path.
+  # The real capture, best source first. A YouTube video link stores the
+  # thumbnail YouTube itself publishes (a watch-page capture only ever shows the
+  # consent banner); any other page that publishes an Open Graph preview stores
+  # that; everything else — and any trouble along the way — takes the Chromium
+  # path, exactly as before.
   defp capture_and_store(%PostScreenshot{} = job) do
-    case youtube_capture(job) do
-      {:ok, result} -> {:ok, result}
-      :fallback -> page_capture_and_store(job)
+    with :fallback <- youtube_capture(job),
+         :fallback <- open_graph_capture(job) do
+      page_capture_and_store(job)
+    end
+  end
+
+  # The Open Graph branch: `{:ok, result}` with the page's own image stored and
+  # its headline carried alongside, or `:fallback` — the flag is off, the page
+  # answered no usable metadata, or its image could not be fetched or stored.
+  #
+  # Note this costs one extra GET on a page that publishes nothing: the fetch
+  # here and `ensure_http_ok/1` below are deliberately independent, so the
+  # capture path keeps its own status classification (which drives the retry
+  # cap) instead of inheriting a decision made for a different question.
+  defp open_graph_capture(%PostScreenshot{} = job) do
+    with {:ok, meta} <- OpenGraph.fetch(job.url),
+         {:ok, bytes, extension} <- OpenGraph.fetch_image(meta.image_url),
+         {:ok, result} <- store_remote_image(job, bytes, extension) do
+      {:ok,
+       Map.merge(result, %{
+         source: "open_graph",
+         title: meta.title,
+         description: meta.description,
+         # A page that names no og:site_name is labelled by its host, which is
+         # what a reader is checking anyway ("where does this go?").
+         site_name: meta.site_name || meta.host
+       })}
+    else
+      _other -> :fallback
     end
   end
 
@@ -436,20 +479,21 @@ defmodule Vutuv.Posts.Screenshots do
   defp youtube_capture(%PostScreenshot{} = job) do
     with {:ok, video_id} <- YoutubeThumbnail.video_id(job.url),
          {:ok, bytes} <- YoutubeThumbnail.fetch(video_id) do
-      store_thumbnail(job, bytes)
+      store_remote_image(job, bytes, ".jpg")
     else
       :error -> :fallback
     end
   end
 
-  # Stored raw — no browser frame: the thumbnail is the video's artwork, not a
-  # captured web page, so browser chrome around it would be a lie.
-  defp store_thumbnail(%PostScreenshot{} = job, bytes) do
-    tmp = Path.join(System.tmp_dir!(), "yt_thumb_#{job.id}.jpg")
+  # Stored raw — no browser frame: an image the publisher handed us is their
+  # artwork, not a captured web page, so browser chrome around it would be a
+  # lie. Shared by the YouTube thumbnail and the Open Graph image.
+  defp store_remote_image(%PostScreenshot{} = job, bytes, extension) do
+    tmp = Path.join(System.tmp_dir!(), "link_preview_#{job.id}#{extension}")
 
     try do
       File.write!(tmp, bytes)
-      upload = %Plug.Upload{content_type: "image/jpeg", filename: "#{job.id}.jpg", path: tmp}
+      upload = %Plug.Upload{filename: "#{job.id}#{extension}", path: tmp}
 
       case Vutuv.Screenshot.store({upload, job}) do
         {:ok, file_name} ->
@@ -555,19 +599,34 @@ defmodule Vutuv.Posts.Screenshots do
     job
   end
 
-  defp mark_ready(%PostScreenshot{} = job, file_name, width, height) do
+  defp mark_ready(%PostScreenshot{} = job, result) do
     # A fresh capture starts in AI-moderation limbo: it is announced (and
     # rendered) only once the scan releases it — otherwise a screenshot of an
-    # NSFW page would bypass the upload gate (Vutuv.Moderation.ImageScans).
+    # NSFW page would bypass the upload gate (Vutuv.Moderation.ImageScans). An
+    # Open Graph image is a picture a stranger's page named, so it goes through
+    # exactly the same gate.
     moderation = ImageScans.initial_state()
 
     {:ok, ready} =
       job
+      # The card half (`source` and the page's own headline) is cast through
+      # the schema so the ingest caps are enforced at the write, not only at
+      # the fetch. A `capture:` stub that returns none of it leaves the
+      # defaults: a plain screenshot.
+      # The WHOLE card half, always — never `Map.take` alone. A capture result
+      # that mentions none of these is a plain screenshot and has to *say* so:
+      # a row that once carried an Open Graph card and is later re-captured (an
+      # admin requeue, the operator turning `:fetch_open_graph` off) would
+      # otherwise keep `source: "open_graph"` and the previous page's headline,
+      # and render a Chromium photograph inside a card titled by an older fetch.
+      |> PostScreenshot.result_changeset(
+        Map.merge(@no_card, Map.take(result, [:source, :title, :description, :site_name]))
+      )
       |> Ecto.Changeset.change(
         status: "ready",
-        screenshot: file_name,
-        width: width,
-        height: height,
+        screenshot: result.screenshot,
+        width: result.width,
+        height: result.height,
         captured_at: DateTime.utc_now(:second),
         last_error: nil,
         moderation: moderation

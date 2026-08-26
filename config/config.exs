@@ -78,6 +78,16 @@ config :vutuv, Vutuv.Repo,
 config :vutuv, :generate_screenshots, true
 config :vutuv, :fetch_gravatar, true
 
+# Whether a link preview may read the page's OWN preview first (Open Graph:
+# `og:title` / `og:description` / `og:image`, see `Vutuv.OpenGraph`) instead of
+# going straight to a headless-Chromium capture. Off means every preview is a
+# capture, as it was before: the metadata fetch is an outbound request to the
+# linked host, and an operator who does not want their installation making one
+# — or who prefers to see the page rather than its publisher's chosen framing —
+# turns it off here. An air-gapped installation is already covered by
+# `:generate_screenshots` above, which stops the whole queue.
+config :vutuv, :fetch_open_graph, true
+
 # Pages that are never worth a link-preview screenshot: they answer a headless
 # capture with a cookie-consent banner, a login wall or a bot check, so the
 # shot is a picture of a dialog rather than of the page. Skipping them (in
