@@ -1197,6 +1197,19 @@ defmodule Vutuv.Posts do
     |> scope_unfrozen(nil)
   end
 
+  # A page as the VIEWER (issue #1336, mirroring `visible_to?/2`'s own
+  # Organization clauses): it is not a member, so no denial can name it and it
+  # sees exactly what an anonymous reader sees, plus its own posts while
+  # moderation holds them — the way an author sees theirs.
+  def scope_visible(query, %Organization{id: organization_id} = viewer) do
+    from(p in query,
+      where:
+        p.organization_id == ^organization_id or
+          fragment("NOT EXISTS (SELECT 1 FROM post_denials d WHERE d.post_id = ?)", p.id)
+    )
+    |> scope_unfrozen(viewer)
+  end
+
   def scope_visible(query, %User{id: viewer_id} = viewer) do
     from(p in query,
       where:
@@ -1249,8 +1262,14 @@ defmodule Vutuv.Posts do
 
     filter =
       case viewer do
-        %User{id: viewer_id} -> dynamic([p], p.user_id == ^viewer_id or ^passes)
-        nil -> passes
+        %User{id: viewer_id} ->
+          dynamic([p], p.user_id == ^viewer_id or ^passes)
+
+        %Organization{id: organization_id} ->
+          dynamic([p], p.organization_id == ^organization_id or ^passes)
+
+        nil ->
+          passes
       end
 
     where(query, ^filter)
@@ -5426,6 +5445,13 @@ defmodule Vutuv.Posts do
   that a reply/like is about is always quotable), while another member's post (a
   reply quoted alongside it) passes only when the deny-based visibility rules
   would show it, so a restricted reply never leaks through the notification.
+
+  The Mastodon adapter reads it for a second reason (issue #1622): the local
+  post a cached fediverse reply answers, to name as that reply's
+  `in_reply_to_id`. The gate is the point there too — the note's own visibility
+  (a public reply) says nothing about the post it answers, which its author can
+  since have narrowed, and an id the reader's next request is refused for is
+  worse than none.
   """
   def visible_posts_by_ids(viewer, ids) do
     ids = ids |> Enum.filter(&is_binary/1) |> Enum.uniq()
