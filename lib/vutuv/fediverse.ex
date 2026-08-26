@@ -71,6 +71,7 @@ defmodule Vutuv.Fediverse do
   alias Vutuv.Fediverse.PostLike
   alias Vutuv.Fediverse.PostLookup
   alias Vutuv.Fediverse.PostRepost
+  alias Vutuv.Fediverse.QuoteAuthorization
   alias Vutuv.Fediverse.Reaction
   alias Vutuv.Fediverse.RemoteAccount
   alias Vutuv.Fediverse.RemoteFollow
@@ -4078,13 +4079,22 @@ defmodule Vutuv.Fediverse do
     {post_deliveries, _} =
       Repo.delete_all(from(d in PostDelivery, where: uri_host(d.inbox_uri) == ^host))
 
+    # A permission to quote is the same shape of record and goes for the same
+    # reason (issue #1608): the stamp URL is what a third server checks, and a
+    # blocked server's quotes stop being vouched for the moment its rows go.
+    # Nothing is delivered — a blocked server is not talked to, and the stamp's
+    # `404` carries it anyway.
+    {quote_authorizations, _} =
+      Repo.delete_all(from(a in QuoteAuthorization, where: uri_host(a.actor_uri) == ^host))
+
     %{
       followers: followers,
       remote_accounts: remote_accounts,
       cached_posts: cached_posts,
       notes: notes,
       deliveries: deliveries,
-      post_deliveries: post_deliveries
+      post_deliveries: post_deliveries,
+      quote_authorizations: quote_authorizations
     }
   end
 
@@ -4593,6 +4603,233 @@ defmodule Vutuv.Fediverse do
   defp activity_object_id(%{"id" => id}) when is_binary(id), do: id
   defp activity_object_id(id) when is_binary(id), do: id
   defp activity_object_id(_), do: nil
+
+  ## Inbound quote requests (issue #1608)
+
+  @doc """
+  Answers a `QuoteRequest`: somebody on another network wants to quote one of
+  our posts, and FEP-044f says they may not show it until we say so.
+
+  On yes this mints a **stamp** (`Vutuv.Fediverse.QuoteAuthorization`) and
+  delivers an `Accept` whose `result` is the stamp's URL. Third servers fetch
+  that URL before rendering the quote, so the stamp — not the Accept — is what
+  actually carries the permission, and deleting it is what takes it back.
+
+  The gates, in order: the installation switch, the author federates and has not
+  switched quoting off, the object really is one of *their* posts, that post is
+  public (no audience denial), not frozen, not still behind the image gate, the
+  request names a quoting post at all, and the sender is within its inbound cap.
+
+  Two different silences, deliberately:
+
+    * a request we **identified as ours and refused** gets a `Reject`, because
+      the other side has a pending quote sitting in its UI and an answer is the
+      difference between "no" and "that server is broken";
+    * a request naming a post that is not ours, or that we could not parse, gets
+      **nothing at all** — answering would confirm which posts exist here and
+      which member holds them.
+
+  Idempotent: a redelivered request finds the existing stamp and re-sends the
+  same `Accept`, rather than minting a second permission for one quote.
+  """
+  def record_quote_request(subject, activity, actor) do
+    with true <- enabled?(),
+         true <- federated?(subject),
+         true <- quotes_allowed?(subject),
+         %Post{} = post <- resolve_own_note(subject, activity["object"]),
+         true <- quotable_post?(post) do
+      answer_quote_request(subject, post, activity, actor)
+    else
+      _ -> :skip
+    end
+  end
+
+  # Past the point where we know the post is ours and quotable, every remaining
+  # refusal is one the requester is entitled to hear.
+  defp answer_quote_request(subject, %Post{} = post, activity, actor) do
+    actor_uri = quote_actor_uri(actor)
+    inbox = quote_requester_inbox(actor)
+
+    with instrument when is_binary(instrument) <- Docs.quote_request_instrument_id(activity),
+         false <- local_host?(instrument),
+         :ok <- check_inbound_cap(actor_uri),
+         {:ok, authorization} <-
+           upsert_quote_authorization(subject, post, activity, instrument, actor_uri, inbox) do
+      deliver_quote_answer(
+        subject,
+        inbox,
+        Docs.accept_quote_activity(authorization, subject, activity)
+      )
+    else
+      _ ->
+        deliver_quote_answer(subject, inbox, Docs.reject_quote_activity(subject, activity))
+    end
+  end
+
+  # The inbox carries the fetched, signature-verified actor document, so both
+  # the id and the inbox URL are already in hand — asked for here rather than
+  # re-fetched. `own_inbox/1` is the anti-spoofing check every other path uses:
+  # an actor may only name an inbox on its own host.
+  defp quote_actor_uri(%{uri: uri}), do: uri
+  defp quote_actor_uri(uri) when is_binary(uri), do: uri
+  defp quote_actor_uri(_actor), do: nil
+
+  defp quote_requester_inbox(%{uri: _uri, inbox: _inbox} = actor) do
+    own_inbox(actor) || stored_requester_inbox(quote_actor_uri(actor))
+  end
+
+  defp quote_requester_inbox(actor), do: stored_requester_inbox(quote_actor_uri(actor))
+
+  # An author who has not opted into quoting refuses every request, and the
+  # `interactionPolicy` on the Note said so in advance — this is the enforcement
+  # behind that advertisement, not a second opinion.
+  #
+  # A struct built by the previous release mid-deploy carries `nil` here; read
+  # that as the column default rather than as a refusal, so a blue/green window
+  # does not silently answer Reject to everyone.
+  defp quotes_allowed?(%{fediverse_quotes?: false}), do: false
+  defp quotes_allowed?(_subject), do: true
+
+  # Everything about the post itself that decides whether it may be
+  # redistributed under somebody else's commentary. `restricted?/1` is the same
+  # audience test that keeps a narrowed post off the fediverse altogether; the
+  # other two are states in which the post is not public *here* either, and
+  # consenting to a quote of something nobody can currently read would publish
+  # it by the back door.
+  defp quotable_post?(%Post{} = post),
+    do: not Posts.restricted?(post) and is_nil(post.frozen_at) and not post.images_pending?
+
+  defp upsert_quote_authorization(subject, %Post{} = post, activity, instrument, actor_uri, inbox) do
+    attrs = %{
+      post_id: post.id,
+      user_id: quote_owner_id(subject, :user),
+      organization_id: quote_owner_id(subject, :organization),
+      interacting_object_uri: instrument,
+      actor_uri: actor_uri,
+      inbox_uri: inbox,
+      request_activity_id: activity["id"],
+      note_uri: Docs.note_url(subject, post.id),
+      accepted_at: DateTime.utc_now(:second)
+    }
+
+    case existing_quote_authorization(post.id, instrument) do
+      %QuoteAuthorization{} = existing -> {:ok, existing}
+      nil -> insert_quote_authorization(attrs)
+    end
+  end
+
+  defp existing_quote_authorization(post_id, instrument),
+    do: Repo.get_by(QuoteAuthorization, post_id: post_id, interacting_object_uri: instrument)
+
+  defp insert_quote_authorization(attrs) do
+    %QuoteAuthorization{}
+    |> QuoteAuthorization.changeset(attrs)
+    |> Repo.insert()
+    |> case do
+      {:ok, authorization} -> {:ok, authorization}
+      {:error, _changeset} -> recover_raced_authorization(attrs)
+    end
+  end
+
+  # Two deliveries of one request racing: the loser reads the winner's row
+  # rather than reporting a failure the sender could not act on anyway.
+  defp recover_raced_authorization(%{post_id: post_id, interacting_object_uri: instrument}) do
+    case existing_quote_authorization(post_id, instrument) do
+      %QuoteAuthorization{} = authorization -> {:ok, authorization}
+      nil -> :error
+    end
+  end
+
+  defp quote_owner_id(%User{id: id}, :user), do: id
+  defp quote_owner_id(%Organization{id: id}, :organization), do: id
+  defp quote_owner_id(_subject, _kind), do: nil
+
+  # An account we already hold is the fallback for a caller that has no document
+  # in hand (an `Undo` path, a test). Nothing is fetched: the stamp's own `404`
+  # carries the withdrawal to everyone who checks it, so a signed request per
+  # quote would buy a courtesy, not the mechanism.
+  defp stored_requester_inbox(actor_uri) when is_binary(actor_uri) do
+    case Repo.get_by(RemoteAccount, actor_uri: actor_uri) do
+      %RemoteAccount{inbox_uri: inbox} when is_binary(inbox) -> inbox
+      _ -> nil
+    end
+  end
+
+  defp stored_requester_inbox(_actor_uri), do: nil
+
+  # A requester whose document names no usable inbox still gets its stamp — the
+  # answer simply has nowhere to go, and the stamp URL is what a third server
+  # reads anyway.
+  defp deliver_quote_answer(subject, inbox, activity) when is_binary(inbox) do
+    enqueue(subject, [inbox], activity)
+    :ok
+  end
+
+  defp deliver_quote_answer(_subject, _inbox, _activity), do: :skip
+
+  @doc """
+  The stamp behind a `/quote-authorizations/:id` URL, for the endpoint that
+  serves it.
+
+  Scoped to the post in the path as well as to the id: an id alone would let one
+  post's stamp be served from another post's URL, which is a document making a
+  claim about a pair that was never authorized.
+  """
+  def get_quote_authorization(post_id, authorization_id) do
+    UUIDv7.with_cast(authorization_id, fn id ->
+      Repo.get_by(QuoteAuthorization, id: id, post_id: post_id)
+    end)
+  end
+
+  @doc """
+  Withdraws every quote permission a post has given out (issue #1608).
+
+  Called wherever the post stops being publicly readable — deletion, freeze, a
+  narrowed audience — from the same place the post's own `Delete` goes out. The
+  rows go first and the `Delete(QuoteAuthorization)` follows: the stamp URL
+  answering `410` is what actually stops a third-party render, and the activity
+  only saves the quoting server from finding out the slow way.
+  """
+  def revoke_quote_authorizations(%Post{id: post_id}) do
+    authorizations = Repo.all(from(a in QuoteAuthorization, where: a.post_id == ^post_id))
+
+    case authorizations do
+      [] ->
+        :skip
+
+      [_ | _] ->
+        subject =
+          Posts.author(
+            Repo.preload(Posts.get_post(post_id) || %Post{id: post_id}, [:user, :organization])
+          )
+
+        Enum.each(authorizations, fn authorization ->
+          maybe_enqueue_quote_delete(subject, authorization)
+        end)
+
+        Repo.delete_all(from(a in QuoteAuthorization, where: a.post_id == ^post_id))
+        :ok
+    end
+  end
+
+  # The post may already be gone by the time this runs (deletion federates after
+  # the commit), and then there is no author struct to sign with — the stamp's
+  # `410` still does the work.
+  defp maybe_enqueue_quote_delete(nil, _authorization), do: :ok
+
+  defp maybe_enqueue_quote_delete(subject, %QuoteAuthorization{inbox_uri: inbox} = authorization)
+       when is_binary(inbox) do
+    enqueue(subject, [inbox], Docs.delete_quote_authorization_activity(authorization, subject))
+  end
+
+  defp maybe_enqueue_quote_delete(_subject, _authorization), do: :ok
+
+  @doc "Drops every stamp a member issued, on account deletion."
+  def drop_quote_authorizations(%User{id: user_id}),
+    do: Repo.delete_all(from(a in QuoteAuthorization, where: a.user_id == ^user_id))
+
+  def drop_quote_authorizations(%Organization{id: id}),
+    do: Repo.delete_all(from(a in QuoteAuthorization, where: a.organization_id == ^id))
 
   ## Inbound replies (issues #1069 and #1071)
 
@@ -8408,6 +8645,12 @@ defmodule Vutuv.Fediverse do
   def revoke_post(%Post{user_id: nil}), do: :skip
 
   def revoke_post(%Post{} = post) do
+    # First, and outside the `with`: a post whose author never federated still
+    # cannot have handed out a stamp, but one whose *audience* just narrowed can
+    # — and that path leaves the post in place, so nothing else would clear
+    # them. Consent to quote a post nobody may read any more has to go with it.
+    revoke_quote_authorizations(post)
+
     with true <- enabled?(),
          %User{} = user <- Repo.get(User, post.user_id),
          true <- ever_federated?(user),

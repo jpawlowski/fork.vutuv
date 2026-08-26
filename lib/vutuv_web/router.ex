@@ -644,6 +644,19 @@ defmodule VutuvWeb.Router do
     # The pinned post (issue #1110), at the path other servers already look for.
     get("/:slug/actor/collections/featured", FediverseController, :featured)
     post("/:slug/actor/inbox", FediverseController, :inbox)
+    # The quote stamps a member's post has handed out (FEP-044f, issue #1608).
+    # Machine-to-machine like everything else in this scope: a third server that
+    # renders somebody's quote of a vutuv post fetches this URL to check the
+    # permission is still live, and it has usually never spoken to us otherwise.
+    # Sits under the Note's own path so a human reading a raw activity can
+    # follow it, and before the `/:slug/posts/:id` permalink is ever consulted,
+    # because the longer path has to win.
+    get(
+      "/:slug/posts/:post_id/quote-authorizations/:id",
+      FediverseController,
+      :quote_authorization
+    )
+
     # A page's ActivityPub identity (issue #1334). Under /organizations/ rather
     # than at a root word, like every other page URL: the root belongs to member
     # handles. 404s until the page opts in.
@@ -651,6 +664,13 @@ defmodule VutuvWeb.Router do
     get("/organizations/:slug/actor/followers", FediverseController, :organization_followers)
     get("/organizations/:slug/actor/outbox", FediverseController, :organization_outbox)
     post("/organizations/:slug/actor/inbox", FediverseController, :organization_inbox)
+
+    get(
+      "/organizations/:slug/posts/:post_id/quote-authorizations/:id",
+      FediverseController,
+      :organization_quote_authorization
+    )
+
     # The installation-wide inbox (issue #1073), so a server with many
     # followers here delivers a broadcast once instead of once per member.
     # Under /system/ rather than at a root word, which profiles own; remote

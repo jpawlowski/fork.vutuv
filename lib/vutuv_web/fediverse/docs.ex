@@ -24,6 +24,7 @@ defmodule VutuvWeb.Fediverse.Docs do
 
   alias Vutuv.Accounts.User
   alias Vutuv.Fediverse.Actor
+  alias Vutuv.Fediverse.QuoteAuthorization
   alias Vutuv.Mentions
   alias Vutuv.Organizations
   alias Vutuv.Organizations.Organization
@@ -40,6 +41,39 @@ defmodule VutuvWeb.Fediverse.Docs do
   alias VutuvWeb.UserHelpers
 
   @public "https://www.w3.org/ns/activitystreams#Public"
+
+  # FEP-044f, consent-respecting quote posts (issue #1608). Two JSON-LD
+  # fragments rather than one, because the two documents that carry them are
+  # read by different code on the other side and a term a document does not use
+  # is noise a validator has to walk.
+  #
+  # The interaction vocabulary is GoToSocial's (`gts:`) and the quote vocabulary
+  # is the FEP's own. That split is not ours to tidy: Mastodon reads exactly
+  # these names, and a prettier namespace would simply not be understood.
+  @gts "https://gotosocial.org/ns#"
+
+  # What a Note says about who may quote it.
+  @policy_context %{
+    "gts" => @gts,
+    "interactionPolicy" => %{"@id" => "gts:interactionPolicy", "@type" => "@id"},
+    "canQuote" => %{"@id" => "gts:canQuote", "@type" => "@id"},
+    "automaticApproval" => %{"@id" => "gts:automaticApproval", "@type" => "@id"},
+    "manualApproval" => %{"@id" => "gts:manualApproval", "@type" => "@id"}
+  }
+
+  # What a stamp says about the quote it permits.
+  @authorization_context %{
+    "gts" => @gts,
+    "QuoteAuthorization" => %{
+      "@id" => "https://w3id.org/fep/044f#QuoteAuthorization",
+      "@type" => "@id"
+    },
+    "interactingObject" => %{"@id" => "gts:interactingObject", "@type" => "@id"},
+    "interactionTarget" => %{"@id" => "gts:interactionTarget", "@type" => "@id"}
+  }
+
+  # What an Accept/Reject says about the request it answers.
+  @quote_request_context %{"QuoteRequest" => "https://w3id.org/fep/044f#QuoteRequest"}
 
   # Everything note/2 reads off a post. Kept here, beside the builder that needs
   # it, because two call sites load it (the delivery queue and the permalink's
@@ -369,6 +403,7 @@ defmodule VutuvWeb.Fediverse.Docs do
     note = note(post, user)
 
     envelope(user, "Create", note["id"] <> "#create", note)
+    |> Map.put("@context", note_context())
     |> Map.put("published", note["published"])
   end
 
@@ -378,6 +413,7 @@ defmodule VutuvWeb.Fediverse.Docs do
     stamp = post.updated_at |> NaiveDateTime.truncate(:second) |> NaiveDateTime.to_iso8601()
 
     envelope(user, "Update", note["id"] <> "#update-#{stamp}", note)
+    |> Map.put("@context", note_context())
   end
 
   @doc "Delete(Tombstone): a removed post (or one whose audience closed)."
@@ -689,6 +725,119 @@ defmodule VutuvWeb.Fediverse.Docs do
   defp cc_author(activity, author_actor_uri),
     do: Map.update!(activity, "cc", &(&1 ++ [author_actor_uri]))
 
+  @doc """
+  The JSON-LD context every document that carries one of our Notes needs: the
+  core vocabulary plus the interaction-policy terms (issue #1608).
+  """
+  def note_context, do: ["https://www.w3.org/ns/activitystreams", @policy_context]
+
+  @doc """
+  Where a stamp lives: beside the post it authorizes.
+
+  Deliberately under the Note's own path rather than at some `/system/` route
+  of its own. A stamp is only ever meaningful for one post, third parties
+  dereference it without ever having spoken to us, and a URL that carries its
+  subject is one a human reading a raw activity can follow.
+  """
+  def quote_authorization_url(subject, post_id, authorization_id),
+    do: note_url(subject, post_id) <> "/quote-authorizations/" <> authorization_id
+
+  @doc """
+  The stamp itself: the document a third server fetches to check that a quote of
+  one of our posts really was permitted.
+
+  `interactionTarget` is our post, `interactingObject` is the quote — both
+  named as the ids they were when consent was given, never rebuilt from today's
+  handle (see `Vutuv.Fediverse.QuoteAuthorization`).
+  """
+  def quote_authorization(%QuoteAuthorization{} = authorization, subject) do
+    %{
+      "@context" => ["https://www.w3.org/ns/activitystreams", @authorization_context],
+      "id" => quote_authorization_url(subject, authorization.post_id, authorization.id),
+      "type" => "QuoteAuthorization",
+      "attributedTo" => actor_url(subject),
+      "interactionTarget" => authorization.note_uri,
+      "interactingObject" => authorization.interacting_object_uri
+    }
+  end
+
+  @doc """
+  Accept(QuoteRequest): the answer that permits a quote.
+
+  `result` points at the stamp and **must match its URL exactly** — that is the
+  whole mechanism. The `object` echoes the request rather than naming it by id
+  alone, because the requesting server matches the answer against what it sent.
+  """
+  def accept_quote_activity(%QuoteAuthorization{} = authorization, subject, request) do
+    %{
+      "@context" => ["https://www.w3.org/ns/activitystreams", @quote_request_context],
+      "id" => actor_url(subject) <> "#accepts/quote/" <> authorization.id,
+      "type" => "Accept",
+      "actor" => actor_url(subject),
+      "to" => [authorization.actor_uri],
+      "object" => echoed_quote_request(request),
+      "result" => quote_authorization_url(subject, authorization.post_id, authorization.id)
+    }
+  end
+
+  @doc "Reject(QuoteRequest): the answer that refuses one."
+  def reject_quote_activity(subject, request) do
+    %{
+      "@context" => ["https://www.w3.org/ns/activitystreams", @quote_request_context],
+      "id" => actor_url(subject) <> "#rejects/quote/" <> Vutuv.UUIDv7.generate(),
+      "type" => "Reject",
+      "actor" => actor_url(subject),
+      "to" => [request["actor"]] |> Enum.filter(&is_binary/1),
+      "object" => echoed_quote_request(request)
+    }
+  end
+
+  @doc """
+  Delete(QuoteAuthorization): consent withdrawn.
+
+  Belt to the stamp URL's braces. The `410` is what actually stops a
+  third-party render, because every server that shows the quote re-checks it;
+  this tells the quoting server directly, so it can stop showing the quote
+  without waiting to notice.
+  """
+  def delete_quote_authorization_activity(%QuoteAuthorization{} = authorization, subject) do
+    url = quote_authorization_url(subject, authorization.post_id, authorization.id)
+
+    %{
+      "@context" => ["https://www.w3.org/ns/activitystreams", @authorization_context],
+      "id" => url <> "#delete",
+      "type" => "Delete",
+      "actor" => actor_url(subject),
+      "to" => [authorization.actor_uri],
+      "object" => %{"id" => url, "type" => "Tombstone", "formerType" => "QuoteAuthorization"}
+    }
+  end
+
+  # The request as the answer echoes it: the fields the requesting server needs
+  # to match its own pending record, and nothing a stranger sent us that we have
+  # not checked. `instrument` is flattened to its id — the full object came from
+  # them, and quoting it back verbatim would mean re-publishing unvalidated
+  # remote content in a document we sign.
+  defp echoed_quote_request(request) do
+    %{
+      "type" => "QuoteRequest",
+      "id" => request["id"],
+      "actor" => request["actor"],
+      "object" => request["object"],
+      "instrument" => quote_request_instrument_id(request)
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  @doc """
+  The id of the post a `QuoteRequest` proposes — its `instrument`, which arrives
+  either as a full object or as a bare id depending on the sender.
+  """
+  def quote_request_instrument_id(%{"instrument" => %{"id" => id}}) when is_binary(id), do: id
+  def quote_request_instrument_id(%{"instrument" => id}) when is_binary(id), do: id
+  def quote_request_instrument_id(_request), do: nil
+
   @doc "Accept(Follow): the answer that seals a remote follow."
   def accept_activity(user, follow_object) do
     id = actor_url(user) <> "#accepts/" <> Vutuv.UUIDv7.generate()
@@ -721,7 +870,47 @@ defmodule VutuvWeb.Fediverse.Docs do
     |> put_in_reply_to(post, remote)
     |> put_tag(post, remote, hashtags)
     |> put_attachments(post)
+    |> put_interaction_policy(user)
   end
+
+  @doc """
+  The Note as a **standalone document**, with the JSON-LD context it needs.
+
+  The permalink serves the same object the `Create` carries, and until issue
+  #1608 it stamped a bare activitystreams context onto it by hand at the
+  controller. That was survivable while the Note used only core terms; the
+  moment it advertises an interaction policy, a context that does not define
+  those terms makes a conforming consumer drop them — so the page would promise
+  nothing while the delivered copy promised quoting, which is the worst of the
+  three possible answers.
+  """
+  def note_document(%Post{} = post, author),
+    do: post |> note(author) |> Map.put("@context", note_context())
+
+  # Who may quote this post (FEP-044f, issue #1608).
+  #
+  # Always emitted, in both directions. Mastodon maps an **absent** policy to
+  # "nobody", so silence would already be a decision — and one a reader could
+  # not tell apart from "this server has never heard of quoting". Saying it
+  # outright means the author's answer travels either way.
+  #
+  # `automaticApproval` names the public collection when the author allows
+  # quoting, and the author themselves when they do not: a self-quote is
+  # permitted regardless (Mastodon does not even ask), so naming them is the
+  # narrowest true statement rather than an empty list nobody has to interpret.
+  defp put_interaction_policy(note, author) do
+    approval = if quotes_allowed?(author), do: @public, else: actor_url(author)
+
+    Map.put(note, "interactionPolicy", %{
+      "canQuote" => %{"automaticApproval" => [approval], "manualApproval" => []}
+    })
+  end
+
+  # A subject minted before the column existed reads `nil` from a struct built
+  # by an older release mid-deploy; treat that as the column default rather than
+  # as a refusal.
+  defp quotes_allowed?(%{fediverse_quotes?: false}), do: false
+  defp quotes_allowed?(_author), do: true
 
   # The author's declared language federates as AS2 `contentMap` (issue
   # #1488) — the field Mastodon reads a Note's language from, and without

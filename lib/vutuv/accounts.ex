@@ -928,6 +928,7 @@ defmodule Vutuv.Accounts do
     # copies themselves are covered by the actor `Delete`, which asks remote
     # servers to purge the actor *and* its posts.
     Vutuv.Fediverse.drop_post_deliveries(user)
+    Vutuv.Fediverse.drop_quote_authorizations(user)
 
     # Kill every device's live sockets before the cascade removes the session
     # rows (after which their per-session topics are unknowable), so open tabs

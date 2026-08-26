@@ -64,6 +64,10 @@ defmodule Vutuv.Organizations.Organization do
     # every externally visible part of that half is gated on it, and federating
     # cannot be fully taken back once a remote server holds a copy.
     field(:fediverse_followers?, :boolean, default: false)
+    # Whether other accounts may quote the page's posts (issue #1608). Mirrors
+    # `users.fediverse_quotes?`, on by default for the same reason: a page that
+    # deliberately publishes outward is publishing.
+    field(:fediverse_quotes?, :boolean, default: true)
     field(:mastodon_clients?, :boolean, default: false)
     field(:status, :string, default: "pending")
     field(:verified_at, :naive_datetime)

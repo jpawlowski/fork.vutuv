@@ -153,7 +153,8 @@ defmodule Vutuv.FediverseBlocklistTest do
                cached_posts: 0,
                deliveries: 1,
                notes: 0,
-               post_deliveries: 0
+               post_deliveries: 0,
+               quote_authorizations: 0
              }
 
       assert [%Follower{actor_uri: "https://social.example/users/alice"}] = Repo.all(Follower)

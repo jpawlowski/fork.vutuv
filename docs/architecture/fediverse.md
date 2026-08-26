@@ -1339,6 +1339,100 @@ us. Asking it over the network would be vutuv WebFingering itself and could only
 route the visitor back here, so a signed-in member naming it simply gets the
 plain vutuv tag follow. That is `own_host?/1` again, in its third caller.
 
+## Letting other networks quote a post (issue #1608)
+
+Mastodon 4.5 authors quote posts, and it does so under **FEP-044f, "consent-
+respecting quote posts"** — the one part of the fediverse where showing somebody
+else's words is gated on that author's server saying yes. Two properties decide
+whether a vutuv post can be quoted at all, and until this issue we had neither,
+which is why a member could not quote a vutuv post from Ivory: the button was
+not offered, and forcing it would have produced a quote that stayed "pending"
+forever.
+
+**The policy is advertised, in both directions.** Every Note now carries
+
+```json
+"interactionPolicy": {"canQuote": {"automaticApproval": ["…#Public"], "manualApproval": []}}
+```
+
+when the author allows quoting, and `automaticApproval` naming the **author
+themselves** when they do not. Silence was not an option: Mastodon maps an
+absent policy to "nobody", so saying nothing is already a decision — and one a
+reader cannot tell apart from "this server has never heard of quoting". Naming
+the author rather than sending an empty list keeps it a true statement, since a
+self-quote is permitted regardless.
+
+The terms live in the document's `@context` (`gts:` for the interaction
+vocabulary, the FEP's own for the quote vocabulary — that split is Mastodon's
+and not ours to tidy), which is why the permalink's Note now goes through
+`Docs.note_document/2` instead of having a bare activitystreams context stamped
+onto it at the controller. A context that does not define the terms makes a
+conforming consumer drop them, so the page would have promised nothing while
+the delivered copy promised quoting.
+
+**The stamp is the permission, not the Accept.** A `QuoteRequest` arriving at
+the inbox is answered with an `Accept` whose `result` points at a
+`QuoteAuthorization` document we serve at
+`/:slug/posts/:id/quote-authorizations/:auth_id`. Third servers — ones that have
+often never spoken to us — fetch that URL before rendering the quote, and fetch
+it again on every render. That is what makes withdrawal real rather than
+advisory: delete the row and the URL answers `404`, and the quote stops
+rendering everywhere that checks.
+
+It answers `404` and not `410` deliberately. Once the row is gone we cannot tell
+a withdrawn permission from one that never existed, and `410 Gone` would be a
+claim about history we cannot support; every consumer treats any non-200 the
+same way.
+
+**What the gates are.** In order: the installation switch, the author federates
+and has `fediverse_quotes?` on, the object really is one of *their* posts, that
+post is public (`Posts.restricted?/1`), not frozen and not still behind the
+image gate, the request names a quoting post, that post is **not hosted here**,
+and the sender is within its inbound cap.
+
+The last of those is worth its own line. A `QuoteRequest` whose `instrument` is
+a vutuv URL would have us stamp one of our own posts as the quote of another —
+a document vouching for a pairing nobody here ever made, minted on a stranger's
+say-so. It is refused.
+
+**Two silences, and the difference is the point.** A request we identified as
+ours and refused gets a `Reject`, because the other side has a pending quote in
+its interface and an answer is the difference between "no" and "that server is
+broken". A request naming a post that is not ours gets **nothing at all**:
+answering would confirm which posts exist here and who holds them.
+
+**The switch is on by default** (`users.fediverse_quotes?`, and the same on a
+page), unlike `fediverse_replies?` beside it. The asymmetry is deliberate: a
+quote redistributes a post that is already public to anybody, which is what a
+reshare has always done here, while holding text written by somebody who never
+signed up is a different kind of ask. Switching it off flips the advertised
+policy to the author alone and answers every request with a `Reject`.
+
+**Withdrawal rides the takedown path.** `revoke_quote_authorizations/1` is
+called from `revoke_post/1`, so a deletion, a freeze *and a narrowed audience*
+all take the outstanding permissions with them — the audience case matters most,
+because it leaves the post in place and nothing else would have cleared them.
+The rows go first and a `Delete(QuoteAuthorization)` follows to whichever
+inboxes we hold, which is a courtesy on top of the `404`, not the mechanism.
+
+Like `fediverse_post_deliveries`, the table carries **no foreign key** to
+`posts`: the withdrawal runs after the post row is gone, so a cascade would
+erase the rows moments before they are needed. And like that table it records
+the Note id **as published**, because an id rebuilt from today's username names
+nothing the other server stored after a rename (issue #1086).
+
+### What is not built here
+
+`manualApproval` — "ask me each time" — is not offered. It needs a queue of
+pending requests with its own interface, the way follow requests have one, and
+half of it would be a notification surface rather than a protocol question.
+
+Neither half of quoting **from** vutuv exists yet: showing a remote quote post
+in the feed (issue #1609), quoting a vutuv post with your own words (#1610), and
+quoting a remote one (#1611), which needs this same handshake in the outbound
+direction. This issue is only the answering side — but it is the half that makes
+vutuv posts quotable from every client that already supports it.
+
 ## Deliberate v1 limits
 
 Inbound **reply text** is stored now (issues #1069 and #1071, see the bullet

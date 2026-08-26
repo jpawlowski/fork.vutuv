@@ -86,6 +86,39 @@ defmodule VutuvWeb.FediverseController do
     end)
   end
 
+  @doc """
+  One quote stamp (FEP-044f, issue #1608): the document a third server fetches
+  before it renders somebody's quote of a vutuv post.
+
+  Absence is the withdrawal. A stamp that was never issued and one the author
+  has taken back both answer `404`, and that is deliberate rather than lazy —
+  we cannot tell the two apart once the row is gone, and `410 Gone` would be a
+  claim about history we cannot support. Every consumer treats any non-200 the
+  same way: no permission, do not show the quote.
+
+  The post id in the path is checked as well as the stamp id, so one post's
+  stamp can never be served from another post's URL — that pairing is the whole
+  content of the document.
+  """
+  def quote_authorization(conn, %{"slug" => slug, "post_id" => post_id, "id" => id}) do
+    with_federated_user(conn, slug, &send_quote_authorization(conn, &1, post_id, id))
+  end
+
+  def organization_quote_authorization(conn, %{
+        "slug" => slug,
+        "post_id" => post_id,
+        "id" => id
+      }) do
+    with_federated_organization(conn, slug, &send_quote_authorization(conn, &1, post_id, id))
+  end
+
+  defp send_quote_authorization(conn, subject, post_id, id) do
+    case Fediverse.get_quote_authorization(post_id, id) do
+      nil -> send_resp(conn, 404, "")
+      authorization -> send_activity_json(conn, Docs.quote_authorization(authorization, subject))
+    end
+  end
+
   def followers(conn, %{"slug" => slug}) do
     with_federated_user(conn, slug, fn user ->
       send_activity_json(
@@ -310,6 +343,20 @@ defmodule VutuvWeb.FediverseController do
        when type in ["Like", "Announce"] do
     user
     |> Fediverse.record_reaction(object, reaction_kind(type), reacting_actor(remote))
+    |> remember_actor_if_stored(remote)
+  end
+
+  # Somebody on another network wants to quote one of the member's posts
+  # (FEP-044f, issue #1608). Answering is the whole feature: Mastodon will not
+  # render a quote until the quoted server has issued a stamp, so a `QuoteRequest`
+  # that falls through to the catch-all below leaves that quote pending forever.
+  #
+  # Every gate — the member's own quoting switch among them — lives in
+  # `Fediverse.record_quote_request/3`, which decides between an `Accept`, a
+  # `Reject` and saying nothing at all. The HTTP answer is 202 either way.
+  defp perform(user, %{"type" => "QuoteRequest"} = activity, remote) do
+    user
+    |> Fediverse.record_quote_request(activity, remote_author(remote))
     |> remember_actor_if_stored(remote)
   end
 
@@ -784,6 +831,13 @@ defmodule VutuvWeb.FediverseController do
   # completing #1069 for pages). Stored under the same retention model as a
   # member's: the text expires unless its origin keeps confirming it, and the
   # takedown ledger can reach it.
+  # The same for a page's post (issue #1608). A page that publishes outward is
+  # publishing, so it answers quote requests exactly as a member does.
+  defp perform_for_organization(organization, %{"type" => "QuoteRequest"} = activity, remote) do
+    Fediverse.record_quote_request(organization, activity, remote_author(remote))
+    :ok
+  end
+
   defp perform_for_organization(organization, %{"type" => "Create"} = activity, remote) do
     Fediverse.record_organization_reply(organization, activity, %{
       uri: remote.id,

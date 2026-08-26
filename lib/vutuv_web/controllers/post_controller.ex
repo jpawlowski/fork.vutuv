@@ -328,10 +328,7 @@ defmodule VutuvWeb.PostController do
   defp send_note(conn, author, post) do
     post = Repo.preload(post, FediverseDocs.note_preloads())
 
-    note =
-      post
-      |> FediverseDocs.note(author)
-      |> Map.put("@context", "https://www.w3.org/ns/activitystreams")
+    note = FediverseDocs.note_document(post, author)
 
     conn
     |> put_resp_content_type("application/activity+json")
