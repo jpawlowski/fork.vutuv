@@ -527,6 +527,8 @@ defmodule Vutuv.Posts.Screenshots do
   @doc "Loads one job by id, raising when it is gone (the admin views' reads)."
   def get_job!(id), do: Repo.get!(PostScreenshot, id)
 
+  ## Reads for the render path
+
   @doc """
   The link preview each of these posts carries — `post_ids` are members' posts,
   `remote_post_ids` cached ones — keyed by the id of the post whose row it is.
@@ -535,9 +537,9 @@ defmodule Vutuv.Posts.Screenshots do
   One query for a whole page rather than one per row, because the caller is
   `Vutuv.MastodonApi.Presenter`'s page renderer, which bundles everything else
   it reads the same way. The two lists stay apart all the way into the `where`,
-  so a page of one kind names one owner column and gets a plain lookup on its
-  unique index — which is every single-status answer the adapter gives, every
-  write among them, since those render one local post and no cached one.
+  so a page of one kind names one owner column and nothing about the other —
+  which is every single-status answer the adapter gives, every write among them,
+  since those render one local post and no cached one.
 
   **Deliberately not read off the `:screenshot` preload.** A dozen endpoints
   hand that renderer posts from a dozen queries, and a card that silently
@@ -558,11 +560,10 @@ defmodule Vutuv.Posts.Screenshots do
     |> Map.new(&{&1.post_id || &1.remote_post_id, &1})
   end
 
-  # Only the owner columns that could hold one of these ids. An `or` spelled
-  # out in the query would name both on every call, so the common one-kind page
-  # would still probe the other column with an empty array — and two unique
-  # index lookups joined by `or` are a bitmap-or with a heap recheck rather
-  # than the plain scan either half is on its own.
+  # Only the owner columns that could hold one of these ids. An `or` spelled out
+  # in the query names both on every call, so the common one-kind page — every
+  # single-status answer the adapter gives — would still probe the other column
+  # with an empty array.
   defp owned_by([], remote_post_ids), do: dynamic([ps], ps.remote_post_id in ^remote_post_ids)
   defp owned_by(post_ids, []), do: dynamic([ps], ps.post_id in ^post_ids)
 

@@ -259,7 +259,7 @@ answer, not a gap.
 **The link preview under a single-link post travels too** (issue #1715). It
 was on both sides of this adapter all along and only the website passed it on —
 `card` was hardcoded `nil` — so the same post showed a preview in a browser and
-a bare URL in an app. `Presenter.preview_card/1` builds Mastodon's `PreviewCard` from
+a bare URL in an app. `Presenter.preview_card/2` builds Mastodon's `PreviewCard` from
 the `post_screenshots` row `Vutuv.Posts.Screenshots` already captured — the
 page's headline, its teaser and the site it belongs to — for a member's post
 and for a cached one alike. **The picture named is always ours**: our server

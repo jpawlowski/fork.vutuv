@@ -88,6 +88,42 @@ defmodule Vutuv.ScreenshotTest do
     end
   end
 
+  # The twin of `url/2` that answers `nil` instead of the stand-in. It exists
+  # because in `url/2` the reasons for that stand-in collapse into one string,
+  # and a caller that must tell "a picture" from "no picture" cannot get them
+  # back out of it — `VutuvWeb.UI.link_thumb_state/3` decides its "shot" tile on
+  # this, and `Vutuv.MastodonApi.Presenter` will not put a placeholder into a
+  # `PreviewCard`'s `image`, where a client would draw it as the linked page's
+  # own artwork. Covered here rather than only through those two, so a
+  # regression names this module instead of surfacing four layers up as an API
+  # bug.
+  describe "stored_url/1" do
+    test "names the served thumb when the file is really there", %{tmp: tmp} do
+      write_thumb(tmp, "thumb-a1b2c3d4e5f6.avif")
+
+      assert Vutuv.Screenshot.stored_url({"a1b2c3d4e5f6.webp", @url}) ==
+               "/screenshots/42/thumb-a1b2c3d4e5f6.avif"
+    end
+
+    test "nil when the row names no screenshot at all" do
+      assert Vutuv.Screenshot.stored_url({nil, @url}) == nil
+    end
+
+    # The #1443 shape: the column names a capture whose bytes are gone.
+    test "nil when the named file is not on disk" do
+      assert Vutuv.Screenshot.stored_url({"a1b2c3d4e5f6.webp", @url}) == nil
+    end
+
+    # Held by the AI image scan. The file may well be on disk — this answers nil
+    # on the scope's state alone, before it ever looks.
+    test "nil while the scan still holds the picture", %{tmp: tmp} do
+      write_thumb(tmp, "thumb-a1b2c3d4e5f6.avif")
+      held = %Url{id: 42, screenshot_moderation: "pending"}
+
+      assert Vutuv.Screenshot.stored_url({"a1b2c3d4e5f6.webp", held}) == nil
+    end
+  end
+
   describe "store/1" do
     setup do
       {:ok, img} = Image.new(1280, 844, color: [200, 200, 200])

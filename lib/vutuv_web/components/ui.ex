@@ -1055,14 +1055,16 @@ defmodule VutuvWeb.UI do
   attr(:class, :any, default: nil)
 
   def link_thumb(assigns) do
-    src = Vutuv.Screenshot.url({assigns.url.screenshot, assigns.url}, :thumb)
+    # Two answers from one read: `stored` is the file if there is one, `src` is
+    # what the `img` renders either way.
+    stored = Vutuv.Screenshot.stored_url({assigns.url.screenshot, assigns.url})
     pixelated_url = Vutuv.Screenshot.pixelated_url(assigns.url)
 
     assigns =
       assigns
-      |> assign(:src, src)
+      |> assign(:src, stored || Vutuv.Screenshot.placeholder_url())
       |> assign(:pixelated_url, pixelated_url)
-      |> assign(:state, link_thumb_state(assigns.url, src, pixelated_url))
+      |> assign(:state, link_thumb_state(assigns.url, stored, pixelated_url))
 
     ~H"""
     <span :if={@state == "pixelated"} class={["relative block", @class]} data-link-thumb="pixelated">
@@ -1104,15 +1106,17 @@ defmodule VutuvWeb.UI do
   # Which of the four tiles this link gets, decided once so the three branches
   # above read as one choice rather than as three conditions that must agree.
   #
-  # "shot" is read off the **resolved src**, not off the column: a row can name
-  # a capture whose file is not on disk, and `Screenshot.url/2` then answers the
-  # placeholder (issue #1443) — calling that tile "shot" would be a state
-  # nobody could act on.
-  defp link_thumb_state(url, src, pixelated_url) do
+  # "shot" is whether a file is really **served**, not whether the column names
+  # one: a row can outlive its bytes (issue #1443), and calling that tile "shot"
+  # would be a state nobody could act on. `Vutuv.Screenshot.stored_url/1` is
+  # where that question lives — asking `url/2` and comparing its answer against
+  # `placeholder_url/0` is the same question re-derived from a string, and the
+  # day a fourth reason for the stand-in arrives it answers "shot" for it.
+  defp link_thumb_state(url, stored, pixelated_url) do
     cond do
       pixelated_url -> "pixelated"
       is_nil(url.screenshot) and Vutuv.ScreenshotBlocklist.blocked?(url.value) -> "site"
-      src != Vutuv.Screenshot.placeholder_url() -> "shot"
+      stored -> "shot"
       true -> "pending"
     end
   end

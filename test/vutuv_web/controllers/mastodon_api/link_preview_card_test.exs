@@ -25,6 +25,8 @@ defmodule VutuvWeb.MastodonApi.LinkPreviewCardTest do
   import Vutuv.PostsHelpers
 
   alias Ecto.Changeset
+  alias Vutuv.Fediverse.RemotePost
+  alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostScreenshot
   alias Vutuv.Posts.Screenshots
   alias Vutuv.Repo
@@ -43,7 +45,11 @@ defmodule VutuvWeb.MastodonApi.LinkPreviewCardTest do
   # the way the worker does — through `Vutuv.Screenshot.store/1`, so the served
   # thumb is really under the row's own id and `Screenshot.stored_url/1` finds
   # it there. Only the tests that follow the URL pay for that.
-  defp preview(owner_key, owner_id, attrs) do
+  defp preview(owner, attrs \\ [])
+  defp preview(%Post{id: id}, attrs), do: preview_row(:post_id, id, attrs)
+  defp preview(%RemotePost{id: id}, attrs), do: preview_row(:remote_post_id, id, attrs)
+
+  defp preview_row(owner_key, owner_id, attrs) do
     {picture, attrs} = Keyword.pop(attrs, :screenshot, "deadbeef1234.jpg")
 
     row =
@@ -74,10 +80,12 @@ defmodule VutuvWeb.MastodonApi.LinkPreviewCardTest do
   defp store_thumb(row) do
     source = tmp_jpeg("capture")
 
-    on_exit(fn ->
-      File.rm_rf(Vutuv.Uploads.disk_dir("screenshots/#{row.id}"))
-      File.rm_rf(Vutuv.Uploads.disk_dir("originals/screenshots/#{row.id}"))
-    end)
+    # `Vutuv.Screenshot.delete/1` and not two `rm_rf`s of paths spelled out
+    # here: this module writes into the real checkout, so cleanup that drifts
+    # from the uploader's layout leaves member-shaped image files in the working
+    # tree — and hand-built paths already missed the quarantine tree the store
+    # uses whenever image moderation is on.
+    on_exit(fn -> Vutuv.Screenshot.delete(row) end)
 
     {:ok, file} = Vutuv.Screenshot.store({%Plug.Upload{path: source, filename: "shot.jpg"}, row})
     file
@@ -102,7 +110,7 @@ defmodule VutuvWeb.MastodonApi.LinkPreviewCardTest do
     setup %{conn: conn} do
       author = federating_member()
       post = link_post(author)
-      row = preview(:post_id, post.id, screenshot: :capture)
+      row = preview(post, screenshot: :capture)
 
       {:ok, conn: mastodon_conn(conn, mastodon_token(author, ["read"])), post: post, preview: row}
     end
@@ -182,7 +190,7 @@ defmodule VutuvWeb.MastodonApi.LinkPreviewCardTest do
 
     test "a job still waiting to be captured has no card", ctx do
       post = link_post(ctx.author)
-      preview(:post_id, post.id, status: "pending", screenshot: nil)
+      preview(post, status: "pending", screenshot: nil)
 
       assert card(ctx.conn, "/api/v1/statuses/#{post.id}") == nil
     end
@@ -192,8 +200,8 @@ defmodule VutuvWeb.MastodonApi.LinkPreviewCardTest do
     # they removed.
     test "a dismissed preview has no card", ctx do
       post = link_post(ctx.author)
-      row = preview(:post_id, post.id, [])
-      {:ok, _dismissed} = Screenshots.dismiss(Repo.reload!(row))
+      row = preview(post)
+      {:ok, _dismissed} = Screenshots.dismiss(row)
 
       assert card(ctx.conn, "/api/v1/statuses/#{post.id}") == nil
     end
@@ -202,7 +210,7 @@ defmodule VutuvWeb.MastodonApi.LinkPreviewCardTest do
     # `PreviewCard` whose `title` is empty is a grey tile in every client.
     test "a capture with no words at all has no card", ctx do
       post = link_post(ctx.author)
-      preview(:post_id, post.id, title: nil, description: nil, site_name: nil)
+      preview(post, title: nil, description: nil, site_name: nil)
 
       assert card(ctx.conn, "/api/v1/statuses/#{post.id}") == nil
     end
@@ -213,7 +221,7 @@ defmodule VutuvWeb.MastodonApi.LinkPreviewCardTest do
     # picture rather than a generic tile.
     test "a row whose file is missing keeps its words and loses its picture", ctx do
       post = link_post(ctx.author)
-      preview(:post_id, post.id, [])
+      preview(post)
 
       card = card(ctx.conn, "/api/v1/statuses/#{post.id}")
 
@@ -233,7 +241,7 @@ defmodule VutuvWeb.MastodonApi.LinkPreviewCardTest do
         Vutuv.Posts.create_pending_image(ctx.author, tmp_jpeg("photo"), "photo.jpg")
 
       post = create_post!(ctx.author, %{body: "Mit Foto: #{@url}", image_ids: [picture.id]})
-      preview(:post_id, post.id, [])
+      preview(post)
 
       status = ctx.conn |> get("/api/v1/statuses/#{post.id}") |> json_response(200)
 
@@ -252,7 +260,7 @@ defmodule VutuvWeb.MastodonApi.LinkPreviewCardTest do
     setup %{conn: conn} do
       reader = federating_member()
       post = cached_post(remote_account(), content_text: "Lest das: #{@url}")
-      row = preview(:remote_post_id, post.id, screenshot: :capture)
+      row = preview(post, screenshot: :capture)
 
       {:ok, conn: mastodon_conn(conn, mastodon_token(reader, ["read"])), post: post, preview: row}
     end

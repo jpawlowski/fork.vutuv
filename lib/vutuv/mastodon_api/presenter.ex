@@ -24,6 +24,7 @@ defmodule Vutuv.MastodonApi.Presenter do
   alias Vutuv.Profiles.Url
   alias Vutuv.Profiles.VerifiedLinks
   alias Vutuv.RemoteMedia
+  alias Vutuv.Screenshot
   alias Vutuv.Tags.Tag
   alias Vutuv.UUIDv7
   alias VutuvWeb.Markdown
@@ -1129,7 +1130,7 @@ defmodule Vutuv.MastodonApi.Presenter do
   defp preview_card([], %PostScreenshot{} = preview) do
     if PostScreenshot.card?(preview) and PostScreenshot.ready?(preview) do
       # Once per card and not three times: naming the file asks the disk for it
-      # (`Vutuv.Screenshot.url/2`), and the two dimensions describe that same
+      # (`Screenshot.stored_url/1`), and the two dimensions describe that same
       # picture, so they fall to zero with it.
       image = card_image(preview)
 
@@ -1184,10 +1185,8 @@ defmodule Vutuv.MastodonApi.Presenter do
   # screenshot", and an app drawing that same tile would read it as the linked
   # page's own artwork. The words are still true, so the card stays.
   defp card_image(%PostScreenshot{} = preview) do
-    case Vutuv.Screenshot.stored_url({preview.screenshot, preview}) do
-      nil -> nil
-      path -> MastodonApi.main_url(path)
-    end
+    if path = Screenshot.stored_url({preview.screenshot, preview}),
+      do: MastodonApi.main_url(path)
   end
 
   defp card_dimension(nil, _no_picture), do: 0
