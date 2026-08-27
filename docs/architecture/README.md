@@ -79,7 +79,14 @@ installing and operating vutuv in [Running your own vutuv](../ADMINS.md).
   questions — `access:` is who may write, `created_by:` is who calls
   `:ets.new/2` — and a cache whose readers may need the table before the
   GenServer has it sets `created_by: :any_process`. A cold cache is never an
-  error: every caller has the direct query the cache exists to spare
+  error: every caller has the direct query the cache exists to spare. They all
+  tick; what differs is what the tick does. The ones whose contents are a pure
+  function of the database throw the whole table away and rebuild it, and those
+  add `Vutuv.EtsCache.Snapshot` on top — `refresh_every:` plus a `refresh_flag:`
+  naming the `config :vutuv` switch that stops the timer in tests — and
+  implement its one `snapshot(table)` callback. The rest sweep rows other
+  processes wrote and would be destroyed by a rebuild, so they stay on plain
+  `Vutuv.EtsCache`
 - **Ids**: all database ids are UUID v7 (`Vutuv.UUIDv7`): time-ordered, minted
   in the app, never integers or UUID v4.
 

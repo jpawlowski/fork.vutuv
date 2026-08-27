@@ -19,13 +19,13 @@ defmodule Vutuv.Social.PopularUsers do
   so behaviour is unchanged, only cheaper.
   """
 
-  use Vutuv.EtsCache, access: :protected
+  use Vutuv.EtsCache.Snapshot,
+    refresh_every: :timer.minutes(10),
+    refresh_flag: :refresh_popular_users
 
   alias Vutuv.EtsCache
 
-  @table __MODULE__
   @pool_size 1000
-  @refresh_interval :timer.minutes(10)
 
   @doc "How many members the snapshot ranks (the largest servable limit)."
   def pool_size, do: @pool_size
@@ -34,7 +34,7 @@ defmodule Vutuv.Social.PopularUsers do
   The cached top `limit` as `{:ok, users}`, or `:miss` when the snapshot
   cannot answer (not seeded yet, table absent, or `limit` beyond the pool).
   """
-  def top(limit, table \\ @table)
+  def top(limit, table \\ default_table())
 
   def top(limit, _table) when limit > @pool_size, do: :miss
 
@@ -42,43 +42,8 @@ defmodule Vutuv.Social.PopularUsers do
     with {:ok, users} <- EtsCache.fetch(table, :pool), do: {:ok, Enum.take(users, limit)}
   end
 
-  @doc "Recompute the snapshot now (synchronous; used by tests)."
-  def refresh(server \\ __MODULE__), do: GenServer.call(server, :refresh)
-
   @impl true
-  def init(opts) do
-    table = open_table(Keyword.get(opts, :table, @table))
-
-    interval = Keyword.get(opts, :refresh_interval, @refresh_interval)
-
-    # The seed is a 0ms refresh rather than an inline query: the ranking scan
-    # must not block the supervisor at boot. Until it lands, readers miss and
-    # fall back to the direct query — exactly the pre-cache behaviour.
-    if Keyword.get(opts, :refresh?, enabled?()), do: schedule(0)
-
-    {:ok, %{table: table, interval: interval}}
-  end
-
-  @impl true
-  def handle_call(:refresh, _from, state) do
-    snapshot(state.table)
-    {:reply, :ok, state}
-  end
-
-  @impl true
-  def handle_info(:refresh, state) do
-    snapshot(state.table)
-    schedule(state.interval)
-    {:noreply, state}
-  end
-
-  def handle_info(_other, state), do: {:noreply, state}
-
-  defp snapshot(table) do
+  def snapshot(table) do
     :ets.insert(table, {:pool, Vutuv.Social.compute_most_followed(@pool_size)})
   end
-
-  defp schedule(interval), do: Process.send_after(self(), :refresh, interval)
-
-  defp enabled?, do: Application.get_env(:vutuv, :refresh_popular_users, true)
 end

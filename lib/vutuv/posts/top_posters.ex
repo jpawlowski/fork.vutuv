@@ -17,15 +17,15 @@ defmodule Vutuv.Posts.TopPosters do
   cheaper. The per-viewer exclusions stay per-request in the profile.
   """
 
-  use Vutuv.EtsCache, access: :protected
+  use Vutuv.EtsCache.Snapshot,
+    refresh_every: :timer.minutes(10),
+    refresh_flag: :refresh_top_posters
 
   alias Vutuv.EtsCache
 
-  @table __MODULE__
   # The one posting window the profile asks for; any other window is a :miss.
   @window_days 28
   @pool_size 100
-  @refresh_interval :timer.minutes(10)
 
   @doc "The snapshot's posting window in days (the profile rail's window)."
   def window_days, do: @window_days
@@ -38,7 +38,7 @@ defmodule Vutuv.Posts.TopPosters do
   `:miss` when the snapshot cannot answer (a different window, not seeded
   yet, table absent, or `limit` beyond the pool).
   """
-  def top(days, limit, table \\ @table)
+  def top(days, limit, table \\ default_table())
 
   def top(days, limit, _table) when days != @window_days or limit > @pool_size, do: :miss
 
@@ -46,46 +46,11 @@ defmodule Vutuv.Posts.TopPosters do
     with {:ok, users} <- EtsCache.fetch(table, :pool), do: {:ok, Enum.take(users, limit)}
   end
 
-  @doc "Recompute the snapshot now (synchronous; used by tests)."
-  def refresh(server \\ __MODULE__), do: GenServer.call(server, :refresh)
-
   @impl true
-  def init(opts) do
-    table = open_table(Keyword.get(opts, :table, @table))
-
-    interval = Keyword.get(opts, :refresh_interval, @refresh_interval)
-
-    # The seed is a 0ms refresh rather than an inline query: the ranking scan
-    # must not block the supervisor at boot. Until it lands, readers miss and
-    # fall back to the direct query — exactly the pre-cache behaviour.
-    if Keyword.get(opts, :refresh?, enabled?()), do: schedule(0)
-
-    {:ok, %{table: table, interval: interval}}
-  end
-
-  @impl true
-  def handle_call(:refresh, _from, state) do
-    snapshot(state.table)
-    {:reply, :ok, state}
-  end
-
-  @impl true
-  def handle_info(:refresh, state) do
-    snapshot(state.table)
-    schedule(state.interval)
-    {:noreply, state}
-  end
-
-  def handle_info(_other, state), do: {:noreply, state}
-
-  defp snapshot(table) do
+  def snapshot(table) do
     :ets.insert(
       table,
       {:pool, Vutuv.Posts.compute_top_recent_posters(@window_days, @pool_size)}
     )
   end
-
-  defp schedule(interval), do: Process.send_after(self(), :refresh, interval)
-
-  defp enabled?, do: Application.get_env(:vutuv, :refresh_top_posters, true)
 end
