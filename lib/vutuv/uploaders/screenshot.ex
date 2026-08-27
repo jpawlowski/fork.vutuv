@@ -145,34 +145,48 @@ defmodule Vutuv.Screenshot do
 
   @doc """
   Root-relative URL for the served thumb, `nil` for `:original` (the original
-  is never URL-addressable). Falls back to `placeholder_url/0` when there is no
-  screenshot.
-
-  **It also falls back when the row names a file that is not there** (issue
-  #1443). A row can outlive its bytes — a release flipped the moderation state
-  and then died before promoting the file out of quarantine, and the state is
-  invisible to the drift repair, which only looks for rows still `pending`.
-  Building the path anyway put a URL that 404s on a public profile for ten
-  hours. The `File.exists?` check below already had to run to choose between
-  the AVIF and a legacy WebP, so answering "neither" costs nothing and makes
-  every such cause degrade to "no screenshot yet" instead of a broken image.
+  is never URL-addressable). Falls back to `placeholder_url/0` wherever
+  `stored_url/1` finds nothing served — which is what every `img` tag here
+  wants, and what a caller who needs to know there is no picture must not use.
   """
   def url(file_and_scope, version \\ :thumb)
 
-  def url({nil, _scope}, :thumb), do: placeholder_url()
   def url({_screenshot, _scope}, :original), do: nil
+  def url(file_and_scope, :thumb), do: stored_url(file_and_scope) || placeholder_url()
 
-  def url({screenshot, scope}, :thumb) do
+  @doc """
+  The thumb really on disk for this scope, or `nil`. Three causes answer `nil`:
+  no screenshot at all, moderation limbo, and a row that names a file which is
+  not there.
+
+  **That third one is why the check exists** (issue #1443). A row can outlive
+  its bytes — a release flipped the moderation state and then died before
+  promoting the file out of quarantine, and the state is invisible to the drift
+  repair, which only looks for rows still `pending`. Building the path anyway
+  put a URL that 404s on a public profile for ten hours. The `File.exists?` in
+  `served_filename/2` already had to run to choose between the AVIF and a
+  legacy WebP, so answering "neither" costs nothing.
+
+  **Ask this, not `url/2`, wherever the absence is the answer.** In `url/2` the
+  three causes collapse into one string, and a caller cannot get them back out
+  of it: comparing against `placeholder_url/0` looks like it does, and is a
+  re-derivation of this module's private state that the day a fourth cause
+  arrives — or the stand-in becomes per-scope — silently starts passing the
+  placeholder through as a real picture. That is worst where the picture goes
+  to somebody who cannot see it is a stand-in, such as the Mastodon
+  `PreviewCard`'s `image` (`Vutuv.MastodonApi.Presenter`), which a client draws
+  as the linked page's own artwork.
+  """
+  def stored_url(file_and_scope)
+
+  def stored_url({nil, _scope}), do: nil
+
+  def stored_url({screenshot, scope}) do
     cond do
       # Moderation limbo: renders exactly like "no screenshot yet".
-      held_in_limbo?(scope) ->
-        placeholder_url()
-
-      filename = served_filename(scope, screenshot) ->
-        served_url(scope, filename)
-
-      true ->
-        placeholder_url()
+      held_in_limbo?(scope) -> nil
+      filename = served_filename(scope, screenshot) -> served_url(scope, filename)
+      true -> nil
     end
   end
 

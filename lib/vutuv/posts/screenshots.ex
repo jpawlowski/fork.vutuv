@@ -534,8 +534,10 @@ defmodule Vutuv.Posts.Screenshots do
 
   One query for a whole page rather than one per row, because the caller is
   `Vutuv.MastodonApi.Presenter`'s page renderer, which bundles everything else
-  it reads the same way. The two lists stay apart so each owner column is
-  probed only with the ids that could be in it; both carry a unique index.
+  it reads the same way. The two lists stay apart all the way into the `where`,
+  so a page of one kind names one owner column and gets a plain lookup on its
+  unique index — which is every single-status answer the adapter gives, every
+  write among them, since those render one local post and no cached one.
 
   **Deliberately not read off the `:screenshot` preload.** A dozen endpoints
   hand that renderer posts from a dozen queries, and a card that silently
@@ -551,12 +553,21 @@ defmodule Vutuv.Posts.Screenshots do
 
   def preview_map(post_ids, remote_post_ids)
       when is_list(post_ids) and is_list(remote_post_ids) do
-    from(ps in PostScreenshot,
-      where: ps.post_id in ^post_ids or ps.remote_post_id in ^remote_post_ids
-    )
+    from(ps in PostScreenshot, where: ^owned_by(post_ids, remote_post_ids))
     |> Repo.all()
     |> Map.new(&{&1.post_id || &1.remote_post_id, &1})
   end
+
+  # Only the owner columns that could hold one of these ids. An `or` spelled
+  # out in the query would name both on every call, so the common one-kind page
+  # would still probe the other column with an empty array — and two unique
+  # index lookups joined by `or` are a bitmap-or with a heap recheck rather
+  # than the plain scan either half is on its own.
+  defp owned_by([], remote_post_ids), do: dynamic([ps], ps.remote_post_id in ^remote_post_ids)
+  defp owned_by(post_ids, []), do: dynamic([ps], ps.post_id in ^post_ids)
+
+  defp owned_by(post_ids, remote_post_ids),
+    do: dynamic([ps], ps.post_id in ^post_ids or ps.remote_post_id in ^remote_post_ids)
 
   ## Draining the queue
 

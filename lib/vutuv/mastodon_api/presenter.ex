@@ -159,7 +159,7 @@ defmodule Vutuv.MastodonApi.Presenter do
       # codebase batches them by id, and so does this one.
       remote_images: Fediverse.list_remote_images(remote_ids),
       # The preview card under a single-link post, of either world (issue
-      # #1715), batched for the reason `Screenshots.preview_map/1` gives: a
+      # #1715), batched for the reason `Screenshots.preview_map/2` gives: a
       # dozen endpoints feed this renderer, and reading the `:screenshot`
       # preload would answer "this link has no preview" wherever one of them
       # forgot it, rather than raise.
@@ -425,7 +425,7 @@ defmodule Vutuv.MastodonApi.Presenter do
         uri: post.object_uri,
         account: account(post.remote_account),
         media_attachments: attachments,
-        card: remote_preview_card(post, attachments, context),
+        card: remote_preview_card(post, attachments, context.link_previews[post.id]),
         sensitive: post.sensitive,
         spoiler_text: post.summary || ""
       }
@@ -1173,21 +1173,21 @@ defmodule Vutuv.MastodonApi.Presenter do
   # website, because a client hides `media_attachments` behind `sensitive` and
   # has never hidden a card. Propping open a lid its author closed is precisely
   # what the preview must not do.
-  defp remote_preview_card(%RemotePost{} = post, attachments, context) do
-    if RemotePost.warned?(post),
-      do: nil,
-      else: preview_card(attachments, context.link_previews[post.id])
+  defp remote_preview_card(%RemotePost{} = post, attachments, preview) do
+    if RemotePost.warned?(post), do: nil, else: preview_card(attachments, preview)
   end
 
-  # Our own stored thumb, absolute like every other URL here. `nil` rather than
-  # `Vutuv.Screenshot.placeholder_url/0` for a row whose file is not on disk:
-  # the website draws the bundled stand-in in the card's picture cell, where it
-  # reads as "no screenshot", and a client drawing that same tile has no such
-  # cell to explain it. The words are still true, so the card stays.
+  # Our own stored thumb, absolute like every other URL here — and `nil` where
+  # the row names a file that is not on disk. `stored_url/1` rather than
+  # `url/2`, because a client has nowhere to put the bundled stand-in: the
+  # website draws it in the card's picture cell, where it reads as "no
+  # screenshot", and an app drawing that same tile would read it as the linked
+  # page's own artwork. The words are still true, so the card stays.
   defp card_image(%PostScreenshot{} = preview) do
-    path = Vutuv.Screenshot.url({preview.screenshot, preview}, :thumb)
-
-    if path != Vutuv.Screenshot.placeholder_url(), do: MastodonApi.main_url(path)
+    case Vutuv.Screenshot.stored_url({preview.screenshot, preview}) do
+      nil -> nil
+      path -> MastodonApi.main_url(path)
+    end
   end
 
   defp card_dimension(nil, _no_picture), do: 0
