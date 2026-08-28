@@ -17159,7 +17159,7 @@ msgstr ""
 msgid "This post was written on another network. Answering it means sending your words to that network, which vutuv only does for members who have switched Fediverse participation on."
 msgstr ""
 
-#: lib/vutuv_web/live/post_live/remote_actions_component.ex:167
+#: lib/vutuv_web/live/post_live/remote_actions_component.ex:181
 #, elixir-autogen, elixir-format
 msgid "Reposted. Your followers see it now."
 msgstr ""
@@ -17402,7 +17402,7 @@ msgid "Address of the post"
 msgstr ""
 
 #: lib/vutuv_web/components/fediverse_components.ex:538
-#: lib/vutuv_web/live/post_live/remote_actions_component.ex:262
+#: lib/vutuv_web/live/post_live/remote_actions_component.ex:276
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Fediverse settings"
 msgstr ""

@@ -18242,7 +18242,7 @@ msgstr ""
 "le Sue parole a quella rete, cosa che vutuv fa solo per i membri che hanno "
 "attivato la partecipazione al Fediverso."
 
-#: lib/vutuv_web/live/post_live/remote_actions_component.ex:167
+#: lib/vutuv_web/live/post_live/remote_actions_component.ex:181
 #, elixir-autogen, elixir-format
 msgid "Reposted. Your followers see it now."
 msgstr "Ripubblicato. Ora i Suoi follower lo vedono."
@@ -18507,7 +18507,7 @@ msgid "Address of the post"
 msgstr "Indirizzo del post"
 
 #: lib/vutuv_web/components/fediverse_components.ex:538
-#: lib/vutuv_web/live/post_live/remote_actions_component.ex:262
+#: lib/vutuv_web/live/post_live/remote_actions_component.ex:276
 #, elixir-autogen, elixir-format
 msgid "Fediverse settings"
 msgstr "Impostazioni del Fediverso"
