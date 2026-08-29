@@ -706,6 +706,22 @@ const Hooks = {
   MarkdownEditor,
   TagInput,
   FeedUrl,
+  // Tells the app shell that this document can be patched between tabs
+  // (issue #1731). The hook's mere existence is the claim — nothing it sends
+  // matters — because only a bundle built from a release carrying
+  // `./tab_scroll` can push it at all.
+  //
+  // That is the point: a live navigation leaves the document standing, so the
+  // arrival scroll reset and the per-tab restore live in that module, and a
+  // tab left open across a deploy keeps this release's JavaScript while its
+  // socket reconnects to the next one. Without the claim the shell keeps
+  // handing out plain `href`s there, and the browser does the resetting, as it
+  // always did.
+  ShellNavReady: {
+    mounted() {
+      this.pushEvent("shell:can_patch", {})
+    },
+  },
   LocalTime: {
     mounted() {
       localizeTime(this.el)

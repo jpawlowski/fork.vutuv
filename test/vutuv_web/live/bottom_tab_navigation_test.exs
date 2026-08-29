@@ -3,12 +3,13 @@ defmodule VutuvWeb.BottomTabNavigationTest do
   Switching bottom tabs patches the content instead of rebuilding the document
   (issue #1731).
 
-  Three separate things have to hold, and each fails silently on its own — which
+  Four separate things have to hold, and each fails silently on its own — which
   is why they are asserted rather than eyeballed. The destinations have to share
   one `live_session` (`<.link navigate>` degrades to a full load across a
   boundary and says nothing); the links have to actually BE live-navigation
-  links; and the sticky shell, which by definition never mounts again, has to
-  learn where the reader went.
+  links; the document has to have said it can be patched at all, which a tab
+  open across a deploy has not; and the sticky shell, which by definition never
+  mounts again, has to learn where the reader went.
 
   `/feed`'s agent-format siblings surviving the move to a `live` route is the
   other half, covered by `VutuvWeb.NewsfeedControllerTest`.
@@ -18,21 +19,28 @@ defmodule VutuvWeb.BottomTabNavigationTest do
   import Phoenix.LiveViewTest
 
   alias Phoenix.LiveView.Debug
-  alias Vutuv.Sessions
   alias VutuvWeb.Live.ShellNav
 
   # The bottom tab bar, so the assertions cannot be satisfied by the desktop
   # nav's link to the same page.
   @tab_bar ~s(nav[data-nav-bar="tabs"])
 
-  defp session_for(user, extra) do
-    {token, _session} = Sessions.start_session(user, build_conn(), alert: false)
-    Map.merge(%{"session_token" => token}, extra)
+  defp shell(conn, user, extra) do
+    view = unclaimed_shell(conn, user, extra)
+
+    # What a browser running THIS release does on mount: the ShellNavReady hook
+    # says the document can be patched between tabs. Without that claim the
+    # navs hand out plain `href`s, so every patching assertion below has to
+    # start where a current browser starts.
+    render_hook(view, "shell:can_patch", %{})
+    view
   end
 
-  defp shell(conn, user, extra) do
+  # The same shell before any such claim — a document from an older release,
+  # which is what a tab open across a deploy is.
+  defp unclaimed_shell(conn, user, extra) do
     {:ok, view, _html} =
-      live_isolated(conn, VutuvWeb.ShellLive, session: session_for(user, extra))
+      live_isolated(conn, VutuvWeb.ShellLive, session: shell_session(user, extra))
 
     view
   end
@@ -74,6 +82,26 @@ defmodule VutuvWeb.BottomTabNavigationTest do
         assert has_element?(view, ~s(#{@tab_bar} a[href="#{path}"][data-phx-link="redirect"])),
                "the #{path} tab is not a live-navigation link"
       end
+    end
+
+    # A live navigation leaves the document standing, so `assets/js/tab_scroll.js`
+    # is what resets the scroll on arrival and puts back where each tab was
+    # left. A tab open across a deploy runs the PREVIOUS release's JavaScript
+    # against the new server, and that bundle has neither — patching into it
+    # would drop the reader half a screen down whatever they switched to. So the
+    # shell waits to be told, and the telling is the hook's existence.
+    test "a document that has not said it can patch gets ordinary links", %{conn: conn} do
+      view = unclaimed_shell(conn, insert(:user), %{"path" => "/feed"})
+
+      for path <- ~w(/feed /search /messages /notifications) do
+        refute has_element?(view, ~s(#{@tab_bar} a[href="#{path}"][data-phx-link])),
+               "the #{path} tab patches into a document that never claimed it could"
+      end
+
+      render_hook(view, "shell:can_patch", %{})
+
+      assert has_element?(view, ~s(#{@tab_bar} a[href="/messages"][data-phx-link="redirect"])),
+             "the claim did not turn the tabs back into live-navigation links"
     end
 
     test "the profile tab is an ordinary link while /:slug is a controller route", %{conn: conn} do

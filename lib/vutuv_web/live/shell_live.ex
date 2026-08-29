@@ -229,6 +229,11 @@ defmodule VutuvWeb.ShellLive do
     |> assign(:presence_hidden_ids, MapSet.new())
     |> assign(:messages_count, 0)
     |> assign(:notifications_count, 0)
+    # Whether this document may be patched between tabs at all — see
+    # `handle_event("shell:can_patch", ...)`. False until a browser says
+    # otherwise, which is both the safe answer and the true one: nothing can be
+    # patched before the socket is up.
+    |> assign(:can_patch?, false)
     |> assign_path(path)
     # Admins get one more figure: how many sign-ups confirmed so far today.
     # Zero renders nothing, so it is also the starting value for everyone else.
@@ -400,7 +405,7 @@ defmodule VutuvWeb.ShellLive do
   defp assign_path(socket, path) do
     socket
     |> assign(:path, path)
-    |> assign(:nav_session, live_session(path))
+    |> assign(:nav_session, socket.assigns.can_patch? && live_session(path))
     |> assign(:brand_path, brand_path(socket.assigns.user_param, path))
   end
 
@@ -707,6 +712,25 @@ defmodule VutuvWeb.ShellLive do
   # the hook show it although the member is plainly looking at the page; the
   # away-gate is right for news and would make this button do nothing at all.
   @impl true
+  # The browser saying it carries a bundle that can be patched between tabs
+  # (issue #1731). Until it does, both navs hand out ordinary `href`s.
+  #
+  # The claim is the hook's existence, not anything it reports: only a document
+  # built from a release that has `assets/js/tab_scroll.js` can send this at
+  # all. That matters because a live navigation leaves the document standing,
+  # so resetting the scroll on arrival — and putting back where the reader left
+  # each tab — is that file's job, and a tab open across a deploy keeps running
+  # the PREVIOUS release's JavaScript while its socket reconnects to the new
+  # one. Patching into such a document would drop the reader half a screen down
+  # whatever they switched to, which on a short page is its footer. With no
+  # claim the links stay full loads and the browser resets the scroll itself.
+  #
+  # Everything the path decides is recomputed here, because `nav_session` is a
+  # function of this answer as well as of the path.
+  def handle_event("shell:can_patch", _params, socket) do
+    {:noreply, socket |> assign(:can_patch?, true) |> assign_path(socket.assigns.path)}
+  end
+
   def handle_event("notify:test", _params, %{assigns: %{user_id: nil}} = socket),
     do: {:noreply, socket}
 
@@ -960,6 +984,11 @@ defmodule VutuvWeb.ShellLive do
           </.button>
         </div>
       </div>
+      <%!-- Says this document carries a bundle that can be patched between tabs
+      (issue #1731); see handle_event("shell:can_patch", ...). No `:if` — the
+      navs render for anonymous visitors too, and Search is in the session for
+      them as well. --%>
+      <div id="shell-can-patch" phx-hook="ShellNavReady" phx-update="ignore" class="hidden"></div>
       <div :if={@user_id} id="presence-hook" phx-hook="Presence" phx-update="ignore" class="hidden"></div>
       <%!-- Drives the browser-tab title indicator: prefixes document.title with
       "(N)" for unread messages + notifications and a "•" for new feed posts that

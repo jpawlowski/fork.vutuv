@@ -156,6 +156,20 @@ navigation does not touch the scroll position — LiveView only restores one on
 a back/forward pop — so `assets/js/tab_scroll.js` resets it, and puts back
 where each path was left, the way a phone app does.
 
+That second half is why the shell hands out `navigate` links **only to a
+document that has said it can take one**. A deploy reloads nothing: the socket
+reconnects to the new release and patches into a page that is still running the
+previous release's JavaScript, which has no `tab_scroll.js` in it — so a patch
+there would leave the reader wherever they were scrolled, half a screen down
+whatever they switched to, which on a short page is its footer. The claim is
+the `ShellNavReady` hook's existence rather than anything it reports (only a
+bundle built from a release carrying that module can push the event at all),
+and until it arrives both navs render ordinary `href`s and the browser does the
+resetting, exactly as before. That also covers the seconds before the socket is
+up, where there is nothing to patch into either. `ShellLive` cannot answer this
+with `static_changed?/1`: it is a nested `live_render` child, and connect params
+are root-and-mount-only.
+
 The **add-tag form** (`/settings/tags/new`, `VutuvWeb.TagNewLive`) is the first
 live `/settings` page: it previews the parsed tags while the member types and
 saves over the socket (see
