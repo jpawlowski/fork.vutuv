@@ -61,7 +61,17 @@ import {
 import { Decoration, DecorationSet } from "@milkdown/kit/prose/view"
 import { inputRules, InputRule } from "@milkdown/kit/prose/inputrules"
 import { emojiForShortcode, SHORTCODE_AT_CARET } from "./emoji_data.js"
+import { request } from "./util.js"
 import { openPicker, closePicker, closePickerFor, pickerOpen } from "./emoji_picker.js"
+import {
+  showMentions,
+  closeMentions,
+  closeMentionsFor,
+  mentionsOpenFor,
+  moveMention,
+  acceptMention,
+  setMentionBudget,
+} from "./mention_picker.js"
 
 // The gfm bits we want, minus task lists (extendListItemSchemaForTask +
 // wrapInTaskListInputRule), which the server renders as literal "[ ]" text, and
@@ -372,6 +382,96 @@ const codeFencePreview = (labels) =>
       })
   )
 
+// --- @-mentions (issue #1748) -------------------------------------------
+//
+// A mention stays what it has always been: bare `@handle` text in the stored
+// Markdown, linked server-side at render time (Vutuv.Mentions / VutuvWeb.
+// Markdown). Nothing below changes the document's TEXT — the picker types the
+// handle for you, and the chip is a decoration over that text. So the source,
+// the storage, the renderer and the federated Note see exactly what they saw
+// before this existed.
+//
+// Two halves, both server-answered:
+//
+//   * the picker — `@` plus a letter asks /system/mentions/suggest and offers
+//     matching members and pages; and
+//   * the chip — every handle in the prose is checked against
+//     /system/mentions/check, and only the ones that really exist are drawn as
+//     a chip. A made-up handle stays plain text, which is the honest drawing:
+//     `Mentions.validate_mentions_exist/2` is about to refuse it on save.
+//
+// Both degrade to nothing: with the network down no chips are drawn and no
+// suggestions appear, and typing a mention by hand works exactly as before.
+
+// The `@handle` grammar, kept in step with `Vutuv.Mentions`' `@entity` regex —
+// the ASCII local part every server accepts, and never mid-token (no email
+// `a@b`, no `@@`, no `/@user` Mastodon path). The boundary is written ONCE and
+// both readings below are built from it, so the class that has to track the
+// server cannot drift between them. It is Unicode-aware for the same reason the
+// server's is: `Grüße@ada` is one word.
+const AT_BOUNDARY = String.raw`(?<![\p{L}\p{N}_@/])@`
+
+// Every whole handle in a body. The trailing lookahead is what makes it *whole*
+// in both directions, and both halves are load-bearing. `[A-Za-z0-9_]` stops the
+// engine from backtracking to a shorter handle to satisfy the second half — the
+// classic way a "not followed by X" guard is defeated. `@host.` then excludes a
+// fediverse address: in `@ada@mastodon.social` the run names somebody else's
+// account on another server, which vutuv neither links nor notifies, so chipping
+// the `@ada` in front of it would claim a member of ours had been named. An
+// address on OUR host (`@ada@vutuv.de`) is a real mention and the renderer links
+// it, but it goes unchipped here too — the client does not know which host is
+// ours, and a missing chip is the harmless direction.
+const MENTION_RUN = new RegExp(
+  `${AT_BOUNDARY}([A-Za-z0-9_]+)(?![A-Za-z0-9_]|@[A-Za-z0-9-]+\\.)`,
+  "gu"
+)
+
+// The half-typed mention the caret sits at the end of.
+const MENTION_AT_CARET = new RegExp(`${AT_BOUNDARY}([A-Za-z0-9_]*)$`, "u")
+
+// A handle inside a code span is sample text, not a mention — the same call the
+// renderer makes before it links one. (A fenced block needs no test here: the
+// walk below refuses to descend into one at all.)
+const inCodeSpan = (node) => node.marks?.some((mark) => mark.type.name === "inlineCode")
+
+// Walk every `@handle` in the prose, code excluded. `fn` gets the lowercased
+// handle and its absolute range.
+const eachMention = (doc, fn) => {
+  doc.descendants((node, pos) => {
+    if (node.type.name === "code_block") return false
+    if (!node.isText || inCodeSpan(node)) return
+    for (const match of node.text.matchAll(MENTION_RUN)) {
+      fn(match[1].toLowerCase(), pos + match.index, pos + match.index + match[0].length)
+    }
+  })
+}
+
+// The chip: an inline decoration on the handles the server confirmed. Computed
+// per render like the placeholder and the code-fence preview above — a body is
+// small, and the answer changes as the check comes back.
+const mentionChips = (hook) =>
+  $prose(
+    () =>
+      new Plugin({
+        key: new PluginKey("MDE_MENTION_CHIPS"),
+        props: {
+          decorations(state) {
+            const decorations = []
+            eachMention(state.doc, (handle, from, to) => {
+              if (hook.knownHandle(handle)) {
+                decorations.push(Decoration.inline(from, to, { class: "mde-mention" }))
+              }
+            })
+            return decorations.length ? DecorationSet.create(state.doc, decorations) : null
+          },
+        },
+        view: () => ({
+          update: (view) => hook.syncMentions(view),
+          destroy: () => closeMentionsFor(hook.root),
+        }),
+      })
+  )
+
 // Toolbar button (data-mde-cmd) -> Milkdown command. Each returns the command
 // key + optional payload; `link` is special-cased (it needs a URL).
 const COMMANDS = {
@@ -425,6 +525,18 @@ export const MarkdownEditor = {
     // dropped/pasted (null = current cursor at insert time).
     this.insertQueue = []
 
+    // What this editor knows about the handles it is showing: handle -> does an
+    // account hold it. Filled by the debounced /system/mentions/check below and
+    // kept for the life of the editor — a handle that resolved a keystroke ago
+    // still resolves, and re-asking on every keystroke would make the chip
+    // flicker. Also holds the handles just picked from the list, so their chip
+    // appears the moment they are inserted rather than a round trip later.
+    this.handleCache = new Map()
+    // The run the picker is currently offering for: {from, to, term} — the
+    // range the accepted handle replaces.
+    this.mentionRun = null
+    this.mentionSeq = 0
+
     const placeholderText = this.root.dataset.mdePlaceholder || ""
 
     let editor = Editor.make()
@@ -445,6 +557,7 @@ export const MarkdownEditor = {
       .use(imagePolicy(this.imagesEnabled))
       .use(emojiInputRule())
       .use(codeFencePreview(this.fenceLabels()))
+      .use(mentionChips(this))
 
     if (this.imagesEnabled) {
       editor = editor.use(imageSelectionWatch(this)).use(imageFileCapture(this))
@@ -454,10 +567,16 @@ export const MarkdownEditor = {
     this.editor = await editor.create()
 
     this.ensureTrailingParagraph()
+    // Chip whatever the editor opened with — a restored draft, a post being
+    // edited, a seeded quote. Nothing has been typed yet, so no transaction has
+    // asked about those handles, and without this the mentions in an existing
+    // body stayed plain until the member touched them.
+    this.refreshMentionChips()
     this.applyState()
     this.wireToolbar()
     this.wireSubmitShortcut()
     this.wireSourceEmoji()
+    this.wireMentionKeys()
   },
 
   // Last look at the DOM before morphdom patches it: a manual resize lives in
@@ -523,6 +642,7 @@ export const MarkdownEditor = {
     if (this.mode !== "source") {
       this.setEditorMarkdown(serverMd)
       this.ensureTrailingParagraph()
+      this.refreshMentionChips()
     }
   },
 
@@ -542,6 +662,12 @@ export const MarkdownEditor = {
     // outlive the editor it belongs to (and its onPick closure would hold on to
     // a destroyed hook).
     closePickerFor(this.root)
+    closeMentionsFor(this.root)
+    // A pending suggest/check timer would fire into a destroyed editor —
+    // retaining it (and its document) until it does, then dispatching onto a
+    // dead view. The messages page tears an editor down per closed conversation.
+    clearTimeout(this._mentionTimer)
+    clearTimeout(this._checkTimer)
     // Drop the fullscreen Escape listener if we were destroyed mid-fullscreen
     // (e.g. navigated away with the editor open) — otherwise it survives on
     // `document` and its closure retains the whole editor.
@@ -594,6 +720,17 @@ export const MarkdownEditor = {
         this.canonicalizeMentions(this.canonicalizeAddresses(this.canonicalizeUrls(part)))
       )
         .replace(/<br\s*\/?>/gi, "")
+        // A space at the end of a line is not a space to remark: trailing
+        // whitespace carries no meaning in Markdown, so it escapes the one the
+        // writer typed as `&#x20;` to keep it. vutuv stores none of that — the
+        // renderer decodes the entity back to a space, so nothing breaks, but
+        // the SOURCE is what the `.md`/`.txt` siblings publish and what the
+        // composer re-opens, and `@handle&#x20;` is not what anybody typed.
+        // The mention picker is what made this routine: it inserts the handle
+        // plus a space, so every accepted mention at the end of a body hit it.
+        // Safe against hard breaks, which Milkdown serializes as a trailing
+        // backslash rather than the two spaces CommonMark also allows.
+        .replace(/&#x20;$/gm, "")
         .replace(/\n{3,}/g, "\n\n")
     )
       .replace(/^\n+/, "")
@@ -893,6 +1030,277 @@ export const MarkdownEditor = {
     })
   },
 
+  // --- @-mentions (issue #1748) ---
+
+  // Does an account hold this handle? Only a confirmed yes draws a chip: an
+  // unanswered handle (the check is still in flight, or the network is down)
+  // stays plain text, so the editor never promises a link that is not coming.
+  knownHandle(handle) {
+    return this.handleCache.get(handle) === true
+  },
+
+  // Called after every transaction in the prose.
+  syncMentions(view) {
+    this.scheduleHandleCheck(view)
+    this.syncMentionPicker(view)
+  },
+
+  // The half-typed mention the caret sits at the end of, or null. Recomputed
+  // from the live state on every call rather than remembered, because the
+  // document can move under a pending request (a paste, an image insert).
+  mentionAtCaret(view) {
+    const { selection, doc } = view.state
+    if (!selection.empty) return null
+
+    const $from = selection.$from
+    if ($from.parent.type.name === "code_block") return null
+    if ($from.marks().some((mark) => mark.type.name === "inlineCode")) return null
+
+    const before = doc.textBetween($from.start(), $from.pos, "\n", "\0")
+    const match = MENTION_AT_CARET.exec(before)
+    if (!match) return null
+
+    const term = match[1]
+    return { from: $from.pos - term.length - 1, to: $from.pos, term }
+  },
+
+  syncMentionPicker(view) {
+    const run = this.mentionAtCaret(view)
+
+    // A bare `@` opens nothing: it starts a word far more often than a mention,
+    // and a list covering the sentence on every `@` is worse than no list.
+    if (!run || run.term.length === 0) {
+      this.mentionRun = null
+      // Ours, not whichever editor's panel happens to be up: a page can hold
+      // two editors (the messages page holds one per open conversation).
+      return closeMentionsFor(this.root)
+    }
+
+    const unchanged = this.mentionRun && this.mentionRun.term === run.term
+    this.mentionRun = run
+    if (unchanged) return
+
+    clearTimeout(this._mentionTimer)
+    this._mentionTimer = setTimeout(() => this.requestMentions(view, run.term), 150)
+  },
+
+  async requestMentions(view, term) {
+    // Two guards, for two different stale answers. The term check below drops an
+    // answer for a handle nobody is typing any more; the sequence number drops
+    // an OLDER answer for the term that is still being typed (delete a letter,
+    // type it again), which would otherwise redraw the list and throw away the
+    // row somebody had arrowed down to.
+    const seq = ++this.mentionSeq
+    const items = await this.fetchJson(this.root.dataset.mentionUrl, { q: term })
+    if (seq !== this.mentionSeq) return
+    if (!items || !this.mentionRun || this.mentionRun.term !== term) return
+
+    showMentions({
+      // `view.dom` IS the contenteditable — the same element a `.ProseMirror`
+      // lookup would find, without asking the DOM for what we are holding.
+      anchorEl: view.dom,
+      labels: this.root.dataset,
+      onPick: (item) => this.insertMention(item),
+      items: items.results || [],
+      rect: this.caretRect(view),
+      budget: this.mentionBudget(view),
+    })
+  },
+
+  // Where the panel hangs: the `@` that started the mention, not the caret, so
+  // the list stays put while the rest of the handle is typed. Only ever called
+  // with a run in hand (`requestMentions` returns without one).
+  caretRect(view) {
+    const at = Math.min(this.mentionRun.from, view.state.doc.content.size)
+    const coords = view.coordsAtPos(at)
+    return { top: coords.top, bottom: coords.bottom, left: coords.left }
+  },
+
+  // Swap the half-typed run for the picked handle. Plain `insertText` — the
+  // document keeps holding text, and `@ada` is what gets stored, rendered and
+  // federated, exactly as if it had been typed by hand.
+  insertMention(item) {
+    if (!this.editor) return
+
+    // Trust the picked handle before the server confirms it: it came FROM the
+    // server a moment ago, so the chip appears with the insert instead of a
+    // round trip later.
+    this.handleCache.set(item.handle.toLowerCase(), true)
+
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const run = this.mentionAtCaret(view)
+      if (!run) return
+
+      // A space after the mention, unless the sentence already has one there —
+      // the writer is mid-sentence and would type it next anyway.
+      const next = view.state.doc.textBetween(run.to, Math.min(run.to + 1, view.state.doc.content.size))
+      const text = `@${item.handle}${next === " " ? "" : " "}`
+      view.dispatch(view.state.tr.insertText(text, run.from, run.to))
+      view.focus()
+    })
+
+    this.mentionRun = null
+  },
+
+  // The keys the picker owns, taken in the CAPTURE phase on the way down to the
+  // prose. ProseMirror decides a keystroke by asking its plugins in order, and
+  // the base keymap — which owns Enter and Tab — is registered long before a
+  // plugin added at the end of the stack, so a `handleKeyDown` prop here would
+  // never see the Enter that is meant to take a suggestion. Catching it above
+  // the editable and stopping it there is what makes the list's Enter beat the
+  // paragraph split, and it keeps the two concerns in one place.
+  wireMentionKeys() {
+    this.mountEl.addEventListener(
+      "keydown",
+      (event) => {
+        const handled = mentionsOpenFor(this.root)
+          ? this.handleMentionKey(event)
+          : event.key === "Backspace" && this.deleteMentionAtCaret()
+
+        if (!handled) return
+        event.preventDefault()
+        event.stopPropagation()
+      },
+      true
+    )
+  },
+
+  // One Backspace at the end of a confirmed mention takes the whole handle.
+  deleteMentionAtCaret() {
+    if (!this.editor || this.mode === "source") return false
+
+    let deleted = false
+    this.editor.action((ctx) => {
+      deleted = this.deleteMentionBefore(ctx.get(editorViewCtx))
+    })
+    return deleted
+  },
+
+  // The keys the open list owns. Everything else falls through to the editor,
+  // so typing never stops while it is up.
+  handleMentionKey(event) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      moveMention(event.key === "ArrowDown" ? 1 : -1)
+      return true
+    }
+
+    if (event.key === "Enter" || event.key === "Tab") return acceptMention()
+
+    if (event.key === "Escape") {
+      // The editor's full-page mode listens for Escape on `document`, and
+      // dismissing a list is not a request to leave the page you are writing on.
+      event.stopPropagation()
+      this.mentionRun = null
+      closeMentions()
+      return true
+    }
+
+    return false
+  },
+
+  // Only a CONFIRMED mention is atomic: a handle still being typed has to stay
+  // editable letter by letter, or fixing a typo would mean retyping the name.
+  // It asks `mentionAtCaret` rather than scanning for itself — one definition of
+  // "the mention the caret is at the end of", so the run the picker offers for
+  // and the run Backspace takes can never mean two different things.
+  //
+  // Reachable only while the list is CLOSED (see the branch in `wireMentionKeys`),
+  // which is the right split rather than an oversight: with suggestions up you
+  // are still composing that handle, so Backspace shortens it and narrows the
+  // list. Move past the mention — or dismiss the list — and it becomes one
+  // object again.
+  deleteMentionBefore(view) {
+    const run = this.mentionAtCaret(view)
+    if (!run || run.term.length === 0) return false
+    if (!this.knownHandle(run.term.toLowerCase())) return false
+
+    view.dispatch(view.state.tr.delete(run.from, run.to))
+    return true
+  },
+
+  // Check the handles in a body the editor was just handed, rather than one
+  // being typed. Goes through the same debounce, so a re-seed that lands beside
+  // a keystroke still asks once.
+  refreshMentionChips() {
+    this.editor?.action((ctx) => this.scheduleHandleCheck(ctx.get(editorViewCtx)))
+  },
+
+  // Ask the server about every handle in the prose it has not answered for
+  // yet, once the typing pauses. Debounced rather than per-keystroke: half a
+  // handle is not a handle, and asking about `@a`, `@ad`, `@ada` in turn would
+  // cache two answers nobody wanted.
+  scheduleHandleCheck(view) {
+    clearTimeout(this._checkTimer)
+    this._checkTimer = setTimeout(() => this.checkHandles(view), 400)
+  },
+
+  async checkHandles(view) {
+    const pending = new Set()
+    eachMention(view.state.doc, (handle) => {
+      if (!this.handleCache.has(handle)) pending.add(handle)
+    })
+    if (pending.size === 0) return
+
+    const answer = await this.fetchJson(this.root.dataset.mentionCheckUrl, {
+      handles: [...pending].join(","),
+    })
+    if (!answer) return
+
+    // Cache what the server actually answered about — it caps how many handles
+    // one request may carry, and marking the ones past that cap "unknown" would
+    // strip the chip off real accounts.
+    const known = new Set(answer.known || [])
+    for (const handle of answer.checked || []) this.handleCache.set(handle, known.has(handle))
+
+    // Nothing about the document changed; this is only how a ProseMirror plugin
+    // is asked to draw its decorations again. `addToHistory: false` keeps it out
+    // of the undo stack, where an invisible step would eat a real Cmd+Z.
+    view.dispatch(view.state.tr.setMeta("addToHistory", false))
+
+    // The budget counts confirmed mentions, so this answer is what makes it
+    // right — an open list drawn before it landed is showing one number short.
+    if (mentionsOpenFor(this.root)) setMentionBudget(this.mentionBudget(view))
+  },
+
+  // "2 of 5 mentions", under the list, where a cap exists — a post has one
+  // (Vutuv.Mentions.max_post_mentions/0), a message does not. Counted the way
+  // the server counts it: distinct confirmed handles in the body.
+  mentionBudget(view) {
+    const max = Number(this.root.dataset.mentionMax || 0)
+    if (!max) return null
+
+    const used = new Set()
+    eachMention(view.state.doc, (handle) => {
+      if (this.knownHandle(handle)) used.add(handle)
+    })
+
+    return (this.root.dataset.mentionBudget || "")
+      .replace("{used}", String(used.size))
+      .replace("{max}", String(max))
+  },
+
+  // A JSON GET that never throws at the caller: a mention picker is an
+  // enhancement, so a dropped connection (or a session that expired into a
+  // login redirect) means no suggestions, not a broken editor.
+  //
+  // Through `util.js`' `request/2` rather than a bare `fetch`, which is where
+  // this app's fetch conventions already live — including the one that bites
+  // here: **no** `accept: application/json`, because these routes ride the
+  // ordinary browser pipeline, where an explicit JSON Accept is read as a
+  // request for an agent document rather than for the member's own page.
+  async fetchJson(url, params) {
+    if (!url) return null
+
+    try {
+      const response = await request(`${url}?${new URLSearchParams(params)}`)
+      if (!response.ok) return null
+      return await response.json()
+    } catch (_error) {
+      return null
+    }
+  },
+
   // --- inline images (post composer only) ---
 
   // Server → hook events. `mde-image-uploaded` fires for every finished upload
@@ -1085,6 +1493,10 @@ export const MarkdownEditor = {
   },
 
   toggleMode() {
+    // The picker hangs off a caret in the prose; both toggles below move or
+    // hide that prose, so a panel left open would point at nothing.
+    closeMentionsFor(this.root)
+
     if (this.mode !== "source") {
       // Editor -> raw Markdown: hand the current Markdown to the textarea.
       this.source.value = this.editorMarkdown()
@@ -1102,6 +1514,7 @@ export const MarkdownEditor = {
   },
 
   toggleFullscreen() {
+    closeMentionsFor(this.root)
     this.fullscreen = !this.fullscreen
     this.applyState()
     document.body.classList.toggle("mde-fullscreen-lock", this.fullscreen)

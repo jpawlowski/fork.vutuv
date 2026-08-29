@@ -2536,6 +2536,25 @@ div.footnotes li:target {
 }
 .mde__mount .ProseMirror a { color: #2563eb; text-decoration: underline; }
 .mde__mount .ProseMirror del { text-decoration: line-through; }
+/* A confirmed `@mention` in the prose (issue #1748), drawn as the chip every
+   chat client draws: a brand-tinted pill around the handle. It is an inline
+   DECORATION over ordinary text — the stored Markdown is the bare `@handle` —
+   and it appears only once the server has confirmed the handle exists, so a
+   made-up one stays plain text instead of promising a link.
+
+   Deliberately not the published `.mention` treatment (a semibold link): on the
+   page a mention is something to follow, in the editor it is a receipt that the
+   name landed. `box-decoration-break` keeps both ends rounded when a long
+   handle wraps a line. */
+.mde__mount .ProseMirror .mde-mention {
+  background: #dbeafe;
+  border-radius: 0.35em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  color: #1d4ed8;
+  font-weight: 600;
+  padding: 0.05em 0.25em;
+}
 
 /* Empty-document placeholder (see the placeholder decoration in the hook). */
 .mde__mount .ProseMirror .mde-placeholder::before {
@@ -2766,6 +2785,107 @@ body.mde-fullscreen-lock { overflow: hidden; }
     padding: 0.5rem 0.75rem 0.75rem;
   }
   .emoji-picker__emoji { font-size: 1.6rem; }
+}
+
+/* The composer's `@`-mention picker (issue #1748, assets/js/mention_picker.js).
+   One panel per page on <body>, like the emoji picker above and for the same
+   reason — every editor here sits inside a LiveView. It hangs off the caret
+   rather than off a button, so the JS owns top/left and the width is capped
+   instead of fixed: a list of names should be as wide as the names, and no
+   wider than a phone. Same z-index band as the emoji picker (above the
+   editor's full-page mode, below the lightbox). */
+.mention-picker {
+  position: fixed;
+  z-index: 70;
+  width: max-content;
+  min-width: 14rem;
+  max-width: min(22rem, calc(100vw - 1rem));
+  max-height: 15rem;
+  /* The LIST scrolls, not the panel: the budget line under it is the one thing
+     that must stay visible while the rows are walked past. */
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  background: #fff;
+  box-shadow: 0 10px 25px -5px rgb(15 23 42 / 0.18), 0 8px 10px -6px rgb(15 23 42 / 0.1);
+}
+.mention-picker[hidden] { display: none; }
+.mention-picker__list {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.mention-picker__list[hidden] { display: none; }
+/* Rows are pointed at with the caret still in the prose, so `.is-active`
+   (arrow keys, hover) is the only "where am I" there is — no :focus ever lands
+   here. It has to read as clearly as a focus ring would. */
+.mention-picker__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+.mention-picker__row.is-active { background: #dbeafe; }
+.mention-picker__face {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 9999px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.7rem;
+  font-weight: 700;
+  object-fit: cover;
+}
+/* A page's tile is square everywhere else on the site; keep that here, so the
+   two kinds of account are told apart before the handle is read. */
+.mention-picker__face--organization { border-radius: 0.5rem; }
+.mention-picker__text { min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
+.mention-picker__name {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mention-picker__handle {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mention-picker__note {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  color: #475569;
+  font-size: 0.8rem;
+}
+.mention-picker__note[hidden] { display: none; }
+.mention-picker__note--budget {
+  border-top: 1px solid #f1f5f9;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.72rem;
+}
+/* Phones: finger-sized rows (the 2.75rem the design system asks for), and a
+   little more room for a long name. The panel stays a caret popover rather than
+   becoming a bottom sheet like the emoji picker — a sheet would cover the
+   sentence being written, and this list is read against that sentence. */
+@media (width < 40rem) {
+  .mention-picker__row { min-height: 2.75rem; padding: 0.4rem 0.6rem; }
+  .mention-picker__face { width: 2rem; height: 2rem; font-size: 0.75rem; }
+  .mention-picker__name { font-size: 0.9375rem; }
+  .mention-picker__handle { font-size: 0.8125rem; }
 }
 
 /* The turning hourglass shown while a photo waits for the AI image scan
@@ -3368,6 +3488,20 @@ html.lightbox-open { overflow: hidden; }
   .emoji-picker__search:focus { border-color: #3b82f6; }
   .emoji-picker__close { color: #cbd5e1; }
   .emoji-picker__close:hover { background: #1e293b; color: #f1f5f9; }
+
+  /* Mention picker + chip (issue #1748). */
+  .mention-picker {
+    border-color: #334155;
+    background: #0f172a;
+    box-shadow: 0 10px 25px -5px rgb(0 0 0 / 0.5), 0 8px 10px -6px rgb(0 0 0 / 0.4);
+  }
+  .mention-picker__row.is-active { background: #1e293b; }
+  .mention-picker__face { background: rgb(30 58 138 / 0.5); color: #bfdbfe; }
+  .mention-picker__name { color: #f1f5f9; }
+  .mention-picker__handle { color: #94a3b8; }
+  .mention-picker__note { color: #94a3b8; }
+  .mention-picker__note--budget { border-color: #1e293b; }
+  .mde__mount .ProseMirror .mde-mention { background: rgb(30 58 138 / 0.55); color: #bfdbfe; }
   .emoji-picker__tab:hover { background: #1e293b; }
   .emoji-picker__tab[aria-pressed="true"] {
     background: #1e3a8a;
@@ -3457,7 +3591,13 @@ html.lightbox-open { overflow: hidden; }
   a,
   button,
   label,
-  summary {
+  summary,
+  /* The `@`-picker's rows are the one control here that is none of those
+     elements: they are `role="option"` list items, tapped to insert a mention,
+     and they postdate the sweep above (issue #1748). Without this they keep the
+     ~300ms double-tap wait that every other control just shed, which on a phone
+     reads as the suggestion not registering — so the writer taps again. */
+  .mention-picker__row {
     touch-action: manipulation;
   }
 }

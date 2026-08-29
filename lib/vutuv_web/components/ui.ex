@@ -297,6 +297,16 @@ defmodule VutuvWeb.UI do
         "whose panel has no room for a second line"
   )
 
+  attr(:mention_limit, :integer,
+    default: nil,
+    doc:
+      "how many distinct accounts this body may mention, if there is a cap — " <>
+        "the post composer passes `Vutuv.Mentions.max_post_mentions/0`, which " <>
+        "makes the picker show how much of that budget is spent. A surface " <>
+        "with no cap (a message, a job description) passes nothing and gets no " <>
+        "counter"
+  )
+
   attr(:class, :string, default: nil)
   attr(:rest, :global)
 
@@ -312,6 +322,12 @@ defmodule VutuvWeb.UI do
       data-mde-submit={@submit_on}
       data-mde-images={@images && "1"}
       data-mde-link-prompt={gettext("Link URL")}
+      data-mention-url={~p"/system/mentions/suggest"}
+      data-mention-check-url={~p"/system/mentions/check"}
+      data-mention-label={gettext("Mention an account")}
+      data-mention-empty={gettext("No account found.")}
+      data-mention-max={@mention_limit}
+      data-mention-budget={@mention_limit && gettext("{used} of {max} mentions")}
       data-emoji-title={gettext("Emoji")}
       data-emoji-search={gettext("Search emoji")}
       data-emoji-close={gettext("Close")}
@@ -2150,9 +2166,15 @@ defmodule VutuvWeb.UI do
     """
   end
 
-  # A page's monogram is deliberately ONE letter — the shipped look of every
-  # organization tile — where a member's `name_initials/1` takes two.
-  defp organization_initial(name) do
+  @doc """
+  A page's monogram, deliberately ONE letter — the shipped look of every
+  organization tile — where a member's `name_initials/1` takes two.
+
+  Public for the same reason `name_initials/1` is: a surface that draws its own
+  tile (the composer's `@`-picker rows, which are built in JS from JSON) must
+  get the letter from here rather than spell the rule a second time.
+  """
+  def organization_initial(name) do
     name
     |> String.trim()
     |> String.first()

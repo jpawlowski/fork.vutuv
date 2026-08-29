@@ -73,6 +73,80 @@ left to the reader's own server (see [fediverse.md](fediverse.md)). An account
 that keeps out of the Fediverse serves no actor document, so it is named in the
 text and left out of the tags.
 
+## Writing one: the composer's picker
+
+Until issue #1748 a mention was typed blind. You spelled the handle from
+memory, and the first thing that told you whether it named anybody was the save
+being refused — `Mentions.validate_mentions_exist/2` answering "The handle @x
+does not exist" after the post was written. Every chat and social client has
+done the other thing for a decade, and members arriving from them missed it.
+
+The picker sits in the **shared** Markdown editor (`VutuvWeb.UI.markdown_editor/1`
+and `assets/js/markdown_editor.js`), not in the post composer, so replies, the
+edit form, messages, job descriptions and organization pages all got it at
+once — every one of those bodies renders its mentions as links.
+
+Two halves, both answered by `VutuvWeb.MentionController` under `/system/`:
+
+- **`GET /system/mentions/suggest?q=`** → `Mentions.suggest/3`. Members and
+  pages whose handle starts with the term or whose name contains it, followed
+  accounts first (that is who you almost always mean, and a mention is a
+  notification — offering the stranger first is how the wrong person gets one).
+  It refuses to offer an account blocked in either direction, a member
+  moderation hides or who never confirmed, a page that is not publicly visible,
+  and the viewer themselves. A picker is a second way to find accounts, and one
+  that answered more freely than the search page would turn a block into a
+  suggestion.
+- **`GET /system/mentions/check?handles=`** → `Mentions.check_handles/1`, which
+  asks `resolvable_handles/1` — the very resolution `VutuvWeb.Markdown` performs
+  when it turns a handle into a link. That is what lets the editor draw a
+  **chip**: a resolving handle gets the pill, an invented one stays plain text.
+  A chip therefore says exactly one thing — "this will be a link" — answered
+  before the post is written rather than after.
+
+  It is deliberately a **narrower** question than the save-time
+  `unknown_handles/1`, which only asks whether somebody holds the handle. A page
+  nobody may see holds its handle (the save takes it) and the renderer leaves it
+  as text, so it gets no chip. The two directions are not equally bad: a missing
+  chip on a savable handle is quiet, a chip promising a link that never appears
+  is the lie the feature exists to prevent.
+
+Nothing about the **document** changes. The picker types a bare `@handle` and
+the chip is a ProseMirror inline decoration over that text, so the stored
+Markdown, `VutuvWeb.Markdown`, the agent-format siblings and the federated Note
+see exactly what they saw before. That is deliberate: a mention node in the
+schema would be a fifth thing that has to agree about what a mention is, and
+`assets/js/markdown_editor.js` already carries three transforms that exist only
+because remark serializes a construct vutuv stores plainly (see the escape
+hazards below).
+
+Two consequences worth knowing:
+
+- The whole feature degrades to nothing. Both requests are `fetch`es that
+  swallow their errors, so an offline editor draws no chips and offers no
+  suggestions, and typing a mention by hand works exactly as it always did.
+- The check reports **which** handles it looked at (`checked`), not only which
+  resolve. It caps how many one request answers about (`Mentions.max_check_handles/0`),
+  and a client that read silence as "no such account" would strip the chip off a
+  real member the moment somebody pasted a long list.
+- The picker answers nothing below two characters — the floor its sibling
+  typeahead `Posts.search_users/3` already uses. One letter names half the site,
+  so those rows would be noise and the scan behind them wasted.
+- The client's copy of the grammar (`MENTION_RUN` in `assets/js/markdown_editor.js`)
+  refuses a fediverse address: `@ada@mastodon.social` names somebody else's
+  account, and chipping the `@ada` in front of it would claim a member of ours
+  had been named. An address on our own host is a real mention and the renderer
+  links it, but it goes unchipped too — the client does not know which host is
+  ours, and a missing chip is the harmless direction.
+
+Out of scope on purpose: completing a remote `@user@host` address. Only local
+mentions become `Mention` tags in the outgoing Note (`VutuvWeb.Fediverse.Docs`),
+and a remote address in the body is left to the reader's server — offering
+remote accounts would promise a notification we do not send. Raw **source
+mode** has no picker either: the caret there is in a plain `<textarea>`, where
+placing a panel means measuring text in a mirror element, and the people who
+switch to it are the people who type handles from memory anyway.
+
 ## The mention surfaces
 
 Every field whose stored `@handle` linkifies is one `{schema, field}` entry in
@@ -242,7 +316,11 @@ posts (the newest five, plus an "and N more" count).
 ## Key files & tests
 
 - `lib/vutuv/mentions.ex` — the chokepoint (grammar, rewrite, validation, scan,
-  `mentioned_users/2`).
+  `mentioned_users/2`, `resolvable_handles/1` behind every mention link, and
+  `suggest/3` + `check_handles/1` behind the picker).
+- `lib/vutuv_web/controllers/mention_controller.ex` — the picker's two JSON
+  answers, `assets/js/mention_picker.js` the panel, `assets/js/markdown_editor.js`
+  the trigger + the chip decoration.
 - `lib/vutuv/posts.ex` — `sync_mentions/1`, the `post_mentions` reconcile.
 - `lib/vutuv/posts/post_mention.ex` — the resolved index row.
 - `lib/vutuv/activity.ex` — `mention_events/1` + the `"mention"` feed source.
@@ -252,7 +330,9 @@ posts (the newest five, plus an "and N more" count).
   `handle_change` renderings.
 - `test/vutuv/mentions_test.exs`, `mentions_local_address_test.exs`,
   `vutuv_web/markdown_local_address_test.exs`, `vutuv_web/mention_form_test.exs`,
-  `mention_existence_test.exs`,
+  `mention_existence_test.exs`, `mention_suggest_test.exs`,
+  `vutuv_web/controllers/mention_controller_test.exs`,
+  `vutuv_web/live/composer_mentions_test.exs`,
   `mention_limit_test.exs`,
   `mention_notifications_test.exs`, `handle_availability_test.exs`,
   `accounts/handle_change_propagation_test.exs`,

@@ -1522,6 +1522,15 @@ defmodule VutuvWeb.Router do
 
     get("/welcome", WelcomeController, :show)
     post("/welcome", WelcomeController, :create)
+
+    # The Markdown editor's `@`-picker (issue #1748): the accounts offered for a
+    # half-typed handle, and which of the handles already in a body exist. Same
+    # pipeline as the pages above — this is the signed-in member's own composer
+    # asking, and `Vutuv.Mentions` answers with the site's own block, moderation
+    # and visibility rules, so it is no laxer a way to enumerate members than
+    # the search page.
+    get("/mentions/suggest", MentionController, :suggest)
+    get("/mentions/check", MentionController, :check)
   end
 
   # The member's own editing world, user-agnostic: every /settings/* page

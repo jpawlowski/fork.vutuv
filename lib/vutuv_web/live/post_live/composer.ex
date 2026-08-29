@@ -57,6 +57,7 @@ defmodule VutuvWeb.PostLive.Composer do
   alias Vutuv.Fediverse.Note
   alias Vutuv.Fediverse.RemotePost
   alias Vutuv.Languages
+  alias Vutuv.Mentions
   alias Vutuv.Organizations.Organization
   alias Vutuv.Posts
   alias Vutuv.Posts.GalleryLayout
@@ -2024,6 +2025,7 @@ defmodule VutuvWeb.PostLive.Composer do
         placeholder={gettext("What's new? Markdown is supported.")}
         rows={if(@post, do: 10, else: 3)}
         submit_on="cmd-enter"
+        mention_limit={Mentions.max_post_mentions()}
         images
         help
       />

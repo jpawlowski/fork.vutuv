@@ -91,6 +91,32 @@ defmodule VutuvWeb.MarkdownEditorTest do
     end
   end
 
+  test "the @-mention picker's endpoints and labels ride the editor (issue #1748)" do
+    html = editor()
+
+    # Where the picker asks. Every editor gets them, because every one of these
+    # bodies is rendered with mentions linked — a picker on the composer alone
+    # would make the same `@handle` guesswork everywhere else.
+    assert html =~ ~s(data-mention-url="/system/mentions/suggest")
+    assert html =~ ~s(data-mention-check-url="/system/mentions/check")
+
+    # And its copy, from the server for the same reason the emoji picker's is.
+    assert html =~ "data-mention-label="
+    assert html =~ "data-mention-empty="
+  end
+
+  test "the mention budget is shown only where a cap exists" do
+    # A post may name at most `Mentions.max_post_mentions/0` accounts, so the
+    # post composer passes the cap and the picker counts down against it. A
+    # message has no cap; a counter there would invent a rule.
+    with_limit = editor(%{mention_limit: 5})
+    assert with_limit =~ ~s(data-mention-max="5")
+    assert with_limit =~ "data-mention-budget="
+
+    refute editor() =~ "data-mention-max="
+    refute editor() =~ "data-mention-budget="
+  end
+
   test "the phone's top row keeps only the frequent controls" do
     html = editor(%{images: true})
 
