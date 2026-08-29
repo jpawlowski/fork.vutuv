@@ -48,6 +48,57 @@ commit to it.
 - Public pages have Markdown/text/JSON/XML siblings built from one doc map
   (`VutuvWeb.AgentDocs`). If you change what a public HTML page shows,
   update its doc builder too — a drift test will remind you.
+- **Optional: let the title say what reviewing costs.** With twenty open pull
+  requests a list gives no reading order, and the one number GitHub shows
+  misleads — a change can list `+2878` with 1820 of those lines in
+  `priv/gettext/`. If you want to help with that, use
+  [Conventional Commits](https://www.conventionalcommits.org/) and put a
+  bracket at the end. Start the description lowercase and end it without a full
+  stop — that is what the standard's usual linter checks, and a sentence-cased
+  subject fails it out of the box. Names keep their own case (`iOS`,
+  `QuoteRequest`, `Vutuv.EtsCache`), and in a German subject line the nouns stay
+  capitalised; only the first word changes.
+
+  ```
+  fix(ui): make the sticky top bar actually stick [2m]
+  fix(mobile): stop iOS zooming the page in when a form field is focused [2m]
+  feat(fediverse): advertise a quote policy and answer QuoteRequest [15m ?]
+  feat(carddav): an address book that reaches the phone [60m+ ?]
+  ```
+
+  The minutes are the **code you would actually read**, over 100 — leave out
+  whatever is machine-checkable or merely follows the change: generated files,
+  lockfiles, translations, tests, documentation. Double it for authentication
+  and authorization, database migrations, long-lived processes and state,
+  visibility or permission rules, and delivery to foreign systems. They rank
+  pull requests against each other and promise nothing about anyone's clock.
+  `?` marks a change that needs a product decision rather than a code review;
+  `after #N` a real code or schema dependency, not a shared file. Leave the
+  bracket off when you would rather not guess — a title without one is fine,
+  and no reviewer is obliged to read it.
+
+  The scope in parentheses is the subsystem, and `docs/architecture/*.md`
+  already names most of them: `fediverse`, `feed`, `posts`, `profiles`,
+  `messages`, `images`, `search`, `moderation`, `mentions`, `api`. For what has
+  no chapter, use a plain name — `ui`, `mobile`, `desktop`, `pwa`, `push`,
+  `seo`, `carddav`, `core`, `build`. Two things decide which one:
+
+  - **Name what the change touches, not the topic around it.** A quote-post
+    feature that touches neither `fediverse.ex` nor `docs.ex` is `posts`, not
+    `fediverse` — otherwise the reviewer opens a file the diff never reaches.
+  - **Say what the description does not.** `feat(organizations): Organization
+    pages preview as themselves` wastes the slot; `feat(seo):` names the
+    surface instead, which is the part the sentence is missing.
+
+  `ui` is usually too coarse. Whether a reviewer needs a phone in hand changes
+  the work, so anything on the bottom bar, on touch gestures or in iOS is
+  `mobile`, and `ui` is left for chrome that looks the same either way.
+
+  The bracket is review metadata, so whoever merges may drop it from the squash
+  subject — `gh pr merge --squash -t "…"` takes the subject you give it. Nothing
+  depends on that: it reads fine if it stays, and it does not vanish on its own,
+  because a squash only uses a lone commit's own subject and a long-lived pull
+  request always ends up carrying a merge commit.
 
 ## Working on the API
 
