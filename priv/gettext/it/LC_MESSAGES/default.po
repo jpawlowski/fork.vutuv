@@ -23805,6 +23805,11 @@ msgstr[1] "Mostra %{formatted} post nel feed"
 msgid "Picture unavailable"
 msgstr "Immagine non disponibile"
 
+#: lib/vutuv_web/open_graph.ex:166
+#, elixir-autogen, elixir-format
+msgid "Claim a page for your organization on vutuv."
+msgstr "Rivendichi una pagina per la sua organizzazione su vutuv."
+
 #: lib/vutuv_web/live/organization_live/edit.ex:231
 #, elixir-autogen, elixir-format
 msgid "Your organization page was updated. The new logo is being checked and appears once that is through."

@@ -109,7 +109,7 @@ defmodule VutuvWeb.Feeds do
   defp item(post) do
     permalink = AgentDocs.abs_url(Posts.path(post))
     author = UserHelpers.author_name(post)
-    title = "#{author} · #{Date.to_iso8601(post.published_on)}"
+    title = PostTeaser.permalink_title(post)
 
     [
       "  <item>\n",

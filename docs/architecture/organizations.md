@@ -575,6 +575,17 @@ pending/frozen/archived pages 404 their siblings for everyone, cache-safe like a
 hidden profile). See `VutuvWeb.AgentDocs.OrganizationDoc` and
 `agents-and-seo.md`.
 
+**Link previews** are the human half of the same question and live in the same
+chokepoint (`VutuvWeb.OpenGraph`, see
+[agents-and-seo.md](agents-and-seo.md#link-previews-open-graph)): the page and
+its post permalinks preview with the page's own name, description and logo
+rather than the directory's copy and the brand card (issue #1581). What names
+the subject of that `<head>` is the **embedded LiveView**, not the controller:
+`live_render` merges a LiveView's socket assigns into `conn.assigns` before the
+root layout runs and the LiveView's copy wins, so `OrganizationLive.Show` /
+`.Post` assigning `:organization` and `:post` is what `OpenGraph` reads — the
+same assigns again in the controller would be inert.
+
 ## People (issue #931)
 
 The organization page shows a **People** section: members whose work experience is

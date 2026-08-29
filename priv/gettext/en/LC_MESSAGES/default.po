@@ -22203,6 +22203,11 @@ msgstr[1] ""
 msgid "Picture unavailable"
 msgstr "Picture unavailable"
 
+#: lib/vutuv_web/open_graph.ex:166
+#, elixir-autogen, elixir-format
+msgid "Claim a page for your organization on vutuv."
+msgstr ""
+
 #: lib/vutuv_web/live/organization_live/edit.ex:231
 #, elixir-autogen, elixir-format
 msgid "Your organization page was updated. The new logo is being checked and appears once that is through."
