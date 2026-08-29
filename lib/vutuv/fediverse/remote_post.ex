@@ -21,6 +21,10 @@ defmodule Vutuv.Fediverse.RemotePost do
       here was addressed in is simply not stored, so only the three public-ish
       audiences exist.
 
+  A post can also **quote** another one (issue #1609, FEP-044f): `quote_uri`
+  says what, `quote_authorization_uri` is the consent stamp beside it, and the
+  card is drawn only once that consent is established — see `quote_card?/1`.
+
   Pictures arrive two ways: the author's own attachments (issue #1163,
   `Vutuv.Fediverse.Media` / `Vutuv.Fediverse.RemoteImage`), and — for a
   single-URL post with no attachment and no content warning — the same auto
@@ -105,7 +109,37 @@ defmodule Vutuv.Fediverse.RemotePost do
     field(:counts_etag, :string)
     field(:counts_failures, :integer, default: 0)
 
+    # What this post quotes (issue #1609), and whether we may draw it as a card.
+    #
+    # `quote_uri` is what the author's server said they quoted — the canonical
+    # id of the quoted object, read from `quote`, `quoteUri` or
+    # `_misskey_quote`, whichever of the three aliases that software writes.
+    # `quote_authorization_uri` is the FEP-044f stamp beside it: a document on
+    # the **quoted** object's host saying its author consented to this exact
+    # quote. Neither is a claim we act on until it has been checked.
+    #
+    # `quote_verified` is the one flag the card reads. True for a self-quote
+    # (the author quoting themselves needs nobody's consent) and for a stamp we
+    # fetched and matched; false for everything else, including a quote we
+    # simply have not resolved yet — so an unchecked row renders as the link it
+    # would otherwise have been, never as a card somebody did not agree to.
+    field(:quote_uri, :string)
+    field(:quote_authorization_uri, :string)
+    field(:quote_verified, :boolean, default: false)
+
     belongs_to(:remote_account, Vutuv.Fediverse.RemoteAccount)
+
+    # The quoted thing once it is resolved: a cached copy of another account's
+    # post, or a vutuv post when the quote points back at this installation.
+    # At most one of the two is set, and neither has to be — a quote of
+    # something we cannot reach keeps its URI and nothing else.
+    #
+    # `quoted_post_id` is also this feature's **holder** against
+    # `Vutuv.Fediverse.purge_unfollowed_remote_posts/0`: the copy exists because
+    # somebody's post quotes it, which is the same claim a reshare (#1166), a
+    # boost (#1167) and a lookup (#1211) make.
+    belongs_to(:quoted_post, __MODULE__)
+    belongs_to(:quoted_local_post, Vutuv.Posts.Post)
 
     # The pictures the author attached (issue #1163) and the auto link
     # screenshot for a single-URL, picture-less post — the exact machinery a
@@ -114,6 +148,15 @@ defmodule Vutuv.Fediverse.RemotePost do
     has_many(:images, Vutuv.Fediverse.RemoteImage)
     has_one(:screenshot, Vutuv.Posts.PostScreenshot, foreign_key: :remote_post_id)
   end
+
+  @doc """
+  The longest URI any of the remote address columns may hold, in bytes.
+
+  Public because the ingestion has to know it *before* the changeset does: a
+  field an over-long value belongs to may be optional (`quote_uri`), and there
+  the value is dropped rather than allowed to fail the whole insert.
+  """
+  def max_uri_bytes, do: @max_uri_bytes
 
   @doc "The longest remote text a post may carry."
   def max_content, do: @max_content
@@ -158,6 +201,81 @@ defmodule Vutuv.Fediverse.RemotePost do
   def question?(%__MODULE__{kind: "question"}), do: true
   def question?(%__MODULE__{}), do: false
 
+  @doc """
+  Whether the post says it quotes something at all (issue #1609) — the flag
+  behind both halves of the rendering, the card and the plain link fallback.
+  """
+  def quoting?(%__MODULE__{quote_uri: uri}), do: is_binary(uri) and uri != ""
+
+  @doc """
+  Whether the quote may be drawn as a **card** rather than as a link.
+
+  Two things have to hold: we checked the consent (`quote_verified`, set for a
+  self-quote or a matched FEP-044f stamp) **and** we hold the quoted post. Either
+  one alone renders the link, which is what a reader had before this existed and
+  is never wrong.
+
+  Deliberately only the cached-post half. A quote of one of **our** posts sets
+  `quoted_local_post_id` and can never set `quote_verified`, because the stamp
+  would have to be one this installation issued and it issues none until issue
+  #1608 — so that column names a link target, not a card.
+
+  **The card is only as fresh as the last fetch.** `quote_verified` records that
+  the stamp matched *when it was read*, and nothing re-reads it: a quoted author
+  who withdraws consent afterwards — deleting the `QuoteAuthorization`, taking
+  the post down, narrowing its audience — keeps their card here until the copy
+  expires. A recheck sweeper is follow-up work, not part of this. Whoever builds
+  it inherits this codebase's clock rule: stamp the `*_checked_at` column on the
+  branch that decides an object **cannot** be checked, or that object holds the
+  front of every batch forever and the sweep silently does nothing (issue #1316).
+  """
+  def quote_card?(%__MODULE__{} = post),
+    do: post.quote_verified and is_binary(post.quoted_post_id)
+
+  @doc """
+  What this post quotes, resolved from what is loaded on the row:
+
+    * `{:remote, %RemotePost{}}` — a cached copy of somebody else's post.
+    * `{:local, %Vutuv.Posts.Post{}}` — a vutuv post.
+    * `{:uri, uri}` — we hold the address and nothing else, either because the
+      quote was never resolved or because the caller did not ask for
+      `quote_preload/0`.
+    * `nil` — the post quotes nothing.
+
+  The **one** answer to "what does this quote", because three surfaces ask it
+  and each would otherwise derive it from the two ids and two associations for
+  itself: the card, the plain-link fallback, and the agent-format doc builders.
+  Dispatched on the id **columns** rather than on the associations, so a caller
+  that forgot the preload gets the honest `{:uri, _}` instead of a clause that
+  silently does not match.
+  """
+  def quoted(%__MODULE__{} = post) do
+    cond do
+      not quoting?(post) -> nil
+      is_binary(post.quoted_local_post_id) -> quoted_record(post.quoted_local_post, :local, post)
+      is_binary(post.quoted_post_id) -> quoted_record(post.quoted_post, :remote, post)
+      true -> {:uri, post.quote_uri}
+    end
+  end
+
+  defp quoted_record(%Ecto.Association.NotLoaded{}, _kind, post), do: {:uri, post.quote_uri}
+  defp quoted_record(nil, _kind, post), do: {:uri, post.quote_uri}
+  defp quoted_record(record, kind, _post), do: {kind, record}
+
+  @doc """
+  What a card needs loaded to draw a quote — one spec, because every surface
+  that renders `remote_post_card/1` reads it and a surface that forgets it
+  would quietly draw the link instead of the card.
+
+  Applied with `Repo.preload/2` after the page's own query rather than folded
+  into it: the card sites reach a cached post through four different shapes
+  (plain, nested under a reshare, under a boost, under a bookmark), and one
+  post-hoc preload works for all of them without any of those queries having to
+  spell this list out again.
+  """
+  def quote_preload,
+    do: [quoted_post: :remote_account, quoted_local_post: [:user, :organization]]
+
   def changeset(%__MODULE__{} = post, attrs) do
     post
     |> cast(attrs, [
@@ -171,7 +289,13 @@ defmodule Vutuv.Fediverse.RemotePost do
       :kind,
       :published_at,
       :received_at,
-      :expires_at
+      :expires_at,
+      # Cast on the edit path too, not only the insert: Mastodon publishes a
+      # quote unapproved and sends an `Update` the moment the stamp arrives, so
+      # `quote_authorization_uri` reaches us as an edit far more often than as
+      # part of the original `Create` (issue #1609).
+      :quote_uri,
+      :quote_authorization_uri
     ])
     # Cast on its own, with no empty values: since issue #1163 a post can be a
     # photograph and nothing else, and its body is then genuinely the empty
@@ -199,6 +323,8 @@ defmodule Vutuv.Fediverse.RemotePost do
     |> validate_length(:origin_url, max: @max_uri_bytes, count: :bytes)
     |> validate_length(:content_text, max: @max_content)
     |> validate_length(:summary, max: @max_summary)
+    |> validate_length(:quote_uri, max: @max_uri_bytes, count: :bytes)
+    |> validate_length(:quote_authorization_uri, max: @max_uri_bytes, count: :bytes)
     # Whoever writes `language` owns its clock (issue #1535) — and an `Update`
     # carrying no `contentMap` writes it as nil, which has to mean "look again"
     # rather than "undeclared forever".

@@ -2204,6 +2204,26 @@ defmodule Vutuv.Fediverse do
 
   def local_path(_), do: nil
 
+  @doc """
+  The **id** of one of our own posts named by `url`, or nil — for both shapes
+  `VutuvWeb.Fediverse.Docs.note_url/2` mints: a member's under their handle, a
+  page's under its slug.
+
+  Deliberately id-only. The handle beside it goes stale the moment its owner
+  renames, so a reader following a year-old link still lands on the post, and
+  every caller here wants the record rather than the spelling. `local_note_post/1`
+  is the one place that does pin the handle to the id, because it decides
+  whether a member's post may be **redistributed** on a remote actor's say-so
+  rather than where to send a reader who is already here.
+  """
+  def local_post_id(url) do
+    case local_path(url) do
+      ["organizations", _slug, "posts", post_id] -> post_id
+      [_handle, "posts", post_id] -> post_id
+      _ -> nil
+    end
+  end
+
   # `www.` is not another installation. Serving a site at both the apex and its
   # `www.` alias is the oldest convention on the web, and every caller here asks
   # "is this us", never "is this byte-identical to the configured host" — so an
@@ -2627,7 +2647,7 @@ defmodule Vutuv.Fediverse do
          :ok <- check_inbound_cap(actor_uri),
          true <- own_thread?(object, account),
          {:ok, post} <- insert_remote_post(account, object, audience) do
-      attach_pictures(post, object)
+      finish_stored_post(post, object)
       # Only the row this delivery really wrote: the same post arrives once per
       # local follower until every server speaks to our shared inbox, and each
       # redelivery leaves the `with` as a `:skip` above, so open feeds are
@@ -2641,25 +2661,37 @@ defmodule Vutuv.Fediverse do
 
   def record_remote_post(_activity, _actor_uri), do: :skip
 
-  # The post's pictures (issue #1163): recorded here, downloaded afterwards.
-  # The inbox must answer 202 without waiting on a third party's image server,
-  # and nothing renders before the AI gate has seen the bytes anyway, so the
-  # delivery only writes down what it wants.
+  # Everything a freshly minted cached post still needs, in one place: its
+  # pictures, its link screenshot, and what it quotes. Here rather than beside
+  # the callers, so every path that mints one — a follower delivery, a boost, a
+  # URL lookup, a quote — gets all three by construction.
   #
-  # `sensitive` is the author's own call and covers every picture under the
-  # post: their explicit flag, or a content warning, which is the same request
-  # in different words.
-  defp attach_pictures(%RemotePost{} = post, object) do
+  # The post's pictures (issue #1163) are recorded here and downloaded
+  # afterwards. The inbox must answer 202 without waiting on a third party's
+  # image server, and nothing renders before the AI gate has seen the bytes
+  # anyway, so the delivery only writes down what it wants. `sensitive` is the
+  # author's own call and covers every picture under the post: their explicit
+  # flag, or a content warning, which is the same request in different words.
+  #
+  # With the picture set on record the post's link screenshot can be decided: a
+  # single-URL, picture-less, unwarned post enqueues the same durable capture
+  # job a member post gets (`Vutuv.Posts.Screenshots`).
+  #
+  # `quotes?` is how the recursion stops. Resolving a quote stores the quoted
+  # post through this very function, and that copy may quote something in turn
+  # — so the quoted one is stored with `false` and its own quote is left
+  # unresolved. That is the same "only one level" rule the card draws by: a
+  # quote of a quote shows the inner one as a link.
+  defp finish_stored_post(%RemotePost{} = post, object, quotes? \\ true) do
     post
     |> Media.record_attachments(List.wrap(object["attachment"]), RemotePost.warned?(post))
     |> Media.fetch_async()
 
-    # With the picture set on record the post's link screenshot can be decided:
-    # a single-URL, picture-less, unwarned post enqueues the same durable
-    # capture job a member post gets (`Vutuv.Posts.Screenshots`). Here rather
-    # than beside the callers, so every path that mints a cached post — a
-    # follower delivery, a boost, a URL lookup — gets it by construction.
     Screenshots.reconcile(post)
+
+    if quotes?, do: resolve_quote_async(post)
+
+    post
   end
 
   @doc """
@@ -3490,6 +3522,17 @@ defmodule Vutuv.Fediverse do
     |> Map.new(&{{&1.object_uri, &1.remote_account_id}, &1})
   end
 
+  @doc """
+  Loads what `subject` quotes (issue #1609) — a cached post, a list of them, or
+  nil — for a surface that is about to render cards.
+
+  Beside the lean readers rather than inside them: `get_remote_post/1` and
+  `account_posts/2` also serve the client API, a composer and a delete path,
+  none of which draws a card and all of which would pay for the read.
+  """
+  def with_quotes(nil), do: nil
+  def with_quotes(subject), do: Repo.preload(subject, RemotePost.quote_preload())
+
   @doc "One cached remote post with its account and screenshot, or nil."
   def get_remote_post(id) do
     UUIDv7.with_cast(id, &Repo.get(RemotePost, &1))
@@ -3703,19 +3746,25 @@ defmodule Vutuv.Fediverse do
   #     on any account: a copy fetched precisely because nobody follows its
   #     author would otherwise be swept within the hour, while the member who
   #     asked for it is still reading it.
+  #   * another cached post **quotes** it (issue #1609) — again the normal case
+  #     for a quote, since the quoted author is usually a stranger here, and
+  #     sweeping the copy would turn a card in somebody's feed back into a bare
+  #     link while they are looking at it.
   #
-  # None of the three buys extra time: they only buy the right to live out the
+  # None of the four buys extra time: they only buy the right to live out the
   # ordinary clock instead of being swept the moment the last follower of the
   # author walks away. The `:post` alias comes from `spare_reposted/2`, which is
-  # why the other two are added on top of it rather than beside it.
+  # why the others are added on top of it rather than beside it.
   defp spare_held(query) do
     boosted = from(b in PostBoost, where: b.remote_post_id == parent_as(:post).id)
     looked_up = from(l in PostLookup, where: l.remote_post_id == parent_as(:post).id)
+    quoted = from(q in RemotePost, where: q.quoted_post_id == parent_as(:post).id)
 
     query
     |> spare_reposted(RemotePost)
     |> where([p], not exists(boosted))
     |> where([p], not exists(looked_up))
+    |> where([p], not exists(quoted))
   end
 
   @doc """
@@ -4005,9 +4054,36 @@ defmodule Vutuv.Fediverse do
       summary: remote_text(object["summary"], RemotePost.max_summary()),
       language: as2_language(object),
       sensitive: object["sensitive"] == true,
-      audience: audience
+      audience: audience,
+      quote_uri: quoted_object_uri(object),
+      quote_authorization_uri:
+        object["quoteAuthorization"] |> SearchText.normalize_search() |> within_uri_cap()
     }
   end
+
+  # What the post says it quotes (issue #1609). Three property names for one
+  # thing: `quote` is FEP-044f's canonical spelling, `quoteUri` is Fedibird's
+  # and `_misskey_quote` is Misskey's, and a server commonly writes all three.
+  # Read tolerantly, in that order — each may be an embedded object or a bare
+  # id, which `activity_object_id/1` already flattens.
+  defp quoted_object_uri(object) do
+    ~w(quote quoteUri _misskey_quote)
+    |> Enum.find_value(&activity_object_id(object[&1]))
+    |> SearchText.normalize_search()
+    |> within_uri_cap()
+  end
+
+  # Anything past the column's changeset cap is dropped **here**, so the post is
+  # stored without its quote. Left to `RemotePost.changeset/2` it would fail the
+  # whole insert instead (`insert_remote_post/3` turns any changeset error into
+  # `:error`), and one 3 KB `quoteUri` would take an otherwise perfectly good
+  # post — and every later post from that server — out of its followers' feeds
+  # with nothing in the log to say why. The validation stays as the backstop.
+  defp within_uri_cap(uri) when is_binary(uri) do
+    if byte_size(uri) <= RemotePost.max_uri_bytes(), do: uri
+  end
+
+  defp within_uri_cap(_uri), do: nil
 
   @doc """
   The language an AS2 object declares (issue #1488): the first key of
@@ -4141,25 +4217,292 @@ defmodule Vutuv.Fediverse do
       # "stop showing this" signal a `Delete` carries, just spelled differently.
       delete_cached_post(post)
     else
-      with {:ok, updated} <-
-             post
-             |> RemotePost.changeset(remote_post_attrs(object, text, audience))
-             |> Repo.update() do
-        # An edit is also where a hashtag is added or taken out, so the filings
-        # are re-synced rather than left at what the original text said — a post
-        # that drops `#berlin` drops off that tag page.
-        Hashtags.sync(updated, object)
+      post
+      |> RemotePost.changeset(remote_post_attrs(object, text, audience))
+      |> Repo.update()
+      |> apply_remote_post_edit(post, object)
+    end
+  end
 
-        # An edit is where a picture is added, dropped, described or covered —
-        # see `Media.sync_attachments/3`.
-        updated
-        |> Media.sync_attachments(List.wrap(object["attachment"]), RemotePost.warned?(updated))
-        |> Media.fetch_async()
+  # Everything an edit can have changed besides the row's own columns.
+  defp apply_remote_post_edit({:ok, %RemotePost{} = updated}, %RemotePost{} = before, object) do
+    # An edit is where a hashtag is added or taken out, so the filings are
+    # re-synced rather than left at what the original text said — a post that
+    # drops `#berlin` drops off that tag page.
+    Hashtags.sync(updated, object)
 
-        # …and where the single URL, the picture set or the content warning can
-        # change, each of which enqueues, refreshes or cancels the screenshot.
-        Screenshots.reconcile(updated)
-      end
+    # …where a picture is added, dropped, described or covered — see
+    # `Media.sync_attachments/3`.
+    updated
+    |> Media.sync_attachments(List.wrap(object["attachment"]), RemotePost.warned?(updated))
+    |> Media.fetch_async()
+
+    # …where the single URL, the picture set or the content warning can change,
+    # each of which enqueues, refreshes or cancels the screenshot.
+    Screenshots.reconcile(updated)
+
+    # …and where a **quote** arrives and where it is taken back (issue #1609).
+    # Mastodon publishes a quote unapproved and sends an `Update` the moment the
+    # stamp is granted, and the same `Update` is how a withdrawn stamp reaches
+    # us — so a quote is far likelier to change here than to arrive complete
+    # with the `Create`.
+    if quote_moved?(before, updated), do: resolve_quote_async(updated)
+
+    :ok
+  end
+
+  defp apply_remote_post_edit(_error, _before, _object), do: :ok
+
+  ## What a post from another network quotes (issue #1609)
+
+  # Nothing resolved, nothing consented — the state a row starts in and the one
+  # every refusal writes back, so a quote that stops verifying stops carrying a
+  # card in the same breath.
+  @no_quote %{quoted_post_id: nil, quoted_local_post_id: nil, quote_verified: false}
+
+  defp resolve_quotes?, do: Application.get_env(:vutuv, :fediverse_quote_resolve, true)
+
+  @doc """
+  Resolves what a cached post quotes and decides whether it may be drawn as a
+  **card** rather than as a plain link.
+
+  Two questions, in this order. *What* is quoted: one of our own posts (matched
+  on host plus path and resolved by the **id** in it, never by the handle beside
+  it), a copy we already hold, or a post on some other server, fetched through
+  exactly the announce path's fence — signed, SSRF-checked, size-capped, metered
+  per host, public or unlisted only, and `own_object?/3` so a server may speak
+  only for itself. And *whether the quoted author agreed*: a self-quote needs
+  nobody's consent, and anything else needs a FEP-044f `QuoteAuthorization` that
+  lives on the quoted object's own host and names this exact pair.
+
+  Everything else keeps the URI and renders as a link. That is not a failure
+  mode to be minimised — it is what a quote without demonstrable consent is
+  allowed to look like, and it is strictly better than the nothing a reader got
+  before this existed.
+
+  Runs in a background task off the inbox (`resolve_quote_async/1`): it makes up
+  to three requests to two other servers, and the inbox owes its 202 long before
+  those answer. Called directly by tests and by the `Update` path.
+
+  Returns `:ok` when the row was written, `:skip` when there was nothing to do.
+  """
+  def resolve_quote(%RemotePost{} = post) do
+    if RemotePost.quoting?(post) do
+      write_quote(post, quote_resolution(post))
+      :ok
+    else
+      clear_quote(post)
+    end
+  end
+
+  # The kick-off. The clearing half is deliberately **not** deferred: it is one
+  # write and no network at all, and leaving a stale card standing until a task
+  # gets around to it is exactly the wrong way round for a withdrawal.
+  defp resolve_quote_async(%RemotePost{} = post) do
+    cond do
+      # `resolve_quote/1`'s own no-quote branch, run here rather than deferred:
+      # it is one write and no network at all.
+      not RemotePost.quoting?(post) ->
+        resolve_quote(post)
+
+      resolve_quotes?() ->
+        Task.Supervisor.start_child(Vutuv.TaskSupervisor, fn -> resolve_quote(post) end)
+
+      true ->
+        :ok
+    end
+
+    :ok
+  end
+
+  # Whether an edit touched the quote at all. Both URIs, because the second one
+  # moving on its own is the *normal* case: the text is unchanged and the stamp
+  # has just been granted or revoked.
+  defp quote_moved?(%RemotePost{} = before, %RemotePost{} = now) do
+    before.quote_uri != now.quote_uri or
+      before.quote_authorization_uri != now.quote_authorization_uri
+  end
+
+  defp quote_resolution(%RemotePost{} = post) do
+    if instance_blocked?(post.quote_uri) do
+      @no_quote
+    else
+      # Passed as a **thunk**, not a value: `counts_signer/1` is a three-table
+      # join plus an actor read, and four of the five outcomes never make a
+      # request at all — a quote of one of our posts, a copy we already hold
+      # whose author is the quoting account, one with no stamp beside it, and a
+      # URL on our own host. Only the two branches that really go to the wire
+      # pay for it. Resolving it twice on the one path that fetches both an
+      # object and a stamp is the cheaper trade.
+      signer = fn -> counts_signer(post) end
+      quote_target_resolution(post, resolve_quoted_object(post, signer), signer)
+    end
+  end
+
+  defp quote_target_resolution(_post, {:local, %Post{id: id}}, _signer) do
+    # A vutuv post, quoted from out there. The consent stamp would have to be
+    # **ours**, and this installation issues none yet (issue #1608) — so the id
+    # is stored, because it turns the fallback into a working vutuv permalink
+    # rather than a foreign spelling of one of our own URLs, and the card waits
+    # for the day we can honestly say we agreed.
+    %{@no_quote | quoted_local_post_id: id}
+  end
+
+  # A post naming **itself** as what it quotes. Nothing to render, and left
+  # unguarded it is a storage pin: `spare_held/1` asks "does any post quote this
+  # one", the row answers with itself, and it survives every unfollow purge
+  # until its ceiling. Matched on the resolved row rather than on the URI,
+  # because `cached_lookup_post/1` also matches the display spelling.
+  defp quote_target_resolution(%RemotePost{id: id}, {:remote, %RemotePost{id: id}}, _signer),
+    do: @no_quote
+
+  defp quote_target_resolution(%RemotePost{} = post, {:remote, %RemotePost{} = quoted}, signer) do
+    %{
+      @no_quote
+      | quoted_post_id: quoted.id,
+        quote_verified: quote_consented?(post, quoted, signer)
+    }
+  end
+
+  defp quote_target_resolution(_post, _unresolved, _signer), do: @no_quote
+
+  # Ours, held already, or somebody else's and worth one fetch. The local branch
+  # is not an optimisation: without it this would sign a request to **this
+  # installation** for a URL that is plainly ours, which is the failure
+  # v7.197.0 already produced once through the `www.` alias — so a URL on one of
+  # our hosts that names no post of ours ends here rather than on the wire.
+  defp resolve_quoted_object(%RemotePost{quote_uri: uri}, signer) do
+    case local_quoted_post(uri) do
+      %Post{} = local -> {:local, local}
+      nil -> if own_host?(uri), do: :error, else: quoted_remote_post(uri, signer)
+    end
+  end
+
+  # The URL lookup's own resolver, plus the one gate a quote adds: anonymous
+  # visibility. The link is offered to a reader whose relationship to the author
+  # we know nothing about, and the permalink itself re-asks the question when
+  # they follow it.
+  defp local_quoted_post(uri) do
+    with %Post{} = post <- local_lookup_post(uri),
+         true <- Posts.visible_to?(post, nil) do
+      post
+    else
+      _ -> nil
+    end
+  end
+
+  # With the author attached, because `Posts.visible_to?/2` and `Posts.path/1`
+  # both dispatch on it — one query rather than a `Repo.get` and a preload.
+  defp load_local_post(id) do
+    Repo.one(from(p in Post, where: p.id == ^id, preload: [:user, :organization]))
+  end
+
+  # A copy we already hold under **either** of the two URLs one post is written
+  # as — the canonical object id servers exchange, and the display URL people
+  # copy out of their browser, which is what `quoteUri` and `_misskey_quote`
+  # routinely carry. Matching only the first sent a post that was already on
+  # disk to the wire, where it spent a host fetch slot and a signed GET before
+  # colliding on the unique index and handing back that same row.
+  #
+  # `false` is the one-level rule: the quoted copy's own quote stays unresolved,
+  # so a quote of a quote shows the inner one as a link.
+  defp quoted_remote_post(uri, signer) do
+    case cached_lookup_post(uri) do
+      # **Audience-gated, exactly like the fetch below.** A cached copy can be
+      # followers-only: `record_remote_post/2` stores that audience for the
+      # members who follow its author. Rendering it inside somebody else's quote
+      # card would hand it to everybody who can see the *quoting* post — on the
+      # anonymous tag timeline, the whole internet. `announced_audience/1` and
+      # `lookup_audience/1` guard the two fetch paths for the same reason; this
+      # is the third way in and needs the same gate.
+      %RemotePost{} = quoted ->
+        if RemotePost.open?(quoted), do: {:remote, quoted}, else: :error
+
+      nil ->
+        with key when not is_nil(key) <- signer.(),
+             {:ok, quoted} <- fetch_and_store_object(uri, key, false) do
+          {:remote, quoted}
+        else
+          # No key means no signature, and an authorized-fetch server answers an
+          # unsigned GET with a 403 — so asking would spend a slot of the host's
+          # fetch budget on a request that could not have worked.
+          _unreachable -> :error
+        end
+    end
+  end
+
+  # Did the quoted author agree to this? Two ways to be able to say yes.
+  defp quote_consented?(%RemotePost{} = post, %RemotePost{} = quoted, signer),
+    do: self_quote?(post, quoted) or stamp_valid?(post, quoted, signer)
+
+  # Quoting yourself needs nobody's consent, which is also the one case that
+  # costs no request at all — and it is the commonest quote there is.
+  defp self_quote?(%RemotePost{remote_account_id: id}, %RemotePost{remote_account_id: id})
+       when is_binary(id),
+       do: true
+
+  defp self_quote?(%RemotePost{}, %RemotePost{}), do: false
+
+  # The FEP-044f stamp. Fetched from the **quoted object's own host** and from
+  # nowhere else: a document the quoting server serves about somebody else's
+  # consent is the quoting server marking its own homework, so the host check
+  # comes before the request rather than after it.
+  defp stamp_valid?(
+         %RemotePost{quote_authorization_uri: stamp} = post,
+         %RemotePost{} = quoted,
+         signer
+       )
+       when is_binary(stamp) do
+    # Everything free comes first, so the signer is only resolved for a stamp
+    # that is worth asking about at all.
+    with false <- own_host?(stamp),
+         true <- same_host?(quoted.object_uri, stamp),
+         false <- instance_blocked?(stamp),
+         key when not is_nil(key) <- signer.(),
+         # The generic signed AP GET, pointed at a stamp instead of a note.
+         {:ok, doc} <- fetch_remote_note(stamp, key) do
+      stamp_matches?(doc, stamp, post, quoted)
+    else
+      _ -> false
+    end
+  end
+
+  defp stamp_valid?(%RemotePost{}, %RemotePost{}, _signer), do: false
+
+  # What the stamp has to say, in full. Anything less and it is not a proof of
+  # anything: a genuine authorization for some *other* quote would otherwise
+  # authorize this one, which is the whole reason both sides are named in it.
+  defp stamp_matches?(doc, stamp, %RemotePost{} = post, %RemotePost{} = quoted) do
+    author = actor_uri_of(quoted)
+
+    as2_type?(doc, "QuoteAuthorization") and
+      activity_object_id(doc["interactionTarget"]) == quoted.object_uri and
+      activity_object_id(doc["interactingObject"]) == post.object_uri and
+      is_binary(author) and activity_object_id(doc["attributedTo"]) == author and
+      same_host?(quoted.object_uri, SearchText.normalize_search(doc["id"]) || stamp)
+  end
+
+  # An AS2 `type` is one string or a list of them (a JSON-LD document may carry
+  # both the compacted term and something else beside it).
+  defp as2_type?(doc, type), do: type in normalize_uri_list(doc["type"])
+
+  # Written with `update_all` rather than a changeset: the fetches above take as
+  # long as two strangers' servers take, and the post can be gone by the time
+  # they answer — expiry, an upstream `Delete`, a member's report. A statement
+  # that matches no row is a no-op; a changeset would raise `StaleEntryError`.
+  defp write_quote(%RemotePost{id: id}, attrs) do
+    Repo.update_all(from(p in RemotePost, where: p.id == ^id), set: Map.to_list(attrs))
+    :ok
+  end
+
+  defp clear_quote(%RemotePost{} = post) do
+    # Read off `@no_quote` rather than repeated as a literal pattern, so a fifth
+    # quote column cannot be forgotten here.
+    if Map.take(post, Map.keys(@no_quote)) == @no_quote do
+      :skip
+    else
+      write_quote(post, @no_quote)
+      :ok
     end
   end
 
@@ -7316,6 +7659,7 @@ defmodule Vutuv.Fediverse do
     |> limit(^(limit + 1))
     |> offset(^offset)
     |> Repo.all()
+    |> Repo.preload(remote_post: RemotePost.quote_preload())
     |> Enum.map(&saved_entry/1)
   end
 
@@ -8194,12 +8538,29 @@ defmodule Vutuv.Fediverse do
   end
 
   defp fetch_and_store_announced(%RemoteAccount{} = booster, uri) do
+    with %User{} = follower <- any_follower_of(booster, ["accepted"]),
+         key when not is_nil(key) <- signer(follower) do
+      fetch_and_store_object(uri, key, true)
+    else
+      _ -> :skip
+    end
+  end
+
+  # The fence every object fetched on a **third party's** say-so passes: a post
+  # nobody here follows, on a server we may never have spoken to, reached
+  # because somebody pointed at it. One definition, because it is a security
+  # boundary and not a convenience — a boost (issue #1167) and a quote (issue
+  # #1609) reach it by different routes and must not be able to drift apart on
+  # what they check. Two things differ per caller and nothing else: whose key
+  # signs the request, and whether the copy resolves its own quote.
+  #
+  # The object-type gate is the `Create` path's: a `Video`, an `Article` or an
+  # `Event` with a `content` field is not a post. `own_object?/3` is what stops
+  # a server speaking for anybody but itself, and the audience gate keeps a
+  # followers-only post out entirely.
+  defp fetch_and_store_object(uri, key, quotes?) do
     with :ok <- claim_announce_fetch(uri),
-         %User{} = follower <- any_follower_of(booster, ["accepted"]),
-         key when not is_nil(key) <- signer(follower),
          {:ok, doc} <- fetch_remote_note(uri, key),
-         # The same object-type gate the `Create` path applies: a `Video`, an
-         # `Article` or an `Event` with a `content` field is not a post.
          %{} = doc <- remote_post_object(doc),
          author_uri when is_binary(author_uri) <- announced_author(doc),
          true <- own_object?(uri, doc, author_uri),
@@ -8207,8 +8568,7 @@ defmodule Vutuv.Fediverse do
          audience when is_binary(audience) <- announced_audience(doc),
          %RemoteAccount{} = author <- announced_author_account(author_uri, key),
          {:ok, post} <- insert_remote_post(author, doc, audience) do
-      attach_pictures(post, doc)
-      {:ok, post}
+      {:ok, finish_stored_post(post, doc, quotes?)}
     else
       # Another delivery stored it while this one was fetching; the row is what
       # we wanted either way, and its pictures are that delivery's business.
@@ -8528,10 +8888,10 @@ defmodule Vutuv.Fediverse do
   # say-so, where this only decides where to send a reader who is already here.
   # What they may see when they arrive is the permalink's own business.
   defp local_lookup_post(url) do
-    with [_username, "posts", post_id] <- local_path(url),
-         %Post{} = post <- UUIDv7.with_cast(post_id, &Repo.get(Post, &1)) do
-      # With its author attached: the caller's next move is `Posts.path/1`.
-      Repo.preload(post, :user)
+    with post_id when is_binary(post_id) <- local_post_id(url),
+         # With its author attached: the caller's next move is `Posts.path/1`.
+         %Post{} = post <- UUIDv7.with_cast(post_id, &load_local_post/1) do
+      post
     else
       _ -> nil
     end
@@ -8542,7 +8902,7 @@ defmodule Vutuv.Fediverse do
          :ok <- check_lookup_url(url),
          {:ok, post} <- fetch_looked_up_post(user, url) do
       hold_looked_up_post(user, post)
-      {:ok, Repo.preload(post, :remote_account)}
+      {:ok, post |> Repo.preload(:remote_account) |> with_quotes()}
     end
   end
 
@@ -8674,7 +9034,7 @@ defmodule Vutuv.Fediverse do
   defp store_looked_up_post(%RemoteAccount{} = author, doc, audience) do
     case insert_remote_post(author, doc, audience) do
       {:ok, post} ->
-        attach_pictures(post, doc)
+        finish_stored_post(post, doc)
         {:ok, post}
 
       # Another lookup (or a delivery) stored it while this one was fetching.

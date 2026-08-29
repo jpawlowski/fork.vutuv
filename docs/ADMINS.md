@@ -209,7 +209,12 @@ for single-link posts, including cached
 fediverse posts in the feed — admins watch the
 capture queue and browse the gallery at `/admin/screenshots`; a YouTube video
 link stores the video's published thumbnail instead of a capture, fetched
-server-side from YouTube under this same flag), and
+server-side from YouTube under this same flag),
+`:fediverse_quote_resolve` (resolving what an incoming fediverse post
+**quotes** — see [fediverse.md](architecture/fediverse.md); on, it fetches the
+quoted post and its consent stamp so the quote renders as a card, off it stays
+the plain link it arrived as, and either way nothing happens while
+`FEDIVERSE_ENABLED` is false), and
 `:serve_uploads_locally` (see nginx below).
 
 ## systemd

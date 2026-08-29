@@ -54,6 +54,33 @@ defmodule VutuvWeb.FeedRemotePostsTest do
     )
   end
 
+  # A second account, on a third server, whose post the followed one quotes.
+  # Nobody here follows them — the normal case for a quote.
+  defp quoted_post do
+    author =
+      Repo.insert!(%RemoteAccount{
+        actor_uri: "https://third.example/users/autorin",
+        host: "third.example",
+        handle: "autorin",
+        name: "Die Autorin",
+        inbox_uri: "https://third.example/users/autorin/inbox"
+      })
+
+    now = DateTime.utc_now(:second)
+
+    Repo.insert!(%RemotePost{
+      remote_account_id: author.id,
+      object_uri: "https://third.example/notes/1",
+      origin_url: "https://third.example/@autorin/1",
+      content_text: "Der zitierte Satz.",
+      audience: "public",
+      kind: "note",
+      published_at: now,
+      received_at: now,
+      expires_at: DateTime.add(now, 86_400)
+    })
+  end
+
   test "a followed account's post renders with the remote skin and no action bar", %{conn: conn} do
     {conn, user} = create_and_login_user(conn)
     post = cached_post(user)
@@ -67,6 +94,52 @@ defmodule VutuvWeb.FeedRemotePostsTest do
     # action bar — replying and resharing are #1165/#1166.
     assert has_element?(view, "[data-remote-origin][href='https://social.example/@them/1']")
     refute has_element?(view, "[data-remote-post='#{post.id}'] [data-post-actions]")
+  end
+
+  describe "a quoted post in the feed (issue #1609)" do
+    test "a verified quote renders as a card inside the quoting post", %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+      quoted = quoted_post()
+
+      post =
+        cached_post(user, %{
+          quote_uri: quoted.object_uri,
+          quote_verified: true,
+          quoted_post_id: quoted.id
+        })
+
+      {:ok, view, html} = live(conn, ~p"/feed")
+
+      # The preload really reaches the card: without it the association arrives
+      # as NotLoaded and the card silently degrades to the link below.
+      assert has_element?(
+               view,
+               "[data-remote-post='#{post.id}'] [data-quoted-post='#{quoted.id}']"
+             )
+
+      assert html =~ "Der zitierte Satz."
+      assert html =~ "Die Autorin"
+    end
+
+    test "an unverified quote renders as a link, not a card", %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+      quoted = quoted_post()
+
+      post =
+        cached_post(user, %{quote_uri: quoted.object_uri, quoted_post_id: quoted.id})
+
+      {:ok, view, html} = live(conn, ~p"/feed")
+
+      refute has_element?(view, "[data-quoted-post='#{quoted.id}']")
+
+      assert has_element?(
+               view,
+               "[data-remote-post='#{post.id}'] [data-quoted-post-link='#{quoted.object_uri}']"
+             )
+
+      # The quoted author's words are not shown on the quoting server's say-so.
+      refute html =~ "Der zitierte Satz."
+    end
   end
 
   test "an author's custom-emoji shortcode never reaches the card", %{conn: conn} do
