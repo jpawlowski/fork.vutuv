@@ -37,7 +37,10 @@ defmodule VutuvWeb.Live.MountHandoff do
   load per visit.
   """
 
-  use GenServer
+  # Public because the dead render stashes from the request process; the table
+  # is still this GenServer's to create, so a second owner raises rather than
+  # sharing (`stash/4` and `take/2` rescue instead of creating).
+  use Vutuv.EtsCache, access: :public
 
   @table __MODULE__
   @ttl_ms 15_000
@@ -87,20 +90,9 @@ defmodule VutuvWeb.Live.MountHandoff do
 
   ## Table owner + sweeper
 
-  def start_link(_opts) do
-    GenServer.start_link(__MODULE__, nil, name: __MODULE__)
-  end
-
   @impl true
-  def init(nil) do
-    :ets.new(@table, [
-      :named_table,
-      :public,
-      :set,
-      read_concurrency: true,
-      write_concurrency: true
-    ])
-
+  def init(_opts) do
+    open_table()
     schedule_sweep()
     {:ok, nil}
   end

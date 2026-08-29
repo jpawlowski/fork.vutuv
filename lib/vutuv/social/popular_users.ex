@@ -18,7 +18,10 @@ defmodule Vutuv.Social.PopularUsers do
   and `Social.most_followed_users/1` transparently falls back to the query,
   so behaviour is unchanged, only cheaper.
   """
-  use GenServer
+
+  use Vutuv.EtsCache, access: :protected
+
+  alias Vutuv.EtsCache
 
   @table __MODULE__
   @pool_size 1000
@@ -36,32 +39,15 @@ defmodule Vutuv.Social.PopularUsers do
   def top(limit, _table) when limit > @pool_size, do: :miss
 
   def top(limit, table) do
-    case :ets.lookup(table, :pool) do
-      [{:pool, users}] -> {:ok, Enum.take(users, limit)}
-      [] -> :miss
-    end
-  rescue
-    ArgumentError -> :miss
+    with {:ok, users} <- EtsCache.fetch(table, :pool), do: {:ok, Enum.take(users, limit)}
   end
 
   @doc "Recompute the snapshot now (synchronous; used by tests)."
   def refresh(server \\ __MODULE__), do: GenServer.call(server, :refresh)
 
-  def start_link(opts \\ []) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
-    # `name: nil` (isolated test instances) starts the process unregistered.
-    gen_opts = if name, do: [name: name], else: []
-    GenServer.start_link(__MODULE__, opts, gen_opts)
-  end
-
   @impl true
   def init(opts) do
-    table =
-      :ets.new(Keyword.get(opts, :table, @table), [
-        :named_table,
-        :protected,
-        read_concurrency: true
-      ])
+    table = open_table(Keyword.get(opts, :table, @table))
 
     interval = Keyword.get(opts, :refresh_interval, @refresh_interval)
 
