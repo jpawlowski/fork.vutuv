@@ -57,6 +57,45 @@ defmodule VutuvWeb.ContentPolicy do
   """
   def agent_docs_blocked?(%{noindex?: noindex?, noai?: noai?}), do: noindex? and noai?
 
+  @vcard_download_levels ~w(everyone followers nobody)
+
+  @doc """
+  Who may download a member's profile as a vCard (issue #1705):
+
+    * `"everyone"` — the default, and exactly today's behaviour: an anonymous
+      public download of what the page already shows.
+    * `"followers"` — a signed-in member who follows them.
+    * `"nobody"` — no button, and `/:slug.vcf` is gone.
+
+  The sibling of `users.carddav_visibility`, and the reason that one means
+  anything: withdrawing from every address book while a one-click download sits
+  on the profile is half a promise. Two settings, because they are not the same
+  act — a subscription keeps a card current on a device indefinitely, a
+  download is one file, once.
+  """
+  def vcard_download_levels, do: @vcard_download_levels
+
+  @doc """
+  Whether `viewer` may download `user`'s vCard. `viewer` is `nil` for a
+  logged-out visitor.
+
+  A member may always download their own. Note that the **default costs
+  nothing**: with `"everyone"` the answer does not depend on the viewer at all,
+  so the public `.vcf` stays the identical, cache-safe response it has always
+  been. Only a member who narrows it makes their own profile answer differently
+  per viewer, which is what they asked for.
+  """
+  def vcard_download_allowed?(user, viewer)
+
+  def vcard_download_allowed?(%{id: id}, %{id: id}), do: true
+  def vcard_download_allowed?(%{vcard_download: "nobody"}, _viewer), do: false
+  def vcard_download_allowed?(%{vcard_download: "followers"}, nil), do: false
+
+  def vcard_download_allowed?(%{vcard_download: "followers", id: id}, %{id: viewer_id}),
+    do: Vutuv.Social.user_follows_user?(viewer_id, id)
+
+  def vcard_download_allowed?(_user, _viewer), do: true
+
   @doc """
   Stamps `robots_directives/2` as the response's `X-Robots-Tag` header (a
   no-op when there is nothing to declare). The one conn-level application

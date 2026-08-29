@@ -19,6 +19,7 @@ defmodule Vutuv.ApiAuth.Scopes do
     posts:read posts:write
     messages:read messages:write
     jobs:read jobs:write
+    contacts:read
   )
 
   def all, do: @scopes
@@ -69,6 +70,12 @@ defmodule Vutuv.ApiAuth.Scopes do
 
   def description("jobs:write"),
     do: gettext("Post, edit and close job openings as you")
+
+  # Read-only and without a write sibling on purpose (issue #1705): the CardDAV
+  # address book is the one thing this scope opens, and that collection cannot
+  # be written to at all.
+  def description("contacts:read"),
+    do: gettext("Read your address book over CardDAV: the contacts you publish, with your notes")
 
   def description("read") do
     gettext("Read your profile, including entries only you can see") <>

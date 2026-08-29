@@ -343,6 +343,20 @@ config :vutuv, :landing_example_profile_url, "https://vutuv.de/wintermeyer"
 # either way (users.fediverse_followers?).
 config :vutuv, :fediverse_enabled, true
 
+# The CardDAV address book (issue #1705): the contacts a member follows,
+# subscribable from a phone's Contacts app. Off = every CardDAV endpoint 404s.
+# It makes no outbound calls at all, so it is on by default and an intranet
+# installation can keep it while switching federation off. Per member it stays
+# opt-in either way (users.carddav_sharing, "off" until they choose).
+# Runtime override: CARDDAV_ENABLED=false (config/runtime.exs).
+config :vutuv, :carddav_enabled, true
+
+# The WebDAV-Push sweeper behind the address book: it notices that a member's
+# book moved and tells the subscribed devices, so a client does not have to
+# poll. A no-op while :carddav_enabled or Web Push is off, and it calls nothing
+# but the push endpoints devices registered themselves.
+config :vutuv, :carddav_push_sweeping, true
+
 # The Mastodon-compatible smartphone-client API is a separate adapter
 # on `mastodon.<PHX_HOST>`. ActivityPub actors and handles stay on PHX_HOST.
 # Runtime override: MASTODON_API_ENABLED=false (config/runtime.exs).

@@ -478,6 +478,40 @@ defmodule Vutuv.Social do
   end
 
   @doc """
+  Sets the follower's own private marks on their follow of `followee` (issue
+  #1705): `personally_known` and/or `note`.
+
+  Scoped to `follower_id` like every other write on a follow edge, so a caller
+  can only mark a follow they own, and it returns `{:error, :not_following}`
+  rather than creating one — a mark is a property of a relationship that
+  already exists, not a way to start one.
+
+  Nobody but the follower ever sees either value. Nothing is notified: the
+  person marked "personally known" is not told, which is the only way the mark
+  can stay an honest note-to-self rather than a social signal.
+  """
+  def set_follow_marks(%User{id: follower_id}, followee, attrs) do
+    {column, followee_id} = followee_column(followee)
+
+    case Repo.get_by(Follow, %{column => followee_id, follower_id: follower_id}) do
+      %Follow{} = follow -> follow |> Follow.marks_changeset(attrs) |> Repo.update()
+      nil -> {:error, :not_following}
+    end
+  end
+
+  @doc """
+  Flips `personally_known` on one of the caller's own follow edges, by edge id,
+  and returns the updated `%Follow{}`. The profile's ⋯ menu toggle.
+  """
+  def toggle_personally_known!(follower_id, follow_id) do
+    follow = Repo.get_by!(Follow, id: follow_id, follower_id: follower_id)
+
+    follow
+    |> Follow.marks_changeset(%{personally_known: not follow.personally_known})
+    |> Repo.update!()
+  end
+
+  @doc """
   The ids of the member's own follows that are currently muted.
 
   The companion to `restore_follow_mutes/2`, and deliberately the *muted* set
@@ -1005,10 +1039,15 @@ defmodule Vutuv.Social do
   @doc """
   Both directional follow edges between two members in one round trip, as
   `%{outbound:, inbound:}` — `outbound` the `a → b` edge and `inbound` the
-  `b → a` edge, each `%{id:, muted?:}` or `nil`. The profile header resolves
-  its whole relationship pill (follow id, mute state, follows-you, vernetzt)
-  from exactly these two edges, so it reads them together instead of running
+  `b → a` edge, each `%{id:, muted?:, personally_known?:, note:}` or `nil`. The
+  profile header resolves its whole relationship pill (follow id, mute state,
+  follows-you, vernetzt) plus the viewer's two private marks (issue #1705) from
+  exactly these two edges, so it reads them together instead of running
   `follow_edge/2` twice per mount.
+
+  The marks ride along on **both** edges because the query is symmetric, but
+  only the outbound one is ever shown: they belong to the follower, and the
+  profile only ever renders the viewer's own.
   """
   def follow_edges_between(a_id, b_id) do
     edges =
@@ -1016,7 +1055,14 @@ defmodule Vutuv.Social do
         where:
           (c.follower_id == ^a_id and c.followee_id == ^b_id) or
             (c.follower_id == ^b_id and c.followee_id == ^a_id),
-        select: {c.follower_id, %{id: c.id, muted?: c.muted}}
+        select:
+          {c.follower_id,
+           %{
+             id: c.id,
+             muted?: c.muted,
+             personally_known?: c.personally_known,
+             note: c.note
+           }}
       )
       |> Repo.all()
       |> Map.new()

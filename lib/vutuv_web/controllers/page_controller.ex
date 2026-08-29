@@ -386,6 +386,9 @@ defmodule VutuvWeb.PageController do
   - `/system/mastodon` — how to reach this installation from a Mastodon-compatible
     app: the address to enter, what such an app can do here and what it cannot,
     also raw at `/system/mastodon.md` (`?lang=` for {{locales}})
+  - `/system/carddav` — how a member subscribes to the people they follow from
+    the Contacts app on a phone, what a card carries and how to withdraw it,
+    also raw at `/system/carddav.md` (`?lang=` for {{locales}})
   - `/organizations` — the verified organization directory; one organization at `/organizations/<slug>`
   - `/organizations/<slug>/posts/<id>` — a post published in an organization's own
     name; the organization is the author, so there is no member behind it to look up

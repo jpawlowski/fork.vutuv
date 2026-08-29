@@ -38,6 +38,7 @@ defmodule VutuvWeb.SettingsController do
   alias Vutuv.AccountEvents
   alias Vutuv.Accounts
   alias Vutuv.Accounts.User
+  alias Vutuv.CardDav
   alias Vutuv.ContentFilters
   alias Vutuv.Credentials
   alias Vutuv.LoginCodes
@@ -50,6 +51,7 @@ defmodule VutuvWeb.SettingsController do
   alias Vutuv.ViewerClock
   alias Vutuv.WebPush
   alias Vutuv.WebPush.Subscriptions
+  alias VutuvWeb.Endpoint
 
   # The hub: no forms of its own, just the grouped rows with per-section entry
   # counts. Each page sets its own :page_title so the browser tab / history
@@ -170,6 +172,41 @@ defmodule VutuvWeb.SettingsController do
       changeset: User.changeset(Prefs.with_effective(user)),
       page_title: gettext("Visibility")
     )
+  end
+
+  # ── The CardDAV address book (issue #1705) ──
+  #
+  # Its own page rather than a card on the visibility page: what it publishes
+  # is other people's contact details onto a device this installation does not
+  # own, so it needs room to say what leaves, what comes back, and what happens
+  # when somebody stops qualifying. The counts beside each level are the point
+  # of the page — "everybody I follow" is an abstraction until it says 431.
+  def carddav(conn, _params) do
+    user = conn.assigns[:user]
+
+    render(conn, "carddav.html", carddav_assigns(user, User.changeset(user)))
+  end
+
+  def update_carddav(conn, %{"user" => params}) do
+    save(
+      conn,
+      params,
+      "carddav.html",
+      ~p"/settings/carddav",
+      gettext("Address book settings saved."),
+      event: "carddav_changed"
+    )
+  end
+
+  defp carddav_assigns(user, changeset) do
+    [
+      user: user,
+      changeset: changeset,
+      counts: CardDav.counts(user),
+      sharing: CardDav.sharing(user),
+      carddav_url: Endpoint.url(),
+      page_title: gettext("Address book (CardDAV)")
+    ]
   end
 
   def apps(conn, _params) do
@@ -967,6 +1004,9 @@ defmodule VutuvWeb.SettingsController do
     [user: conn.assigns[:user], changeset: changeset] ++
       fediverse_assigns(conn.assigns[:user])
   end
+
+  defp error_assigns(conn, "carddav.html", changeset),
+    do: carddav_assigns(conn.assigns[:user], changeset)
 
   # The notifications page carries a second, form-less block (issue #1729),
   # which has to be built again for a re-render or a rejected changeset renders

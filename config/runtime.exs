@@ -198,6 +198,14 @@ if config_env() == :prod do
     config :vutuv, :mastodon_api_enabled, false
   end
 
+  # The CardDAV address book. CARDDAV_ENABLED=false turns /.well-known/carddav
+  # and the whole collection into 404s. It calls nothing out, so an intranet
+  # installation has no reason to switch it off — but an operator who does not
+  # want members' contacts leaving for a phone at all has this one switch.
+  if System.get_env("CARDDAV_ENABLED") == "false" do
+    config :vutuv, :carddav_enabled, false
+  end
+
   # An installation that must not reach a push service at all (intranet).
   # Otherwise push needs no configuration: the VAPID pair below is optional and
   # only pins one, e.g. so it survives a secret_key_base rotation.

@@ -174,6 +174,15 @@ defmodule VutuvWeb.Router do
     plug(:accepts, ["json"])
   end
 
+  # The CardDAV address book (issue #1705). No session, no CSRF and
+  # deliberately no `accepts`: the methods here are PROPFIND and REPORT, the
+  # bodies are XML, and a phone sends whatever Accept header it likes. HTTP
+  # Basic with a personal access token is the whole authentication, and the
+  # plug 404s the lot while :carddav_enabled is off.
+  pipeline :carddav do
+    plug(Plugs.CardDavAuth)
+  end
+
   # Existing Mastodon clients are pointed at this technical host. Keep this
   # scope before every host-agnostic route: the final catch-all prevents the
   # normal website from becoming available through the API origin.
@@ -654,6 +663,10 @@ defmodule VutuvWeb.Router do
     # root word, which member handles own. The specification fixes no path
     # for them — every consumer follows the link — which is why Mastodon,
     # Pleroma and Misskey each serve them somewhere different.
+    # CardDAV discovery for a browser or a curious human (RFC 6764): a GET is a
+    # 301 to the collection. The PROPFIND a client sends here is NOT a redirect
+    # — see the scope below for why.
+    get("/.well-known/carddav", CardDavController, :well_known)
     get("/.well-known/nodeinfo", WellKnownController, :nodeinfo_links)
     get("/system/nodeinfo/:version", WellKnownController, :nodeinfo)
     # ActivityPub follow-only federation (Vutuv.Fediverse): WebFinger
@@ -740,6 +753,7 @@ defmodule VutuvWeb.Router do
     # like the directory, so it burns no root path word.
     get("/system/markdown", HelpController, :markdown)
     get("/system/mastodon", HelpController, :mastodon)
+    get("/system/carddav", HelpController, :carddav)
 
     # The offline page the service worker keeps (issue #1729), shown instead of
     # the browser's own error when there is no network. It is the ONE document
@@ -1511,6 +1525,93 @@ defmodule VutuvWeb.Router do
     match(:*, "/*path", NotFoundController, :show, assigns: %{api_scope: :none})
   end
 
+  # The CardDAV address book (issue #1705): service root → principal → home →
+  # collection → card, the chain a client walks after /.well-known/carddav.
+  #
+  # The path segments carry member **ids**, not handles: a member who renames
+  # would otherwise find the account they configured months ago answering 404
+  # on every device at once. A card's URL deliberately ends in the bare id with
+  # no `.vcf` — the endpoint's AgentFormat plug strips that extension off every
+  # GET path before the router sees it, and its guard would then 404 the
+  # response for not being an agent document.
+  #
+  # Must stay ABOVE the /:slug catch-all, like every other /system/ page.
+  # CardDAV discovery, answered **in place** rather than redirected (RFC 6764).
+  #
+  # A 301 here looks correct and is what the spec suggests, and it is what iOS
+  # choked on: it PROPFINDs this URL unauthenticated, follows the redirect,
+  # meets the 401 challenge at the *redirected* location — and gives up rather
+  # than retrying there, falling back to probing `/` and `/principals/` and
+  # then reporting "CardDAV account verification failed". Verified against the
+  # iOS 27 Simulator on 2026-08-26. So the PROPFIND is served here directly:
+  # the challenge and the answer are at the URL the client asked about, and no
+  # redirect sits in the authentication path.
+  #
+  # `.well-known` is not a member-claimable root word, so this costs no handle.
+  scope "/.well-known", VutuvWeb do
+    pipe_through([:carddav])
+
+    match(:propfind, "/carddav", CardDavController, :service)
+    match(:options, "/carddav", CardDavController, :options)
+  end
+
+  # The same document at the **site root**, for `PROPFIND` and `OPTIONS` only.
+  #
+  # A CardDAV account's "server" is a bare host name, so its account URL is
+  # `https://<host>/` — and iOS asks *that* for the service before it believes
+  # anything else: it PROPFINDs `/` (and `/principals/`), and a router that
+  # answers neither is a server it decides cannot sync contacts. Verified
+  # against the iOS 27 Simulator on 2026-08-26, where the whole discovery
+  # chain hung on exactly this.
+  #
+  # It costs nothing: `PROPFIND` is a method no page of this site has any other
+  # use for, and the website's own `GET /` is untouched.
+  scope "/", VutuvWeb do
+    pipe_through([:carddav])
+
+    match(:propfind, "/", CardDavController, :service)
+    match(:options, "/", CardDavController, :options)
+  end
+
+  scope "/system/carddav", VutuvWeb do
+    pipe_through([:carddav])
+
+    match(:options, "/", CardDavController, :options)
+    match(:propfind, "/", CardDavController, :service)
+
+    match(:options, "/p/:member", CardDavController, :options)
+    match(:propfind, "/p/:member", CardDavController, :principal)
+
+    match(:options, "/a/:member", CardDavController, :options)
+    match(:propfind, "/a/:member", CardDavController, :home)
+
+    match(:options, "/a/:member/contacts", CardDavController, :options)
+    match(:propfind, "/a/:member/contacts", CardDavController, :collection)
+    match(:report, "/a/:member/contacts", CardDavController, :report)
+
+    # WebDAV-Push (issue #1705): a device registers a push endpoint on the
+    # collection and deletes that registration again by its own URL. The POST
+    # is the one write this collection accepts, and it writes nothing about
+    # anybody's contacts — only where to send a "your book moved" ping.
+    post("/a/:member/contacts", CardDavController, :push_register)
+    delete("/a/:member/contacts/push/:registration", CardDavController, :push_unregister)
+
+    match(:options, "/a/:member/contacts/:card", CardDavController, :options)
+    match(:propfind, "/a/:member/contacts/:card", CardDavController, :card_propfind)
+    get("/a/:member/contacts/:card", CardDavController, :card)
+
+    # Read-only, said in the protocol rather than by a 404 or a 405: a client
+    # that tries to write gets the same `need-privileges` its
+    # current-user-privilege-set already promised.
+    match(:put, "/a/:member/contacts/:card", CardDavController, :read_only)
+    match(:delete, "/a/:member/contacts/:card", CardDavController, :read_only)
+    match(:proppatch, "/a/:member/contacts/:card", CardDavController, :read_only)
+    match(:put, "/a/:member/contacts", CardDavController, :read_only)
+    match(:delete, "/a/:member/contacts", CardDavController, :read_only)
+    match(:proppatch, "/a/:member/contacts", CardDavController, :read_only)
+    match(:mkcol, "/a/:member/contacts", CardDavController, :read_only)
+  end
+
   # The one-time welcome page (VutuvWeb.WelcomeController): the location + job
   # search questions a brand-new member answers right after their registration
   # PIN, once. It lives under /system/ like the member directory so it burns no
@@ -1562,6 +1663,12 @@ defmodule VutuvWeb.Router do
     get("/privacy", SettingsController, :privacy)
     put("/privacy", SettingsController, :update_privacy)
     patch("/privacy", SettingsController, :update_privacy)
+    # The CardDAV address book (issue #1705): which contacts this member
+    # publishes to their own devices. Its own page under Privacy, because what
+    # it publishes is other people's contact details.
+    get("/carddav", SettingsController, :carddav)
+    put("/carddav", SettingsController, :update_carddav)
+    patch("/carddav", SettingsController, :update_carddav)
     # The member's own rule for letting their posts age out (issue #1255). Its
     # own page because it is the one setting here that destroys something: it
     # carries an explainer about what a Delete can and cannot do on other

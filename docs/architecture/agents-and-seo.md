@@ -9,7 +9,10 @@ structured data derive from single chokepoints.
 Every public page is also served as **Markdown**, **plain text** (80 columns),
 **JSON** and **XML** under the same URL plus an extension —
 `/stefan.wintermeyer.md` / `.txt` / `.json` / `.xml`, the profile additionally
-as `.vcf` (vCard 3.0) — or via `Accept: text/markdown` / `text/plain` /
+as `.vcf` (vCard 3.0; a whole address book of those is
+[carddav.md](carddav.md), and `users.vcard_download` narrows or withdraws this
+one download per member — the snapshot nobody can take back, unlike the
+subscription) — or via `Accept: text/markdown` / `text/plain` /
 `application/json` / `application/xml` content negotiation (the Cloudflare
 "markdown for agents" convention).
 

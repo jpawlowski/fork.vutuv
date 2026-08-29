@@ -214,6 +214,20 @@ the resulting ~200px rail width. --%>
               <:item :if={is_binary(@header_follow_id)} click="toggle_mute" value={@header_follow_id}>
                 {if @header_follow_muted?, do: gettext("Unmute"), else: gettext("Mute")}
               </:item>
+              <%!-- "I have actually met this person" (issue #1705): the
+              narrowest filter the CardDAV address book can be set to, and a
+              property of your own follow like the mute above. Private: the
+              person marked is never told, and nothing about it is rendered on
+              their profile for anybody else. --%>
+              <:item
+                :if={is_binary(@header_follow_id)}
+                click="toggle_personally_known"
+                value={@header_follow_id}
+              >
+                {if @header_personally_known?,
+                  do: gettext("Remove the mark"),
+                  else: gettext("Mark as personally known")}
+              </:item>
               <%!-- Bookmark and Like are NOT in here any more: they are the two
               one-click glyph toggles in the footer row below, where they read
               like the bookmark and heart under a post. What stays in the menu
@@ -335,6 +349,7 @@ the resulting ~200px rail width. --%>
         <div class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-100 pt-3 dark:border-slate-800">
           <.member_since_line :if={member_since} value={member_since} class="my-0" />
           <.link
+            :if={@vcard_download?}
             id="download-vcard"
             href={vcard_path}
             title={gettext("Download")}
@@ -352,6 +367,40 @@ the resulting ~200px rail width. --%>
         </div>
       </div>
     </section>
+
+    <%!-- The viewer's own private note about this member (issue #1705), and the
+    only card on this page that nobody else can see — not even the person it is
+    about. It shows once you follow them, because a note is a property of your
+    follow; it is where you write down what you want to remember, and it travels
+    with their card into your address book as the vCard NOTE.
+
+    A plain form with a phx-submit rather than an autosave: a note is worth a
+    deliberate press, and a half-typed line should not become the saved one. --%>
+    <.card :if={is_binary(@header_follow_id)} id="private-note">
+      <div class="flex items-center gap-2">
+        <.section_title>{gettext("Your private note")}</.section_title>
+        <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+          {gettext("Only you")}
+        </span>
+      </div>
+      <form phx-submit="save_note" class="mt-3 space-y-3">
+        <label for="private-note-text" class="sr-only">{gettext("Your private note")}</label>
+        <textarea
+          id="private-note-text"
+          name="note"
+          rows="3"
+          maxlength="10000"
+          placeholder={gettext("Where you met, what to ask them next time …")}
+          class={[input_class(), "resize-y"]}
+        ><%= @header_note %></textarea>
+        <div class="flex items-center gap-3">
+          <.button type="submit" id="private-note-submit">{gettext("Save note")}</.button>
+          <p class="text-sm text-slate-500 dark:text-slate-400">
+            {gettext("Nobody else can read this, and it disappears when you unfollow.")}
+          </p>
+        </div>
+      </form>
+    </.card>
 
     <%!-- New-member onboarding checklist: the few highest-impact steps so a fresh
     profile becomes findable and recognizable fast. Owner-only, shown only inside
@@ -1577,7 +1626,7 @@ the resulting ~200px rail width. --%>
       <.other_formats_card
         base_path={"/" <> @user.username}
         locale={@locale}
-        vcard
+        vcard={@vcard_download?}
         machine_formats={not VutuvWeb.ContentPolicy.agent_docs_blocked?(@user)}
         rss_path={VutuvWeb.Feeds.user_feed_path(@user)}
         id="profile-other-formats"

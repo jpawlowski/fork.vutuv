@@ -31,6 +31,18 @@ defmodule Vutuv.Social.Follow do
     belongs_to(:followee, Vutuv.Accounts.User)
     belongs_to(:followee_organization, Vutuv.Organizations.Organization)
     field(:muted, :boolean, default: false)
+    # The follower's own private marks on this edge (issue #1705). Nobody but
+    # the follower ever sees either one: they are never rendered on the
+    # followee's profile, never notified, never counted. `personally_known` is
+    # "we have actually met", the narrowest level the CardDAV address book can
+    # be filtered to; `note` is whatever the follower wants to remember about
+    # this person, and rides along into the card as vCard `NOTE:`.
+    #
+    # Two fields rather than one, because they answer different questions: a
+    # note saying "answers fast, ask about the Elixir job" is not a claim to
+    # know somebody, and the address-book filter keys on the flag alone.
+    field(:personally_known, :boolean, default: false)
+    field(:note, :string)
 
     timestamps()
   end
@@ -92,6 +104,31 @@ defmodule Vutuv.Social.Follow do
     |> cast(params, [:muted])
     |> validate_required([:muted])
   end
+
+  @doc """
+  The follower's private marks (issue #1705) — its own changeset for the same
+  reason `mute_changeset/2` is one: who follows whom is not what a note
+  changes, so nothing here may cast an identity column.
+
+  The 10,000-character cap is the changeset's job, not the column's: `note` is
+  `:text`, so Postgres would take a novel, and a member typing into a box has
+  no idea a limit exists until an oversized value 500s the request.
+  """
+  def marks_changeset(model, params \\ %{}) do
+    model
+    |> cast(params, [:personally_known, :note])
+    |> update_change(:note, &blank_to_nil/1)
+    |> validate_length(:note, max: 10_000)
+  end
+
+  defp blank_to_nil(note) when is_binary(note) do
+    case String.trim(note) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp blank_to_nil(note), do: note
 
   @required_fields ~w(follower_id followee_id)a
   @optional_fields ~w(muted)a

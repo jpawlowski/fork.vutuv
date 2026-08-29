@@ -186,6 +186,26 @@ defmodule Vutuv.WebPush do
     end
   end
 
+  @doc """
+  Sends one push whose body is **already encoded**, bypassing the `Jason` step
+  in `send/2`.
+
+  WebDAV-Push (the CardDAV address book, issue #1705) carries an XML
+  `push-message`, not JSON, so encoding it as JSON would deliver a quoted,
+  escaped string that no client can read. Everything below this line — the
+  target check, the key decode, the aes128gcm encryption and the VAPID
+  signature — is identical, which is the whole point of sharing this module
+  rather than keeping a second copy of the crypto.
+  """
+  def send_body(%{endpoint: endpoint, p256dh: p256dh, auth: auth}, body)
+      when is_binary(body) do
+    if enabled?() do
+      deliver(endpoint, p256dh, auth, body)
+    else
+      {:error, :disabled}
+    end
+  end
+
   defp deliver(endpoint, p256dh, auth, body) do
     with :ok <- check_target(endpoint),
          {:ok, ua_public} <- decode_key(p256dh),

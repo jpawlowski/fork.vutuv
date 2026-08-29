@@ -34,6 +34,7 @@ installing and operating vutuv in [Running your own vutuv](../ADMINS.md).
 | [ads.md](ads.md) | the daily text ad: booking, review, serving |
 | [experiments.md](experiments.md) | split tests on public copy: the landing-page headline test, per-variant counters, how the winner is called |
 | [company-pages.md](company-pages.md) | the site footer, the English `/system/investors` and `/system/media-kit` pages, brand assets, and the daily head-count history behind the growth curve |
+| [carddav.md](carddav.md) | the read-only CardDAV address book: sharing levels, the private "personally known" mark and note, sync tokens and tombstones, what the protocol can and cannot promise |
 | [api.md](api.md) | `/api/2.0`: personal access tokens, OAuth 2, webhooks, developer docs |
 | [mastodon-api.md](mastodon-api.md) | the Mastodon-compatible client API on `mastodon.<PHX_HOST>`: what phone clients can do, and what they cannot yet |
 

@@ -78,6 +78,9 @@ defmodule Vutuv.Application do
         # distinct Fediverse accounts following them). Starts after the Repo (it
         # seeds from it) and PubSub (it broadcasts over it).
         Vutuv.PeopleCounter,
+        # Owns the memo table behind `Vutuv.Avatar.binary/2`. No timer and no
+        # work at boot; started unconditionally because a miss simply derives.
+        Vutuv.Uploads.AvatarCache,
         # Snapshots the "most followed members" pool for the profile's
         # who-to-follow card and the public listing. Starts after the Repo (it
         # seeds the snapshot from it).
@@ -126,6 +129,7 @@ defmodule Vutuv.Application do
         ) ++
         optional_child(:sweep_account_events, Vutuv.AccountEvents.Sweeper) ++
         optional_child(:sweep_api_auth, Vutuv.ApiAuth.Sweeper) ++
+        optional_child(:carddav_push_sweeping, Vutuv.CardDav.PushSweeper) ++
         optional_child(:send_unread_message_emails, Vutuv.Chat.UnreadNotifier) ++
         optional_child(:send_notification_digest_emails, Vutuv.Activity.DigestNotifier) ++
         optional_child(:moderation_sweeper, Vutuv.Moderation.Sweeper) ++

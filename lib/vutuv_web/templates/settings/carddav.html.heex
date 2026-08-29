@@ -1,0 +1,185 @@
+<%!-- The CardDAV address book (issue #1705).
+
+Three things this page has to say plainly, in this order: what leaves vutuv,
+what a subscribing device can and cannot do with it, and what happens when
+somebody stops qualifying. The last one is the half that protects the people
+*in* the address book, and it is the half a member would never guess.
+
+Off for everybody until they choose otherwise, and the choice is one of four
+levels rather than three ticks: the levels contain each other, so "everybody I
+follow" plus "personally known" says nothing "everybody I follow" does not.
+Each level carries its own count, because that is what turns an abstraction
+into a decision. --%>
+<.settings_shell user={@user} active={:carddav} title={gettext("Address book (CardDAV)")}>
+  <div class="space-y-6">
+    <.card>
+      <.section_title>{gettext("What this does")}</.section_title>
+      <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
+        {gettext(
+          "A business network is an address book too. Switch this on and the people you follow here appear in the Contacts app on your phone, your Mac or in Thunderbird — with their photo, their phone numbers and their addresses, kept up to date."
+        )}
+      </p>
+      <p class="mt-2 text-sm text-slate-600 dark:text-slate-400">
+        {gettext(
+          "Only what those members show publicly on vutuv is published. Your own private note about a contact travels with their card, and only to your devices."
+        )}
+      </p>
+      <p class="mt-2 text-sm text-slate-600 dark:text-slate-400">
+        {gettext(
+          "The address book is read-only. You cannot edit a contact on your phone — the details belong to the member, and they change them here."
+        )}
+      </p>
+    </.card>
+
+    <%!-- The withdrawal half, stated as plainly as the deletion explainer on
+          the automatic-post-deletion page. A member switching this on is
+          copying other people's contact details onto a device, and what they
+          need to know is that the copy is not permanent — and where our reach
+          ends. --%>
+    <.card>
+      <.section_title>{gettext("When somebody drops out")}</.section_title>
+      <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
+        {gettext(
+          "Unfollow somebody, remove their mark, block them, or let them leave vutuv, and their card is withdrawn: your device is told to delete it on its next sync, usually within minutes."
+        )}
+      </p>
+      <p class="mt-2 text-sm text-slate-600 dark:text-slate-400">
+        {gettext(
+          "What we cannot reach is a copy you made yourself. If you duplicate a contact into another account, export it, or your device backs it up somewhere, that copy stays where it is. Deleting a card here removes it from your address book; it does not recall it from your backups."
+        )}
+      </p>
+    </.card>
+
+    <.card>
+      <.section_title>{gettext("Which contacts")}</.section_title>
+
+      <.form
+        :let={f}
+        for={@changeset}
+        action={~p"/settings/carddav"}
+        id="carddav-form"
+        class="mt-5 space-y-6"
+      >
+        <.form_error changeset={@changeset} />
+
+        <.radio_cards form={f} field={:carddav_sharing} options={carddav_options()}>
+          <:badge :let={value}>
+            <%!-- ngettext binds %{count} to the raw integer, so the formatted
+                  figure needs a placeholder of its own. --%>
+            <span :if={@counts[value]} class="ml-1 font-normal text-slate-500 dark:text-slate-400">
+              {ngettext("(%{formatted} contact)", "(%{formatted} contacts)", @counts[value],
+                formatted: compact_count(@counts[value])
+              )}
+            </span>
+          </:badge>
+        </.radio_cards>
+
+        <p class="text-sm text-slate-600 dark:text-slate-400">
+          {gettext(
+            "You mark somebody as personally known in the ⋯ menu on their profile, where you also write your private note about them."
+          )}
+        </p>
+
+        <%!-- The other side of the same feature, named here because this is
+              where a member is thinking about it. Their own card is not
+              governed by this page: it is their data, so it lives with the
+              rest of their visibility settings. --%>
+        <p class="text-sm text-slate-600 dark:text-slate-400">
+          {gettext("Somebody who withdrew their card is not in this list, whichever level you pick.")}
+          <.link
+            navigate={~p"/settings/privacy"}
+            class="font-semibold text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+          >
+            {gettext("Decide about your own card")}
+          </.link>
+        </p>
+
+        <div>
+          <.button type="submit" id="carddav-submit">{gettext("Save")}</.button>
+        </div>
+      </.form>
+    </.card>
+
+    <%!-- The connection details. Only worth showing once something is
+          published — an address to type into a phone that would answer with an
+          empty address book is a support ticket waiting to happen. --%>
+    <.card :if={@sharing != "off"}>
+      <.section_title>{gettext("Set it up on your device")}</.section_title>
+      <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
+        {gettext(
+          "On an iPhone: Settings → Apps → Contacts → Contacts Accounts → Add Account → Other → Add CardDAV Account. On a Mac: Contacts → Settings → Accounts → + → Other Contacts Account → CardDAV."
+        )}
+        <.link
+          navigate={~p"/system/carddav"}
+          class="font-semibold text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+        >
+          {gettext("Step by step, with pictures")}
+        </.link>
+      </p>
+
+      <dl class="mt-4 space-y-3 text-sm">
+        <div>
+          <dt class="font-medium text-slate-900 dark:text-white">{gettext("Server")}</dt>
+          <dd class="mt-0.5">
+            <.copy_field id="carddav-server">{@carddav_url}</.copy_field>
+          </dd>
+        </div>
+        <div>
+          <dt class="font-medium text-slate-900 dark:text-white">{gettext("User name")}</dt>
+          <dd class="mt-0.5">
+            <.copy_field id="carddav-username">{@user.username}</.copy_field>
+          </dd>
+        </div>
+        <div>
+          <dt class="font-medium text-slate-900 dark:text-white">{gettext("Password")}</dt>
+          <dd class="mt-0.5 font-normal text-slate-600 dark:text-slate-400">
+            {gettext(
+              "Not your vutuv password. Create an access token with the \"contacts\" permission and use that — you can revoke it for one device without touching your account."
+            )}
+            <.link
+              navigate={~p"/access_tokens/new"}
+              class="font-semibold text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+            >
+              {gettext("Create an access token")}
+            </.link>
+          </dd>
+        </div>
+        <%!-- The connected-devices half. One token per device is what makes
+              "revoke this phone" possible at all, and the token's name is the
+              only thing that says which phone it was — so the page asks for it
+              here rather than leaving a list of "Token 3" behind. The expiry is
+              named too: a device that simply stops syncing one morning is the
+              worst way to find out a token ran out. --%>
+        <%!-- WebDAV-Push, named where a member would look for it. No setting:
+              a client either speaks it or does not, and one that does not keeps
+              polling, which is what it did before. Apple's Kontakte is in the
+              second group and always will be, so the sentence says who this is
+              for rather than promising everyone instant updates. --%>
+        <div>
+          <dt class="font-medium text-slate-900 dark:text-white">{gettext("Staying fresh")}</dt>
+          <dd class="mt-0.5 font-normal text-slate-600 dark:text-slate-400">
+            {gettext(
+              "Most apps ask us for changes every so often. Apps that speak WebDAV-Push — DAVx⁵ on Android, for one — are told the moment something changes instead. Apple's Contacts cannot do that and keeps asking on its own schedule."
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt class="font-medium text-slate-900 dark:text-white">
+            {gettext("Your connected devices")}
+          </dt>
+          <dd class="mt-0.5 font-normal text-slate-600 dark:text-slate-400">
+            {gettext(
+              "Create one token per device and name it after that device (\"iPhone\"). The token list then shows which device last synced and when, and you can revoke exactly that one. Tokens expire — pick a year for a device — and when one does, the device asks for a new password instead of syncing."
+            )}
+            <.link
+              navigate={~p"/access_tokens"}
+              class="font-semibold text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+            >
+              {gettext("Manage your access tokens")}
+            </.link>
+          </dd>
+        </div>
+      </dl>
+    </.card>
+  </div>
+</.settings_shell>

@@ -166,6 +166,92 @@ than its own heading. --%>
       hint={gettext("When off, the Social Media card lists your accounts as plain links only.")}
     />
 
+    <%!-- Who may carry your card (issue #1705). This is the other half of the
+          address book, and the half that is *your* data: /settings/carddav
+          decides whose cards you collect, this decides whether yours may be
+          collected at all — and this answer wins.
+
+          Generous by default, and the card says why: what travels is the
+          anonymous public view of your profile, which every visitor already
+          sees. Three levels rather than a switch, because "only the people I
+          follow back" is the middle ground most members actually want, and a
+          switch would force them to choose between everything and nothing. --%>
+    <.card>
+      <.section_title>{gettext("Your contact card")}</.section_title>
+      <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
+        {gettext(
+          "Whichever you allow, only what your profile already shows a logged-out visitor travels — never a private address."
+        )}
+      </p>
+
+      <.form
+        :let={f}
+        for={@changeset}
+        action={~p"/settings/privacy"}
+        id="carddav-visibility-form"
+        class="mt-5 space-y-6"
+      >
+        <.form_error changeset={@changeset} />
+
+        <div class="space-y-3">
+          <p class="text-sm font-medium text-slate-900 dark:text-white">
+            {gettext("In other people's address books")}
+          </p>
+          <p class="text-sm text-slate-600 dark:text-slate-400">
+            {gettext(
+              "Members can subscribe to the people they follow here from their phone's Contacts app. This is whether you are one of them."
+            )}
+          </p>
+          <%!-- The half we can actually keep: a subscription is ours to
+                withdraw, and it works. Say so, because it is the reason this
+                one can afford to be generous. --%>
+          <p class="text-sm text-slate-600 dark:text-slate-400">
+            {gettext(
+              "You can take this back at any time. Narrow it or switch it off, and your card leaves those address books at the next sync — within minutes, without anyone doing anything."
+            )}
+          </p>
+
+          <.radio_cards form={f} field={:carddav_visibility} options={carddav_visibility_options()} />
+        </div>
+
+        <%!-- The one-off download, in the same card and under the same Save,
+              because it is the same question in a second shape — and because
+              the setting above is half a promise without it: withdrawing from
+              every address book while a one-click button sits on your profile
+              withdraws nothing.
+
+              Its own levels, though. A subscription keeps your card current on
+              somebody's device indefinitely; a download is one file, once, of
+              what the page already shows. So the widest level here is wider,
+              and it is the default: narrowing a public affordance for every
+              member who never asked would be the wrong way round. --%>
+        <div class="space-y-3 border-t border-slate-100 pt-5 dark:border-slate-800">
+          <p class="text-sm font-medium text-slate-900 dark:text-white">
+            {gettext("And the vCard download on your profile")}
+          </p>
+          <p class="text-sm text-slate-600 dark:text-slate-400">
+            {gettext(
+              "Your profile carries a button that saves your details as a file, one profile at a time."
+            )}
+          </p>
+          <%!-- And the half we cannot: a file is gone the moment it is saved.
+                This is the honest difference between the two, and the reason
+                they are two questions rather than one. --%>
+          <p class="text-sm text-slate-600 dark:text-slate-400">
+            {gettext(
+              "This one you cannot take back. A saved file is a snapshot: it never updates, it does not know you changed your mind, and switching this off later removes the button — not the copies somebody already has."
+            )}
+          </p>
+
+          <.radio_cards form={f} field={:vcard_download} options={vcard_download_options()} />
+        </div>
+
+        <div>
+          <.button type="submit" id="carddav-visibility-submit">{gettext("Save")}</.button>
+        </div>
+      </.form>
+    </.card>
+
     <%!-- Safety: the two things you reach for when someone is a problem or your
           content is being looked at. Grouped in one card (two rows) so neither
           reads as a lonely one-line card. --%>

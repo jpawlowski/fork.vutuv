@@ -10,8 +10,10 @@ defmodule Vutuv.UploadsIntegrationTest do
   import Vutuv.Factory
 
   alias Vutuv.Accounts.User
+  alias Vutuv.CardDav
   alias Vutuv.Profiles.Url
   alias Vutuv.Repo
+  alias Vutuv.Uploads.AvatarCache
   alias VutuvWeb.AgentDocs.ProfileDoc
   alias VutuvWeb.AgentDocs.VCard
 
@@ -208,6 +210,70 @@ defmodule Vutuv.UploadsIntegrationTest do
     assert vcf =~ "PHOTO;ENCODING=b;TYPE=JPEG:"
     # The raw data: URI must not leak into the vCard.
     refute vcf =~ "data:image"
+  end
+
+  # The picture is half of what an address book is for, so it has to survive the
+  # CardDAV path too — and that path is where its size actually bites: a card is
+  # one line per property, and the photo is the only property measured in
+  # kilobytes. RFC 2426 s2.6 folds such a line, and a client unfolds it again.
+  test "a CardDAV card carries the avatar, folded, with no line past 75 octets", %{tmp: tmp} do
+    me = insert(:activated_user, carddav_sharing: "following")
+    them = insert(:activated_user, first_name: "Ada", last_name: "King", avatar: "me.jpg")
+    follow!(me, them)
+
+    dir = Path.join(tmp, "originals/avatars/#{them.id}")
+    File.mkdir_p!(dir)
+    {:ok, img} = Image.new(600, 600, color: [10, 120, 200])
+    {:ok, _} = Image.write(img, Path.join(dir, "original.jpg"))
+
+    assert [entry] = CardDav.contacts(me)
+    card = CardDav.render_card(entry)
+
+    assert card =~ "PHOTO;ENCODING=b;TYPE=JPEG:"
+    refute card =~ "data:image"
+
+    lines = String.split(card, "\n")
+    assert Enum.all?(lines, &(byte_size(&1) <= 75))
+
+    # Unfolding is what a Contacts app does before it decodes; the payload has
+    # to come back out byte for byte or the picture is a broken JPEG.
+    unfolded = String.replace(card, "\n ", "")
+    assert [_, encoded] = Regex.run(~r/PHOTO;ENCODING=b;TYPE=JPEG:(\S+)/, unfolded)
+    assert {:ok, bytes} = Base.decode64(encoded)
+    assert byte_size(bytes) > 0
+  end
+
+  # Not just that the cache works (`Vutuv.Avatar.CacheTest` covers the module)
+  # but that the card actually goes through it: a member with three hundred
+  # contacts is three hundred libvips pipelines per rendered book otherwise,
+  # and the one line in `ProfileDoc` that routes it there is easy to lose.
+  #
+  # Proved by taking the original away rather than by timing. `Avatar.binary/2`
+  # resolves the file with a wildcard before libvips is involved at all, so a
+  # deleted original can only produce the placeholder — a second card that
+  # still carries the photo can only have come from the cache. No clock, no
+  # bound to tune, and it fails the moment that line is reverted.
+  test "rendering the same card twice derives the photo once", %{tmp: tmp} do
+    me = insert(:activated_user, carddav_sharing: "following")
+    them = insert(:activated_user, avatar: "me.jpg", avatar_fingerprint: "fp-cards")
+    follow!(me, them)
+
+    dir = Path.join(tmp, "originals/avatars/#{them.id}")
+    File.mkdir_p!(dir)
+    {:ok, img} = Image.new(600, 600, color: [10, 120, 200])
+    {:ok, _} = Image.write(img, Path.join(dir, "original.jpg"))
+
+    AvatarCache.reset()
+    assert [entry] = CardDav.contacts(me)
+
+    first = CardDav.render_card(entry)
+    assert first =~ "PHOTO;ENCODING=b;TYPE=JPEG:"
+
+    File.rm_rf!(dir)
+    second = CardDav.render_card(entry)
+
+    assert second == first,
+           "the photo was derived again instead of being taken from the cache"
   end
 
   test "the vCard omits the PHOTO line when the user has no avatar" do

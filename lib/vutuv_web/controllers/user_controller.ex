@@ -15,6 +15,7 @@ defmodule VutuvWeb.UserController do
   alias Vutuv.Profiles.SocialMediaAccount
   alias VutuvWeb.AgentDocs
   alias VutuvWeb.AgentDocs.ProfileDoc
+  alias VutuvWeb.ContentPolicy
   alias VutuvWeb.ControllerHelpers
   alias VutuvWeb.Fediverse.Docs
   alias VutuvWeb.FediverseController
@@ -51,10 +52,24 @@ defmodule VutuvWeb.UserController do
         # The profile is the one page that also serves :vcf; the doc embeds the
         # photo only for that format, so the doc fun takes the negotiated format.
         AgentDocs.respond(conn,
-          allowed: AgentDocs.formats(),
+          # Dropping :vcf from the allowed list is the whole gate (issue
+          # #1705): `negotiate/2` stops offering it, `put_html_alternates/2`
+          # stops advertising it in the head and the Link header, and the
+          # endpoint's AgentFormat guard turns a bare `/:slug.vcf` into the
+          # plain 404 it uses for every unhandled extension. One list, three
+          # surfaces, nothing to keep in sync by hand.
+          allowed: allowed_formats(conn, user),
           html: &show_html(&1, params),
           doc: &ProfileDoc.build(conn.assigns[:user], include_photo: &1 == :vcf)
         )
+    end
+  end
+
+  defp allowed_formats(conn, user) do
+    if ContentPolicy.vcard_download_allowed?(user, conn.assigns[:current_user]) do
+      AgentDocs.formats()
+    else
+      AgentDocs.formats() -- [:vcf]
     end
   end
 

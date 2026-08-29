@@ -134,3 +134,57 @@ maintenance tasks (image regeneration, screenshots) are documented in
 those mechanisms with `UPLOADS_DIR_PREFIX=/srv/vutuv3`. The full mail
 topology of the vutuv.de host lives in
 [`production-email-and-bounces.md`](production-email-and-bounces.md).
+
+## End-to-end tests against a real client (`scripts/e2e/tunnel.sh`)
+
+Some clients will not talk to a development server at all. The one that forced
+this into existence is Apple's: **iOS and macOS Contacts do not answer an HTTP
+Basic challenge over an unencrypted connection** — they ask, they are told how
+to authenticate, and they fall silent. The account reports "verification
+failed" and the server log shows nothing but 401s. No certificate, no test.
+
+So:
+
+```bash
+./scripts/e2e/tunnel.sh
+```
+
+puts this checkout on the public internet under a real certificate:
+
+```
+device ──https──▶ Cloudflare Quick Tunnel ──▶ recording proxy ──▶ Phoenix
+```
+
+It opens the tunnel, **waits until a public resolver answers for the fresh
+hostname before anything touches it** (one lookup too early poisons the local
+resolver with a negative answer that outlives the tunnel), then starts the
+server with `PHX_HOST` set to that hostname — so every absolute URL the app
+hands out is the one the device can actually reach. Ctrl-C stops the tunnel,
+the proxy and the server, and nothing else.
+
+**Quick Tunnels, deliberately.** No account, no token, no secret in the
+repository or in this document — one binary (`brew install cloudflared`) and
+one command, which is the only kind of tooling an open-source project can
+reasonably ask a contributor to run. The cost is a fresh random hostname per
+run and no request inspector; the second is why `scripts/e2e/inspect_proxy.mjs`
+sits in front of the server.
+
+That proxy writes every request and response to `/tmp/vutuv-e2e-proxy.log` —
+method, path, headers, decompressed bodies. It is Node with no dependencies, so
+it runs from a fresh checkout. **Credentials are never written to it**: an
+`Authorization` header is logged as its scheme plus the user name, which
+answers "did the client authenticate, and as whom" without recording anything
+replayable.
+
+**The iOS Simulator is not a substitute for a device.** It runs the account
+setup in Settings — verification requests really do reach the server, so it can
+prove discovery and authentication — but it never drives the contact
+synchronisation itself: `dataaccessd` runs and does no DAV work, with nothing
+in its log, whatever you trigger. Everything past "the account saved without an
+error" needs a real iPhone. That cost most of a day to establish; do not spend
+it again.
+
+It is not CardDAV-specific. Anything that insists on TLS or on being reachable
+from outside — an OAuth redirect, a webhook somebody has to deliver to, a phone
+client — can be driven against a working branch this way, before it reaches
+`main`.

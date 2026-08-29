@@ -88,16 +88,30 @@ defmodule VutuvWeb.MastodonApi.PushStreamingTest do
       assert Base.url_encode64(public, padding: false) == WebPush.public_key()
     end
 
-    # Push is the phone-client API, so the adapter's own switch has to take it
-    # along — a device that subscribed before `MASTODON_API_ENABLED=false` must
-    # not keep being pushed to from an installation that answers 404 to every
-    # request that device makes.
-    test "the adapter's switch takes push with it" do
+    # Push to a phone client IS the phone-client API, so the adapter's switch
+    # still has to take those devices with it — one that subscribed before
+    # `MASTODON_API_ENABLED=false` must not keep being pushed to from an
+    # installation that answers 404 to every request it makes. What the switch
+    # must NOT take with it is the transport, which the address book (issue
+    # #1705) is the second consumer of: while this asked the adapter too,
+    # turning ActivityPub off silently killed WebDAV-Push as well. So the
+    # adapter's gate moved to the paths that reach its own devices.
+    test "the adapter's switch takes its own devices with it, and nothing else" do
       enable_push()
       put_config(:mastodon_api_enabled, false)
 
+      # The adapter is shut: no phone client is pushed to, and it advertises no
+      # key. Since #1800 that gate IS this module's `enabled?/0` — it wraps the
+      # shared transport rather than owning the crypto.
       refute WebPush.enabled?()
       refute WebPush.public_key()
+
+      # The transport underneath is untouched, which is what the address book
+      # rides on.
+      assert Vutuv.WebPush.enabled?()
+
+      assert Vutuv.WebPush.public_key(),
+             "the address book still needs a key to subscribe with"
     end
 
     # Half a pair is a signature no push service accepts, so it must not be

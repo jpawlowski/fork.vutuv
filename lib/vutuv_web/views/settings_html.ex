@@ -55,6 +55,58 @@ defmodule VutuvWeb.SettingsHTML do
   defp auto_post_deletion_label(730), do: gettext("2 years")
   defp auto_post_deletion_label(days), do: ngettext("%{count} day", "%{count} days", days)
 
+  @doc """
+  The CardDAV sharing levels as `{value, label, hint}`, in the order
+  `Vutuv.CardDav.sharing_levels/0` declares them — narrowest first after "off",
+  which is also the order they contain each other in. A member reading down the
+  list reads a widening circle, and the count beside each one says how wide.
+  """
+  def carddav_options do
+    [
+      {"off", gettext("Off"),
+       gettext("No address book is published. Nothing about your contacts leaves vutuv.")},
+      {"personally_known", gettext("Only people I marked as personally known"),
+       gettext("The people you ticked yourself, on their profile.")},
+      {"mutual", gettext("People I follow who follow me back"),
+       gettext("What vutuv calls connected: the follow goes both ways.")},
+      {"following", gettext("Everybody I follow"), gettext("Every member you follow.")}
+    ]
+  end
+
+  @doc """
+  The other side of the address book, in `Vutuv.CardDav.visibility_levels/0`
+  order: who may keep *this* member's card. Widest first, because the default is
+  the widest and a member reading down the list is reading a narrowing circle —
+  the reverse of `carddav_options/0`, where they are opening one up.
+  """
+  def carddav_visibility_options do
+    [
+      {"followers", gettext("Anybody who follows me"),
+       gettext("What they get is what your profile already shows every visitor.")},
+      {"mutual", gettext("Only people I follow back"),
+       gettext("Your card travels no further than the people you are connected to.")},
+      {"nobody", gettext("Nobody"),
+       gettext("Your card is in no address book. Your profile stays as it is.")}
+    ]
+  end
+
+  @doc """
+  The same question for the one-off download, in
+  `VutuvWeb.ContentPolicy.vcard_download_levels/0` order. It has a wider top
+  level than `carddav_visibility_options/0` because it starts from a public
+  page: today anybody can take the file, and narrowing that by default would
+  remove something from every member who never asked.
+  """
+  def vcard_download_options do
+    [
+      {"everyone", gettext("Anybody who can see my profile"),
+       gettext("The way it is today: the button is there for every visitor.")},
+      {"followers", gettext("Only members who follow me"),
+       gettext("Signed in and following you. Everyone else does not see the button.")},
+      {"nobody", gettext("Nobody"), gettext("No download button, and the file is gone.")}
+    ]
+  end
+
   @doc "The human, localized label for a content filter's kind (issue #940)."
   def filter_kind_label(%{kind: :tag}), do: gettext("Tag")
   def filter_kind_label(%{kind: :keyword, whole_word: false}), do: gettext("Word or phrase")

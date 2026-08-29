@@ -126,6 +126,11 @@ defmodule Vutuv.AccountEvents do
     "filter_added" => ["filter_kind"],
     "filter_removed" => ["filter_kind"],
     "auto_post_deletion_changed" => ["fields"],
+    # The CardDAV address book (issue #1705). Field names only — the level
+    # itself is on the settings page, and this log outlives the change by a
+    # year. What it answers is "when did my contacts start leaving for a
+    # device", which is the question worth a line here.
+    "carddav_changed" => ["fields"],
 
     # Posts the member's own automatic-deletion rule took (issue #1255), one
     # line per sweeper pass. The count is the whole detail: **which** posts

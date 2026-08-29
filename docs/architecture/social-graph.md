@@ -50,6 +50,20 @@ followers" (see [posts-and-feed.md](posts-and-feed.md)).
 requests were converted to follows, and the table is dropped in a follow-up
 expand/contract deploy.)
 
+## The follower's private marks (issue #1705)
+
+A follow carries two columns nobody but the follower ever sees:
+`personally_known` ("we have actually met") and `note` (free text). They are
+never rendered on the followee's profile, never notified, never counted; the
+person marked is not told, which is the only way the mark stays an honest
+note-to-self rather than a social signal. Both are written through
+`Vutuv.Social.set_follow_marks/3` and `Follow.marks_changeset/2`, which — like
+`mute_changeset/2` — casts no identity column.
+
+They exist for the CardDAV address book, which can be narrowed to the marked
+follows and carries the note into the card as vCard `NOTE:`; see
+[carddav.md](carddav.md).
+
 ## Following tags
 
 Following a **tag** (issue #872, `Vutuv.Tags.TagFollow`, table `tag_follows`) is

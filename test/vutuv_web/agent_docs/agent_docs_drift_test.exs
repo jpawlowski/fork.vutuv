@@ -489,8 +489,8 @@ defmodule VutuvWeb.AgentDocsDriftTest do
     assert body =~ "FN:Greta Gradient"
     assert body =~ "ORG:Span AG"
     assert body =~ "TITLE:Bridge Engineer"
-    assert body =~ "TEL;TYPE=Cell:+49 30 5550100"
-    assert body =~ "EMAIL;TYPE=Work:greta.public@example.com"
+    assert body =~ "TEL;TYPE=CELL:+49 30 5550100"
+    assert body =~ "EMAIL;TYPE=INTERNET,WORK:greta.public@example.com"
     assert body =~ "Berlin"
     assert body =~ "URL:"
     # The online messenger (issue #949) rides as an IMPP line with its deep link.
@@ -1315,7 +1315,7 @@ defmodule VutuvWeb.AgentDocsDriftTest do
            )
 
     assert get(build_conn(), "/drift_tester.vcf").resp_body =~
-             "EMAIL;TYPE=Work:greta.public@example.com"
+             "EMAIL;TYPE=INTERNET,WORK:greta.public@example.com"
   end
 
   test "tag endorser list in every format", %{user: user, tag: tag, follower: follower} do

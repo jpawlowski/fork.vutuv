@@ -216,7 +216,17 @@ defmodule Vutuv.SocialTest do
         Vutuv.QueryCounter.count_queries(fn -> Social.follow_edges_between(a.id, b.id) end)
 
       assert queries == 1
-      assert edges == %{outbound: %{id: outbound.id, muted?: false}, inbound: nil}
+      # The viewer's private marks (issue #1705) ride on the edge too, so the
+      # profile header resolves them in the same round trip.
+      assert edges == %{
+               outbound: %{
+                 id: outbound.id,
+                 muted?: false,
+                 personally_known?: false,
+                 note: nil
+               },
+               inbound: nil
+             }
 
       {:ok, inbound} = Social.follow(b.id, a.id)
 

@@ -17,8 +17,11 @@ defmodule VutuvWeb.AgentDocs.VCard do
   lines (RFC 4770), one per messenger, carrying the deep link that opens a chat.
   """
 
-  def render(%{type: "profile"} = doc) do
+  def render(doc, opts \\ [])
+
+  def render(%{type: "profile"} = doc, opts) do
     "BEGIN:VCARD\nVERSION:3.0" <>
+      uid(opts) <>
       "\nN:" <>
       sanitize(doc.last_name) <>
       ";" <>
@@ -41,15 +44,16 @@ defmodule VutuvWeb.AgentDocs.VCard do
       links(doc) <>
       photo(doc) <>
       Enum.map_join(doc.phone_numbers, "", fn phone ->
-        "TEL;TYPE=" <> sanitize(phone.type) <> ":" <> sanitize(phone.value) <> "\n"
+        "TEL;TYPE=" <> tel_type(phone.type) <> ":" <> sanitize(phone.value) <> "\n"
       end) <>
       Enum.map_join(doc.addresses, "", &address/1) <>
       Enum.map_join(doc.emails, "", fn email ->
-        "EMAIL;TYPE=" <> sanitize(email.type) <> ":" <> sanitize(email.value) <> "\n"
+        "EMAIL;TYPE=" <> email_type(email.type) <> ":" <> sanitize(email.value) <> "\n"
       end) <>
       social_profiles(doc) <>
       messengers(doc) <>
-      "REV:#{timestamp(doc)}Z\nEND:VCARD"
+      note(opts) <>
+      "REV:#{rev(doc, opts)}Z\nEND:VCARD"
   end
 
   @doc "The download filename, e.g. `stefan_wintermeyer_vcard.vcf`."
@@ -103,12 +107,90 @@ defmodule VutuvWeb.AgentDocs.VCard do
   defp title(%{current_position: position}), do: sanitize(position.title)
 
   defp photo(%{vcard_photo: "data:image/jpeg;base64," <> data}),
-    do: "PHOTO;ENCODING=b;TYPE=JPEG:" <> data <> "\n"
+    do: fold("PHOTO;ENCODING=b;TYPE=JPEG:" <> data) <> "\n"
 
   defp photo(%{vcard_photo: "data:image/png;base64," <> data}),
-    do: "PHOTO;ENCODING=b;TYPE=PNG:" <> data <> "\n"
+    do: fold("PHOTO;ENCODING=b;TYPE=PNG:" <> data) <> "\n"
 
   defp photo(_doc), do: ""
+
+  # vCard 3.0 (RFC 2426 s2.6) folds a long content line: a line break followed
+  # by one space, which every parser unfolds again.
+  #
+  # This belongs to line emission rather than to any one property. The photo is
+  # the obvious case — kilobytes of base64 on a construct whose unit is one
+  # line, folded in the RFC's own s5.8.1 example — but the subscriber's `NOTE`
+  # is validated at 10,000 characters and would otherwise go out as a single
+  # line of prose that long.
+  @fold_width 75
+
+  defp fold(line) when byte_size(line) <= @fold_width, do: line
+
+  defp fold(line) do
+    {head, rest} = split_at(line, @fold_width)
+    IO.iodata_to_binary([head | fold_rest(rest)])
+  end
+
+  # An iolist, not a chain of `<>`: the recursive call is the *right* operand,
+  # so binary appending cannot apply and each of the ~220 levels a 16 KB photo
+  # takes would copy the whole accumulated tail — quadratic, about 1.8 MB of
+  # churn per picture. Prepending into a list and flattening once is linear.
+  # The continuation's own leading space counts toward the 75.
+  defp fold_rest(""), do: []
+
+  defp fold_rest(line) do
+    {chunk, rest} = split_at(line, @fold_width - 1)
+    ["\n ", chunk | fold_rest(rest)]
+  end
+
+  # The 75 is measured in octets, but a cut may never land inside a character:
+  # base64 is ASCII and could be sliced anywhere, a member's note cannot. So
+  # take the budget and walk back off any UTF-8 continuation byte — at most
+  # three steps, and none at all for the photo.
+  defp split_at(line, budget) when byte_size(line) <= budget, do: {line, ""}
+
+  defp split_at(line, budget) do
+    take = safe_take(line, budget)
+    <<head::binary-size(^take), rest::binary>> = line
+    {head, rest}
+  end
+
+  defp safe_take(_line, 0), do: 0
+
+  defp safe_take(line, budget) do
+    <<_::binary-size(^budget), rest::binary>> = line
+
+    case rest do
+      <<next, _::binary>> when next in 0x80..0xBF -> safe_take(line, budget - 1)
+      _boundary -> budget
+    end
+  end
+
+  # vCard 3.0 (RFC 2426 s3.3.1) has a fixed vocabulary of TEL types, and a
+  # phone that does not recognise the word files the number under no label at
+  # all — so vutuv's own labels have to be translated rather than passed
+  # through. They are a private/work x landline/mobile matrix
+  # (`PhoneNumber.number_types/0`): four map onto one registered token each,
+  # and "Work Cell" onto the pair `WORK,CELL`. That pair is exactly why this
+  # cannot go through `sanitize/1`, which escapes the comma and would turn two
+  # real types into one nonsense one. An unrecognised legacy label falls back
+  # to `VOICE`, the RFC's own default for a telephone, rather than travelling
+  # as an invalid parameter value.
+  defp tel_type("Home"), do: "HOME"
+  defp tel_type("Cell"), do: "CELL"
+  defp tel_type("Work"), do: "WORK"
+  defp tel_type("Work Cell"), do: "WORK,CELL"
+  defp tel_type("Fax"), do: "FAX"
+  defp tel_type(_other), do: "VOICE"
+
+  # The same for EMAIL (RFC 2426 s3.3.2), where the type first says how the
+  # address is reached — so `INTERNET` leads every line and vutuv's
+  # Personal/Work labels ride behind it as the address book's own HOME/WORK.
+  # "Other", and anything legacy, carries no second token: an address with no
+  # label is filed correctly, one with a made-up label is not.
+  defp email_type("Personal"), do: "INTERNET,HOME"
+  defp email_type("Work"), do: "INTERNET,WORK"
+  defp email_type(_other), do: "INTERNET"
 
   # The same (historical) field order the old export used, so existing
   # consumers keep parsing it: line_1..line_4;city;state;zip;country.
@@ -177,7 +259,39 @@ defmodule VutuvWeb.AgentDocs.VCard do
     end)
   end
 
-  defp timestamp(doc), do: Calendar.strftime(doc.generated_at, "%Y%m%d%H%M%S")
+  # A card in a CardDAV collection needs a stable identity and a stable
+  # revision; a one-off download needs neither, so both ride in as options and
+  # the download's output is byte-for-byte what it always was.
+  #
+  # `UID` is what makes two fetches of the same person the same contact rather
+  # than a duplicate in the address book — the one property a collection cannot
+  # do without. `urn:uuid:` is the form RFC 6350 names for a UUID, and every id
+  # here is one.
+  defp uid(opts) do
+    case Keyword.get(opts, :uid) do
+      nil -> ""
+      uid -> "\nUID:urn:uuid:" <> sanitize(uid)
+    end
+  end
+
+  # The subscriber's own private note about this contact (issue #1705), which
+  # is the whole reason vCard has NOTE. It is never part of the public profile
+  # document: it belongs to the reader of the card, not to its subject, so it
+  # can only arrive here as an option from the address book that owns it.
+  defp note(opts) do
+    case Keyword.get(opts, :note) do
+      note when is_binary(note) and note != "" -> fold("NOTE:" <> sanitize(note)) <> "\n"
+      _absent -> ""
+    end
+  end
+
+  # REV defaults to "now", which is right for a download and wrong for a
+  # collection: a phone comparing revisions would see every card change on
+  # every poll. The address book passes the moment the card last actually
+  # changed.
+  defp rev(doc, opts), do: timestamp(Keyword.get(opts, :rev) || doc.generated_at)
+
+  defp timestamp(at), do: Calendar.strftime(at, "%Y%m%d%H%M%S")
 
   # vCard 3.0 (RFC 2426) text-value escaping: backslash first (so we don't
   # double-escape the ones we add), then the structural separators and

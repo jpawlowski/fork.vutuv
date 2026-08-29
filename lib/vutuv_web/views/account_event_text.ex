@@ -61,6 +61,11 @@ defmodule VutuvWeb.AccountEventText do
 
   def event_label("posts_auto_deleted"), do: gettext("Posts deleted automatically")
 
+  # The CardDAV address book (issue #1705): worth its own line in the log,
+  # because switching it on is the moment other people's contact details start
+  # leaving for a device.
+  def event_label("carddav_changed"), do: gettext("Address book sharing changed")
+
   def event_label("data_exported"), do: gettext("Data downloaded")
   def event_label("import_applied"), do: gettext("Import applied")
   def event_label("api_token_created"), do: gettext("Access token created")
@@ -260,6 +265,10 @@ defmodule VutuvWeb.AccountEventText do
   def field_label("auto_post_deletion_min_likes"), do: gettext("Like floor")
   def field_label("auto_post_deletion_min_bookmarks"), do: gettext("Bookmark floor")
   def field_label("auto_post_deletion_min_reposts"), do: gettext("Repost floor")
+
+  def field_label("carddav_sharing"), do: gettext("Published contacts")
+  def field_label("carddav_visibility"), do: gettext("My card in other address books")
+  def field_label("vcard_download"), do: gettext("vCard download on my profile")
 
   # A `Vutuv.Prefs` knob is named by the registry that also labels it on the
   # settings form, so the log and the form cannot word the same switch

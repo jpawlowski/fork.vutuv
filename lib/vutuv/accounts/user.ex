@@ -5,6 +5,7 @@ defmodule Vutuv.Accounts.User do
   # Enables the bare `gettext/1` macro (and extraction), like the sibling schemas.
   use Gettext, backend: VutuvWeb.Gettext
 
+  alias Vutuv.CardDav
   alias Vutuv.Handles
   alias Vutuv.Mentions
   alias Vutuv.Prefs
@@ -331,6 +332,43 @@ defmodule Vutuv.Accounts.User do
     # what "unseen" is measured against — the socket it used to live in is
     # gone the moment they open another page.
     field(:feed_source_at, :naive_datetime)
+    # Which of this member's contacts their CardDAV address book publishes
+    # (issue #1705): "off" / "personally_known" / "mutual" / "following" — see
+    # `Vutuv.CardDav.sharing_levels/0`. A plain column with a NOT NULL default
+    # rather than a `Vutuv.Prefs` knob, deliberately: an installation-wide
+    # default is exactly what this setting must not have. The rows it publishes
+    # are *other people's* contact details, so the only defensible starting
+    # point is "off" for everybody, and an admin able to flip that default
+    # would switch address-book publishing on for every untouched member at
+    # once. (`feed_languages` sits outside the registry for the mirror-image
+    # reason: there, one default fits everybody.)
+    field(:carddav_sharing, :string, default: "off")
+    # The mirror image, and this member's own data: who may keep *their* card in
+    # an address book (issue #1705) — "followers" / "mutual" / "nobody". See
+    # `Vutuv.CardDav.visibility_levels/0`.
+    #
+    # Generous by default, unlike the column above, and for the opposite
+    # reason: what it publishes is the anonymous public view of this member's
+    # own profile, which every visitor already sees. An address book that stays
+    # empty until every contact has opted in individually is not one, so the
+    # default is on and the opt-out is deliberate.
+    #
+    # **It outranks `carddav_sharing`.** Whoever the data is about decides: a
+    # member set to "nobody" appears in no book, however wide a subscriber
+    # opened theirs and whatever they marked.
+    field(:carddav_visibility, :string, default: "followers")
+    # And who may take the same card away as a one-off file: "everyone" (the
+    # default, today's anonymous public download) / "followers" / "nobody".
+    # See `VutuvWeb.ContentPolicy.vcard_download_levels/0`. Its own column
+    # rather than a fourth level on the one above, because a subscription and a
+    # download are different acts — and because defaulting this to anything
+    # narrower would quietly remove a public affordance from every member who
+    # never asked for that.
+    field(:vcard_download, :string, default: "everyone")
+    # The member's own sync-token counter, bumped whenever a card of theirs is
+    # added, changed or withdrawn. Never a form field: `Vutuv.CardDav` owns it
+    # and bumps it in SQL so two concurrent syncs cannot mint one number twice.
+    field(:carddav_revision, :integer, default: 0)
     # The feed's filter band. `feed_muted_hosts` switches whole fediverse
     # servers off — the instance-level twin of `fediverse_follows.muted`, which
     # keeps doing the per-account half; the two are read together in
@@ -539,7 +577,7 @@ defmodule Vutuv.Accounts.User do
   # :email_confirmed? is NOT here either: it flips only via the login-PIN path
   # (Accounts.activate_user/1, its own narrow cast) — castable, it would let a
   # registration self-activate without ever proving control of an email.
-  @optional_fields ~w(noindex? noai? notification_emails? dm_email_each_message? dm_email_delay_minutes email_on_endorsement? email_on_follower? email_on_reference_check? newsletter_emails? saved_search_emails? cv_update_notifications? thread_notifications? browser_notifications? show_online_status? show_mastodon_feed? mastodon_clients? show_code_stats? fediverse_followers? fediverse_reactions? fediverse_replies? also_known_as_input map_google? map_openstreetmap? map_apple? default_map_service post_lines_desktop post_lines_mobile post_hyphenate_desktop post_hyphenate_mobile notification_post_lines like_attribution? headline employment_status employment_status_visibility desired_salary_min desired_salary_currency desired_salary_period desired_salary_visibility desired_workplace_types first_name last_name middle_name nickname honorific_prefix honorific_suffix name_pronunciation gender birthdate birthdate_visibility locale date_region time_zone tag_list auto_post_deletion? auto_post_deletion_after_days auto_post_deletion_keep_photos? auto_post_deletion_keep_answered? auto_post_deletion_keep_bookmarked? auto_post_deletion_delete_replies? auto_post_deletion_min_likes auto_post_deletion_min_bookmarks auto_post_deletion_min_reposts feed_foreign_posts feed_languages feed_tab_ticker? feed_tab_ticker_seconds browser_tab_teaser?)a
+  @optional_fields ~w(noindex? noai? notification_emails? dm_email_each_message? dm_email_delay_minutes email_on_endorsement? email_on_follower? email_on_reference_check? newsletter_emails? saved_search_emails? cv_update_notifications? thread_notifications? browser_notifications? show_online_status? show_mastodon_feed? mastodon_clients? show_code_stats? fediverse_followers? fediverse_reactions? fediverse_replies? also_known_as_input map_google? map_openstreetmap? map_apple? default_map_service post_lines_desktop post_lines_mobile post_hyphenate_desktop post_hyphenate_mobile notification_post_lines like_attribution? headline employment_status employment_status_visibility desired_salary_min desired_salary_currency desired_salary_period desired_salary_visibility desired_workplace_types first_name last_name middle_name nickname honorific_prefix honorific_suffix name_pronunciation gender birthdate birthdate_visibility locale date_region time_zone tag_list auto_post_deletion? auto_post_deletion_after_days auto_post_deletion_keep_photos? auto_post_deletion_keep_answered? auto_post_deletion_keep_bookmarked? auto_post_deletion_delete_replies? auto_post_deletion_min_likes auto_post_deletion_min_bookmarks auto_post_deletion_min_reposts feed_foreign_posts feed_languages feed_tab_ticker? feed_tab_ticker_seconds browser_tab_teaser? carddav_sharing carddav_visibility vcard_download)a
 
   # The ages the automatic post deletion offers (issue #1255), in days. A fixed
   # list rather than a free number field on purpose: this setting deletes
@@ -779,6 +817,12 @@ defmodule Vutuv.Accounts.User do
     # The closed value set has one owner: the Vutuv.Prefs registry entry that
     # also drives the settings page's select.
     |> validate_inclusion(:feed_foreign_posts, Prefs.pref!(:feed_foreign_posts).values)
+    # The address book's sharing level (issue #1705). Same treatment as the
+    # two above: a tampered value is a field error, not a 500, and the closed
+    # set has one owner — the context that reads it.
+    |> validate_inclusion(:carddav_sharing, CardDav.sharing_levels())
+    |> validate_inclusion(:carddav_visibility, CardDav.visibility_levels())
+    |> validate_inclusion(:vcard_download, VutuvWeb.ContentPolicy.vcard_download_levels())
     |> normalize_feed_languages()
     # Post-display line clamp: 0 means "no truncation"; anything above is a
     # line count, capped so nobody stores an absurd value (the bound comes from

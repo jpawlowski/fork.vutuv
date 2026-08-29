@@ -49,6 +49,7 @@ defmodule VutuvWeb.UserProfileLive do
   alias Vutuv.Tags
   alias Vutuv.Tags.UserTag
   alias Vutuv.Tags.UserTagEndorsement
+  alias VutuvWeb.ContentPolicy
   alias VutuvWeb.Fediverse.Docs
   alias VutuvWeb.Live.InitAssigns
   alias VutuvWeb.Live.MountHandoff
@@ -273,6 +274,59 @@ defmodule VutuvWeb.UserProfileLive do
        socket |> assign(:header_follow_muted?, follow.muted) |> put_flash(:info, message)}
     else
       {:noreply, socket}
+    end
+  end
+
+  # "I have actually met this person" (issue #1705), the viewer's own private
+  # mark on their own follow. Scoped to the header's follow id exactly like the
+  # mute above, so a crafted id is ignored. Nothing is notified and nothing
+  # public changes — the person marked is never told, which is the only way the
+  # mark stays an honest note-to-self.
+  #
+  # It keeps its flash: the effect is invisible on this page (a card appearing
+  # in an address book on another device), and the menu label that flipped is
+  # behind a menu that has just closed.
+  def handle_event("toggle_personally_known", %{"id" => follow_id}, socket) do
+    me = socket.assigns.current_user
+
+    if me && follow_id == socket.assigns.header_follow_id do
+      follow = Social.toggle_personally_known!(me.id, follow_id)
+
+      message =
+        if follow.personally_known do
+          gettext("Marked as personally known.")
+        else
+          gettext("No longer marked as personally known.")
+        end
+
+      {:noreply,
+       socket
+       |> assign(:header_personally_known?, follow.personally_known)
+       |> put_flash(:info, message)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # The viewer's private note about this member. Same scoping, same silence.
+  # An empty box clears the note (`Follow.marks_changeset/2` blanks it), which
+  # is how a member deletes one.
+  def handle_event("save_note", %{"note" => note}, socket) do
+    me = socket.assigns.current_user
+    user = socket.assigns.user
+
+    with true <- is_binary(socket.assigns.header_follow_id),
+         {:ok, follow} <- Social.set_follow_marks(me, user, %{note: note}) do
+      {:noreply,
+       socket
+       |> assign(:header_note, follow.note)
+       |> put_flash(:info, gettext("Note saved."))}
+    else
+      {:error, %Ecto.Changeset{}} ->
+        {:noreply, put_flash(socket, :error, gettext("That note is too long."))}
+
+      _not_following ->
+        {:noreply, socket}
     end
   end
 
@@ -617,6 +671,16 @@ defmodule VutuvWeb.UserProfileLive do
     |> assign(:page_follows?, page_follows?(socket.assigns[:acting_as], user))
     |> assign(:header_connected?, rel.connected?)
     |> assign(:header_follow_muted?, rel.follow_muted?)
+    |> assign(:header_personally_known?, rel.personally_known?)
+    |> assign(:header_note, rel.note)
+    # Whether this viewer may take the profile away as a vCard (issue #1705).
+    # The link and the URL answer the same question — see
+    # `UserController.allowed_formats/2` — so a button that would 404 is never
+    # rendered in the first place.
+    |> assign(
+      :vcard_download?,
+      ContentPolicy.vcard_download_allowed?(user, current_user)
+    )
     |> assign(:followers, followers)
     |> assign(:followees, followees)
     |> assign(:work_info_by_id, work_information_map(preview_users, 24))
@@ -1134,15 +1198,33 @@ defmodule VutuvWeb.UserProfileLive do
       %{outbound: outbound, inbound: inbound} =
         Social.follow_edges_between(current_user.id, user.id)
 
-      %{
-        follow_id: outbound && outbound.id,
-        follow_muted?: (outbound && outbound.muted?) || false,
-        connected?: not is_nil(outbound) and not is_nil(inbound),
-        follows_viewer?: not is_nil(inbound)
-      }
+      edge_relationship(outbound, inbound)
     else
-      %{follow_id: false, follow_muted?: false, connected?: false, follows_viewer?: false}
+      %{
+        follow_id: false,
+        follow_muted?: false,
+        personally_known?: false,
+        note: nil,
+        connected?: false,
+        follows_viewer?: false
+      }
     end
+  end
+
+  # The two edges resolved into the header's assigns. The viewer's own private
+  # marks (issue #1705) ride on the OUTBOUND edge and only there: `inbound`
+  # carries the owner's marks about the viewer, which are none of this page's
+  # business.
+  # One map, so a seventh header field cannot be added to half of the answer.
+  defp edge_relationship(outbound, inbound) do
+    %{
+      follow_id: outbound && outbound.id,
+      follow_muted?: (outbound && outbound.muted?) || false,
+      personally_known?: (outbound && outbound.personally_known?) || false,
+      note: outbound && outbound.note,
+      connected?: not is_nil(outbound) and not is_nil(inbound),
+      follows_viewer?: not is_nil(inbound)
+    }
   end
 
   defp page_follows?(%Organization{} = page, %User{} = user),

@@ -34,6 +34,9 @@ config :vutuv, :sweep_account_events, false
 # authorization codes) would touch the sandbox from outside; tests call
 # Vutuv.ApiAuth.sweep/0 directly.
 config :vutuv, :sweep_api_auth, false
+# The CardDAV push sweeper never runs on its own in tests; the tests call
+# `Vutuv.CardDav.push_due/1` directly, inside the SQL sandbox.
+config :vutuv, :carddav_push_sweeping, false
 # The installation-defaults cache (Vutuv.Prefs.Cache) reloads from the DB on
 # PubSub messages, which would touch the sandbox from outside; with it off,
 # pref resolution falls back to the shipped defaults and tests inject

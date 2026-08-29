@@ -37,9 +37,22 @@ config :phoenix_live_view,
   debug_heex_annotations: true,
   debug_attributes: true
 
+# `PHX_HOST` / `PHX_SCHEME` / `PHX_PORT` override the URL the endpoint builds
+# links from, the same three names `config/runtime.exs` reads in production.
+# Development needs them for one thing: an end-to-end test through a tunnel
+# (`scripts/e2e/tunnel.sh`), where the app answers on a public hostname it
+# cannot guess. Everything a member is handed derives from this — the CardDAV
+# registration's `Location`, absolute URLs in agent documents, links in mail —
+# so a tunnel with the endpoint still calling itself `localhost` tests a
+# different application than the one it serves. Unset, it is localhost as it
+# always was.
 config :vutuv, VutuvWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT") || "4000")],
-  url: [host: "localhost", port: String.to_integer(System.get_env("PORT") || "4000")],
+  url: [
+    scheme: System.get_env("PHX_SCHEME") || "http",
+    host: System.get_env("PHX_HOST") || "localhost",
+    port: String.to_integer(System.get_env("PHX_PORT") || System.get_env("PORT") || "4000")
+  ],
   # Dev-only signing secret so `mix phx.server` boots without extra setup.
   # This is not a real secret: it only signs localhost dev sessions/cookies.
   # Production reads its secret_key_base from the environment in runtime.exs,

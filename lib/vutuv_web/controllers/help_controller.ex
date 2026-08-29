@@ -5,9 +5,10 @@ defmodule VutuvWeb.HelpController do
   belongs in a document an editor can read end to end, not in two hundred
   `gettext/1` fragments.
 
-  There are two: `/system/markdown`, what a member may write in a post and what
-  it will look like, and `/system/mastodon`, how to sign in from a
-  Mastodon-compatible app. The Markdown page's examples are rendered by the
+  There are three: `/system/markdown`, what a member may write in a post and what
+  it will look like; `/system/mastodon`, how to sign in from a
+  Mastodon-compatible app; and `/system/carddav`, how to get the people you
+  follow into the Contacts app on your phone. The Markdown page's examples are rendered by the
   same code that renders a post (`VutuvWeb.DevDocMarkdown`, which shares the
   fence parsing, the highlighting, the diff rows and the footnotes with
   `VutuvWeb.Markdown`), so the page cannot drift from the thing it documents:
@@ -41,7 +42,7 @@ defmodule VutuvWeb.HelpController do
 
   @locales ~w(de en it)
   @default_locale "en"
-  @pages ~w(markdown mastodon)
+  @pages ~w(markdown mastodon carddav)
 
   for page <- @pages, locale <- @locales do
     @external_resource Path.join("priv/help", "#{page}_#{locale}.md")
@@ -97,6 +98,12 @@ defmodule VutuvWeb.HelpController do
   Mastodon-compatible app, and what such an app can and cannot do here.
   """
   def mastodon(conn, _params), do: page(conn, "mastodon")
+
+  @doc """
+  `/system/carddav` — how to subscribe to the people you follow from a phone's
+  Contacts app, what lands there and what does not, and how to withdraw again.
+  """
+  def carddav(conn, _params), do: page(conn, "carddav")
 
   defp page(conn, name) do
     locale = locale(conn)

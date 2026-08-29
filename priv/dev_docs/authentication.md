@@ -56,6 +56,14 @@ A token only ever does what its scopes allow. A `*:write` scope implies its
 | `messages:write` | Send messages as you |
 | `jobs:read`      | Read job postings and organization pages visible to you |
 | `jobs:write`     | Post, edit and close job openings as you |
+| `contacts:read`  | Read your CardDAV address book: the contacts you publish, with your notes |
+
+`contacts:read` is the odd one out — it has no `*:write` sibling, because the
+address book it opens is read-only and cannot be written to at all. It is also
+the scope a phone's Contacts app needs: CardDAV authenticates with HTTP Basic,
+so the token goes in as the **password** (any user name), and the collection is
+found from `/.well-known/carddav`. See
+[the address book](https://github.com/wintermeyer/vutuv/blob/main/docs/architecture/carddav.md).
 
 Request only the scopes you will use — members see the list when they
 create the token, and a narrow token is an easy yes.

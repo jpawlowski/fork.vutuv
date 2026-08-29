@@ -36,6 +36,7 @@ defmodule Vutuv.Avatar do
   """
 
   alias Vutuv.Uploads
+  alias Vutuv.Uploads.AvatarCache
   alias Vutuv.Uploads.Crop
   alias Vutuv.Uploads.Originals
   alias Vutuv.Uploads.Spec
@@ -157,15 +158,52 @@ defmodule Vutuv.Avatar do
   def display_url(user, version), do: url({user.avatar, user}, version) || @default_avatar
 
   @doc """
-  The avatar as a base64 JPEG `data:` URI (used by the vCard export — contact
-  apps cannot display AVIF), derived on the fly from the private original at
-  the requested version's dimensions. Falls back to the default inline SVG
-  when the user has no avatar / the original is missing.
+  The avatar as a base64 JPEG `data:` URI (used by the vCard export and the CV
+  — contact apps cannot display AVIF), derived from the private original at the
+  requested version's dimensions. Falls back to the default inline SVG when the
+  user has no avatar / the original is missing.
+
+  **Memoized, because this does not read a derived file.** It opens the
+  original and runs the whole libvips pipeline — pixel-budget check, EXIF
+  autorotate, crop, thumbnail, JPEG encode — before base64-ing the result. That
+  is right once and wrong per document: a CardDAV book of three hundred
+  contacts was three hundred image pipelines, repeated on every sync that
+  touched the cards.
+
+  The memo lives here rather than at a call site so that every caller gets it
+  and no future one has to remember: the CV asked for the very same `:medium`
+  picture and paid full price while the vCard did not. `avatar_fingerprint` is
+  the sha256 of the original (and the crop is folded into it, see
+  `Vutuv.Uploads`), so a changed picture is a different key and nothing stale
+  can be served. A row that has no fingerprint is not remembered at all —
+  without one there is nothing to notice a change by.
+
+  The moderation state needs no place in the key: the clause above answers
+  every pending picture with the placeholder before the memo is consulted.
   """
   def binary(%{avatar: nil}, _version), do: @default_avatar
   def binary(%{avatar_moderation: "pending"}, _version), do: @default_avatar
 
   def binary(user, version) do
+    case Map.get(user, @config.fingerprint_field) do
+      nil -> derive_data_uri(user, version)
+      fingerprint -> memoized(user, version, {user.id, version, fingerprint})
+    end
+  end
+
+  defp memoized(user, version, key) do
+    case AvatarCache.lookup(key) do
+      {:ok, uri} ->
+        uri
+
+      :miss ->
+        uri = derive_data_uri(user, version)
+        AvatarCache.put(key, uri)
+        uri
+    end
+  end
+
+  defp derive_data_uri(user, version) do
     %{fit: {:crop, width, height, gravity}} = Spec.version(:avatar, version)
 
     case derive_jpeg(user, width, height, gravity) do

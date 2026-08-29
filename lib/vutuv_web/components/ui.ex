@@ -144,6 +144,51 @@ defmodule VutuvWeb.UI do
     "flex items-center gap-2 text-sm font-normal text-slate-700 dark:text-slate-200"
   end
 
+  attr(:form, :any, required: true, doc: "the form the field belongs to")
+  attr(:field, :atom, required: true)
+  attr(:options, :list, required: true, doc: "{value, label, hint} triples, in the order offered")
+  attr(:class, :string, default: "space-y-3")
+
+  slot(:badge,
+    doc: "an optional trailing note per option; receives the option's value via :let"
+  )
+
+  @doc """
+  A **boxed radio group**: one bordered, hoverable card per choice, each with
+  its wording and the line under it that says what the choice means.
+
+  The taller sibling of `radio_class/0` + `radio_label_class/0`, for a set of
+  choices a member has to weigh rather than tick — the CardDAV sharing level,
+  who may carry your card, who may download the vCard. Those three arrived
+  spelling the same fifteen lines out three times across two templates, which
+  is the same way `radio_class/0` came to exist.
+
+  The hint carries `font-normal` explicitly: the surrounding `<label>` takes a
+  semibold weight from `components.css`, so a hint without it renders **bolder**
+  than the option it explains.
+  """
+  def radio_cards(assigns) do
+    ~H"""
+    <div class={@class}>
+      <label
+        :for={{value, label, hint} <- @options}
+        class="flex items-start gap-3 rounded-lg border border-slate-200 p-3 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800/50"
+      >
+        {PhoenixHTMLHelpers.Form.radio_button(@form, @field, value, class: radio_class() <> " mt-1")}
+        <span class="min-w-0">
+          <span class="block text-sm font-medium text-slate-900 dark:text-white">
+            {label}{render_slot(@badge, value)}
+          </span>
+          <span class="mt-0.5 block text-sm font-normal text-slate-600 dark:text-slate-400">
+            {hint}
+          </span>
+        </span>
+      </label>
+      {VutuvWeb.ErrorHelpers.error_tag(@form, @field)}
+    </div>
+    """
+  end
+
   @doc """
   The shared **tag pill box** — one component for every field where a member
   types a batch of tags: the add-tag form, the sign-up landing page, the
@@ -4760,6 +4805,16 @@ defmodule VutuvWeb.UI do
            hint: gettext("Let your posts age out after a time you set"),
            terms:
              gettext("delete remove erase posts age old expire automatic cleanup retention purge")
+         ),
+         # Under Privacy rather than beside the apps: the question this page
+         # asks is what leaves vutuv about *other people*, which is the same
+         # question every other row in this group asks.
+         row(:carddav, gettext("Address book (CardDAV)"), ~p"/settings/carddav",
+           hint: gettext("Put the contacts you follow into your phone"),
+           terms:
+             gettext(
+               "carddav contacts address book phone iphone ios macos thunderbird sync vcard adressbuch kontakte telefon synchronisieren"
+             )
          ),
          row(:fediverse, gettext("Fediverse"), ~p"/settings/fediverse",
            hint: gettext("Follow accounts on Mastodon, and be followed from there"),
