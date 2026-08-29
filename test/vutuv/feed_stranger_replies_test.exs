@@ -1,8 +1,8 @@
 defmodule Vutuv.FeedStrangerRepliesTest do
   @moduledoc """
   The feed leaves out answers written to accounts the reader does not follow
-  (issue #1740) — the rule Mastodon's `filter_from_home` has always applied, and
-  which vutuv's newsfeed had no position on.
+  (issue #1740). The rule is "am I in this exchange", not "do I follow the
+  author" — a position the newsfeed did not have before.
 
   What the tests are really pinning down is the *exceptions*: the fear a reader
   has about this setting is losing a thread they are part of, and all four ways

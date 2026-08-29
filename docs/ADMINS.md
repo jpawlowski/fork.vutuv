@@ -623,8 +623,8 @@ both for themselves.
 A fourth decides **how much of other people's conversations a feed carries**.
 When somebody a member follows answers an account that member does *not*
 follow, the answer reads as half a conversation about a stranger — so vutuv
-leaves it out, which is what every network people arrive from does. What always
-stays: a member's own answers, answers written to them, answers to accounts they
+leaves it out. The question the feed asks is whether the member is *in* the
+exchange, not whether they follow whoever wrote it. What always stays: a member's own answers, answers written to them, answers to accounts they
 do follow, and an author continuing their own thread. An installation that wants
 the fuller, noisier feed turns *Show answers to people I do not follow* on at
 `/admin/preferences`, and every member can set it for themselves on

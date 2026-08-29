@@ -3464,8 +3464,8 @@ defmodule Vutuv.Posts do
   end
 
   # Answers written to accounts the reader does not follow stay out of the feed
-  # (issue #1740), which is what every network people arrive from already does —
-  # Mastodon's `filter_from_home` hides exactly these. Read without the post it
+  # (issue #1740). The question the feed asks is **is the reader in this
+  # exchange**, not *does the reader follow the author*. Read without the post it
   # answers, such an answer is half a sentence about a stranger.
   #
   # Five ways to survive it, and each is a conversation the reader is part of:
