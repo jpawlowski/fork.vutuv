@@ -22360,3 +22360,34 @@ msgid "New:"
 msgid_plural "New (%{formatted}):"
 msgstr[0] ""
 msgstr[1] ""
+
+#: lib/vutuv_web/templates/settings/preferences.html.heex:207
+#, elixir-autogen, elixir-format
+msgid "An answer to somebody you do not follow reads as half a conversation, so your feed leaves it out. Everything you are part of stays."
+msgstr ""
+
+#: lib/vutuv_web/gettext_extraction_anchors.ex:89
+#: lib/vutuv_web/templates/settings/preferences.html.heex:205
+#, elixir-autogen, elixir-format
+msgid "Answers in your feed"
+msgstr ""
+
+#: lib/vutuv_web/controllers/settings_controller.ex:846
+#, elixir-autogen, elixir-format
+msgid "Feed answer settings reset to the site defaults."
+msgstr ""
+
+#: lib/vutuv_web/controllers/settings_controller.ex:840
+#, elixir-autogen, elixir-format
+msgid "Feed answer settings saved."
+msgstr ""
+
+#: lib/vutuv_web/gettext_extraction_anchors.ex:90
+#, elixir-autogen, elixir-format
+msgid "Show answers to people I do not follow"
+msgstr ""
+
+#: lib/vutuv_web/gettext_extraction_anchors.ex:91
+#, elixir-autogen, elixir-format
+msgid "When somebody you follow answers an account you do not, their answer is left out of your feed. Answers to you, answers to people you follow, and their own follow-ups always stay."
+msgstr ""

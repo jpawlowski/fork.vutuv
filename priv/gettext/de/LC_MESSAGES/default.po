@@ -23164,3 +23164,34 @@ msgid "New:"
 msgid_plural "New (%{formatted}):"
 msgstr[0] "Neu:"
 msgstr[1] "Neu (%{formatted}):"
+
+#: lib/vutuv_web/templates/settings/preferences.html.heex:207
+#, elixir-autogen, elixir-format
+msgid "An answer to somebody you do not follow reads as half a conversation, so your feed leaves it out. Everything you are part of stays."
+msgstr "Eine Antwort an jemanden, dem du nicht folgst, liest sich wie ein halbes Gespräch, deshalb lässt dein Feed sie weg. Alles, woran du selbst beteiligt bist, bleibt."
+
+#: lib/vutuv_web/gettext_extraction_anchors.ex:89
+#: lib/vutuv_web/templates/settings/preferences.html.heex:205
+#, elixir-autogen, elixir-format
+msgid "Answers in your feed"
+msgstr "Antworten in deinem Feed"
+
+#: lib/vutuv_web/controllers/settings_controller.ex:846
+#, elixir-autogen, elixir-format
+msgid "Feed answer settings reset to the site defaults."
+msgstr "Antwort-Einstellungen auf die Website-Vorgaben zurückgesetzt."
+
+#: lib/vutuv_web/controllers/settings_controller.ex:840
+#, elixir-autogen, elixir-format
+msgid "Feed answer settings saved."
+msgstr "Antwort-Einstellungen gespeichert."
+
+#: lib/vutuv_web/gettext_extraction_anchors.ex:90
+#, elixir-autogen, elixir-format
+msgid "Show answers to people I do not follow"
+msgstr "Antworten an Personen anzeigen, denen ich nicht folge"
+
+#: lib/vutuv_web/gettext_extraction_anchors.ex:91
+#, elixir-autogen, elixir-format
+msgid "When somebody you follow answers an account you do not, their answer is left out of your feed. Answers to you, answers to people you follow, and their own follow-ups always stay."
+msgstr "Wenn jemand, dem du folgst, einem Konto antwortet, dem du nicht folgst, bleibt diese Antwort aus deinem Feed. Antworten an dich, Antworten an Personen, denen du folgst, und eigene Fortsetzungen bleiben immer."
