@@ -111,6 +111,9 @@ defmodule VutuvWeb.AgentDocs.Markdown do
       "# #{gettext("Post by %{name}", name: author_link)} · #{doc.published_on}",
       doc.in_reply_to && in_reply_to_line(doc.in_reply_to),
       doc.body_markdown,
+      # The post this one quotes (issue #1610), under the author's own words —
+      # the place the HTML card puts it.
+      doc[:quote_of] && quote_of_line(doc.quote_of),
       verified_links_line(doc),
       review_line(doc.review),
       tags_line(doc.tags),
@@ -1100,6 +1103,27 @@ defmodule VutuvWeb.AgentDocs.Markdown do
     "> " <> gettext("In reply to a post by %{name}.", name: author_link)
   end
 
+  # A quoted post reads as one blockquote: who wrote it, a link to it, and the
+  # same teaser line the compact card shows. The three other states are the one
+  # sentence each the card renders, so a `.md` reader learns the same thing.
+  defp quote_of_line(%{state: "post"} = quote_of) do
+    author_link = "[#{md_text(quote_of.author)}](#{quote_of.url})"
+    head = "> " <> gettext("Quoting a post by %{name}.", name: author_link)
+
+    case quote_of[:text] do
+      text when is_binary(text) and text != "" -> head <> "\n> " <> md_text(text)
+      _no_text -> head
+    end
+  end
+
+  defp quote_of_line(%{state: "unavailable"}),
+    do: "> " <> gettext("The quoted post is not available.")
+
+  defp quote_of_line(%{author: nil}), do: "> " <> gettext("Quoting a deleted post.")
+
+  defp quote_of_line(%{author: author}),
+    do: "> " <> gettext("Quoting a now-deleted post by %{name}.", name: md_text(author))
+
   defp tags_line([]), do: nil
   defp tags_line(tags), do: "Tags: " <> Enum.map_join(tags, ", ", &"##{&1}")
 
@@ -1113,6 +1137,7 @@ defmodule VutuvWeb.AgentDocs.Markdown do
   def engagement_line(doc) do
     counts =
       "#{gettext("Likes")}: #{doc.like_count} · #{gettext("Reposts")}: #{doc.repost_count} · " <>
+        quotes_clause(doc) <>
         "#{gettext("Bookmarks")}: #{doc.bookmark_count}"
 
     case fediverse_share(doc) do
@@ -1137,6 +1162,19 @@ defmodule VutuvWeb.AgentDocs.Markdown do
     case doc[:likers] || [] do
       [] -> nil
       likers -> gettext("Liked by") <> ": " <> Enum.map_join(likers, ", ", & &1.name)
+    end
+  end
+
+  # The quote figure joins the line only once somebody has quoted the post
+  # (issue #1610), the way every other optional figure here does — and for a
+  # reason the plain-text renderer makes concrete: it hard-wraps at 80 columns,
+  # so a fourth always-on figure rewraps this line for every post in the app to
+  # print a zero the HTML hides too (its count pill is invisible at 0). The
+  # number is in `quote_count` on the JSON/XML documents either way.
+  defp quotes_clause(doc) do
+    case doc[:quote_count] || 0 do
+      0 -> ""
+      count -> "#{gettext("Quotes")}: #{count} · "
     end
   end
 

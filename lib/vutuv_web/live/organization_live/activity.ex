@@ -91,6 +91,9 @@ defmodule VutuvWeb.OrganizationLive.Activity do
   defp line(%{kind: "reply"} = entry),
     do: gettext("%{name} answered a post.", name: full_name(entry.actor))
 
+  defp line(%{kind: "quote"} = entry),
+    do: gettext("%{name} quoted a post.", name: full_name(entry.actor))
+
   @impl true
   def render(assigns) do
     ~H"""

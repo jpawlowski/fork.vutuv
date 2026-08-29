@@ -236,6 +236,17 @@ permalink and quote it; same-day events of one thread merge into one grouped
 row. The write side (`Vutuv.Posts.create_reply/3` via `broadcast_reply/2`)
 pushes the same event live to every participant's badge.
 
+**Being quoted** is its own kind (`"quote"`, issue #1610): somebody's own post
+carries one of yours as a card. Derived from `post_quotes` exactly as the reply
+kind is derived from `post_replies` (self-quotes excluded), it links to the post
+that **carries** yours — the thing worth reading — with your own post as the
+one-line breadcrumb above it, the same shape a reply row has. Deliberately not
+folded into `"reply"`: no answer sits under your post, and telling somebody
+their post was replied to would send them looking for one. A page learns about
+it through its own activity list instead (`post_quotes.quoted_organization_id`,
+the page-shaped half of the author pair), the way answers to a page's post are
+derived rather than written twice.
+
 **Being named** is its own kind (`"mention"`): a post whose body says
 `@handle` notifies that member, wherever the post sits. Before it existed a
 mention reached you only by accident — if the post happened to answer one of

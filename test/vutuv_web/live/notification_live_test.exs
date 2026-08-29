@@ -427,6 +427,50 @@ defmodule VutuvWeb.NotificationLiveTest do
              )
     end
 
+    test "a quote notification previews the reader's post and the post carrying it",
+         %{conn: conn} do
+      # Issue #1610. The row leads to the post that **carries** theirs, not to
+      # their own — that is the thing worth reading, and no answer sits under
+      # their post to go looking for.
+      {conn, user} = create_and_login_user(conn)
+
+      quoter = insert(:user)
+      quoted = insert(:post, user: user, body: "Which editor do you swear by?")
+      quoting = insert(:post, user: quoter, body: "This deserves a wider audience.")
+
+      insert(:post_quote, post: quoting, quoted_post: quoted, quoted_author: user)
+
+      {:ok, live, html} = live(conn, ~p"/notifications")
+
+      assert html =~ "quoted your post"
+
+      assert has_element?(
+               live,
+               ~s([data-post-preview][href="/#{user.username}/posts/#{quoted.id}"]),
+               "Which editor do you swear by?"
+             )
+
+      assert has_element?(live, ~s([data-quote-preview]), "This deserves a wider audience.")
+
+      assert has_element?(
+               live,
+               ~s([data-quote-preview] a[href="/#{quoter.username}/posts/#{quoting.id}"])
+             )
+
+      # The German sentence by name: `gettext.extract --merge` fuzzy-filled this
+      # very msgid with "hat auf Ihren Beitrag geantwortet" (replied to your
+      # post), which is the one thing the row must not say.
+      german =
+        conn
+        |> recycle()
+        |> put_req_header("accept-language", "de-DE,de;q=0.9")
+        |> get(~p"/notifications")
+        |> html_response(200)
+
+      assert german =~ "hat Ihren Beitrag zitiert"
+      refute german =~ "hat auf Ihren Beitrag geantwortet"
+    end
+
     test "the one-line context above a reply drops the Markdown markers", %{conn: conn} do
       {conn, user} = create_and_login_user(conn)
 

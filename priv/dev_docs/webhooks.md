@@ -32,6 +32,7 @@ Two rules shape everything:
 | `endorsement.created` | `social:read` | `endorser`, `tag` |
 | `post.liked` | `posts:read` | `by`, `post_id` |
 | `post.replied` | `posts:read` | `by`, `post_id` |
+| `post.quoted` | `posts:read` | `by`, `post_id` |
 | `message.created` | `messages:read` | `from`, `conversation_id` |
 | `job.published` | `jobs:read` | the posting's public fields (see below) |
 

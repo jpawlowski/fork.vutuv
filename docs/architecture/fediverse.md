@@ -1115,7 +1115,7 @@ almost nothing to widen, while the ones keyed to a member (follows, followers,
 deliveries, actors) each needed a nullable pair and a sweep.
 
 What a page still cannot do is **answer** one. Replying outward is
-`check_reply_allowed/2` territory and member-shaped end to end, and an
+`check_carry_allowed/2` territory and member-shaped end to end, and an
 organization post carries no conversation here either.
 
 ## Hashtags on the way out (issue #1421)

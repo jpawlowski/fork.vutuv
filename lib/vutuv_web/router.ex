@@ -1084,6 +1084,8 @@ defmodule VutuvWeb.Router do
       # front to negotiate the format, so it lives under FeedController below.
       live("/posts/:id/edit", PostLive.Edit, :edit)
       live("/posts/:id/reply", PostLive.Reply, :new)
+      # Quoting a post (issue #1610): a post of one's own that carries it.
+      live("/posts/:id/quote", PostLive.Quote, :new)
 
       # The signed-in Fediverse pages that are not settings: answering a reply
       # that arrived under one's own post (issue #1070), answering a post by a

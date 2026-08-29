@@ -47,12 +47,30 @@ defmodule VutuvWeb.PostActionsLiveTest do
     classes
   end
 
+  test "a bar handed an engagement from before the quote count still renders" do
+    # A dead page hands its engagement map to this bar through the LiveView
+    # **session**, minted at render and cashed in when the socket connects — so
+    # across a blue/green switch (or a page left open that reconnects) this
+    # release is handed a map the previous one built, without `:quotes`. That
+    # must read as "nobody has quoted it", not take the bar down.
+    author = other_user()
+    reader = other_user()
+    post = create_post!(author, %{body: "rendered by the release before"})
+
+    previous_release = author |> engagement(post, likes: 1) |> Map.delete(:quotes)
+
+    {:ok, _bar, html} = isolated_bar(post, reader, previous_release)
+
+    assert html =~ "post-actions-#{post.id}-quote"
+  end
+
   defp engagement(author, post, attrs) do
     Enum.into(attrs, %{
       likes: 0,
       bookmarks: 0,
       reposts: 0,
       replies: 0,
+      quotes: 0,
       fediverse_likes: 0,
       fediverse_reposts: 0,
       liked?: false,
@@ -619,6 +637,7 @@ defmodule VutuvWeb.PostActionsLiveTest do
         bookmarks: 0,
         reposts: 0,
         replies: 0,
+        quotes: 0,
         fediverse_likes: 0,
         fediverse_reposts: 0,
         liked?: true,

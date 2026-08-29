@@ -45,6 +45,15 @@ defmodule Vutuv.Posts do
   reply outlives its parent: the parent references nilify on deletion, so
   the banner can degrade from a link to "a now-deleted post by X" to a
   nameless notice once the account is gone too.
+
+  **Quotes** (`create_quote/3`, issue #1610) are the same shape one table over:
+  a normal post plus a `Vutuv.Posts.PostQuote` row naming the post it carries,
+  rendered inside it as a compact card. A quote is deliberately **not** a reply
+  — it stays out of the thread, out of the reply count and out of the thread
+  notifications — which is why it is its own sidecar rather than a flag on
+  `PostReply`. It republishes the way a reshare does, so it takes the reshare's
+  gate: only a visible, unrestricted post can be quoted, and quotes pin its
+  audience open while any exist.
   """
 
   import Ecto.Query
@@ -79,6 +88,7 @@ defmodule Vutuv.Posts do
   alias Vutuv.Posts.PostImage
   alias Vutuv.Posts.PostLike
   alias Vutuv.Posts.PostMention
+  alias Vutuv.Posts.PostQuote
   alias Vutuv.Posts.PostRemoteReply
   alias Vutuv.Posts.PostReply
   alias Vutuv.Posts.PostRepost
@@ -304,6 +314,82 @@ defmodule Vutuv.Posts do
     end
   end
 
+  @doc """
+  Creates a quote of `quoted` for `author` (issue #1610) — a normal post (same
+  attrs, validations and broadcasts as `create_post/2`) plus a
+  `Vutuv.Posts.PostQuote` row naming the post it carries, which every card then
+  renders inside it as a compact one-level-deep card.
+
+  A quote is **not** a reply. It opens no thread, moves no reply count and fires
+  no thread notification, which is why it has a sidecar of its own rather than a
+  flag on `Vutuv.Posts.PostReply`. What it does share is the act a reshare
+  performs — putting somebody else's post in front of a new audience — so it
+  takes the reshare's gate: `answerable?/1` (a page's post only while the page
+  itself is publicly visible), visible to the author (`{:error, :not_visible}`),
+  **public** (`{:error, :restricted}`), and no block either way
+  (`{:error, :restricted}`, the same opaque answer the reply gate gives). While
+  quotes exist the quoted post's audience is pinned open, like with reposts and
+  replies.
+
+  Denials are dropped, as for a reply: the card inside is public by the gate
+  above, so an audience on the quote would be a promise the embedded post does
+  not keep.
+
+  Additionally broadcasts the quoted post's fresh `{:post_counters, …}` on its
+  post topic and notifies its author (unless they quote themselves). The quote
+  outlives what it carries: on deletion of the quoted post the reference
+  nilifies, on account deletion the author reference too (see
+  `Vutuv.Posts.PostQuote`).
+  """
+  def create_quote(%User{} = author, %Post{} = quoted, attrs) do
+    image_ids = parse_ids(fetch(attrs, :image_ids) || [])
+
+    with {:ok, quoted} <- reload_quoted(quoted),
+         :ok <- check_carry_allowed(author, quoted),
+         :ok <- check_image_count(image_ids),
+         {:ok, changeset} <- build_changeset(%Post{user_id: author.id}, attrs, [], image_ids) do
+      case insert_post(changeset, image_ids, nil, nil, quoted) do
+        {:ok, post} ->
+          post = preload_post(post)
+          # Quoting a post is proof of having read it, exactly as answering is,
+          # so anything the notifications feed has to say about it is old news.
+          Vutuv.Activity.mark_post_seen(author.id, quoted.id)
+          broadcast_new_post(post)
+          broadcast_quote(quoted, post)
+          sync_mentions(post)
+          # The quote federates as an ordinary Note of the quoter's words: what
+          # a quote *is* — FEP-044f's `quote` property plus the authorization
+          # the quoted side issues — is not written here yet (issues
+          # #1608/#1609/#1611 own that half), so out there this reads as a post
+          # with no referent until it is. Withholding it instead would be worse:
+          # the member's own words would simply not reach their followers.
+          Vutuv.Fediverse.federate_new_post(post)
+          reconcile_screenshot(post)
+          ReviewCovers.reconcile(post)
+          {:ok, post}
+
+        {:error, _} = error ->
+          error
+      end
+    end
+  end
+
+  # Re-read before the gate, and gate on what comes back — the re-read
+  # `create_remote_post_reply/3` makes, for the same reason. The struct in hand
+  # was captured when the composer opened and a member types for minutes: in
+  # that time the post can be **gone** (its author deleted it, moderation took
+  # it down), which nothing in `check_carry_allowed/2` asks — it re-reads the
+  # denials and the page, never existence — and which would hit the sidecar's
+  # foreign key and take the LiveView down with an `Ecto.ConstraintError`.
+  # `:not_visible` rather than a state of its own: "you can no longer quote this
+  # post" is exactly what happened, and it is what the composer already says.
+  defp reload_quoted(%Post{id: id}) do
+    case Repo.get(Post, id) do
+      nil -> {:error, :not_visible}
+      %Post{} = quoted -> {:ok, quoted}
+    end
+  end
+
   # Creating a post that answers nothing on this site: the feed's own composer
   # (`create_post/2`, with the audience its author picked) and the answer to a
   # post on another network (issue #1165 — public by definition, so no denials,
@@ -342,10 +428,10 @@ defmodule Vutuv.Posts do
   defp do_create_reply(%User{} = author, %Post{} = parent, attrs, note) do
     image_ids = parse_ids(fetch(attrs, :image_ids) || [])
 
-    with :ok <- check_reply_allowed(author, parent),
+    with :ok <- check_carry_allowed(author, parent),
          :ok <- check_image_count(image_ids),
          # A reply has no audience of its own: it inherits the parent's, which
-         # check_reply_allowed already constrains to public. Any denials in the
+         # check_carry_allowed already constrains to public. Any denials in the
          # params are dropped, so the public reply count and the parent-author
          # notification only ever concern content the author can see (issue #774).
          {:ok, changeset} <- build_changeset(%Post{user_id: author.id}, attrs, [], image_ids) do
@@ -383,9 +469,9 @@ defmodule Vutuv.Posts do
   renders the parent card from an id in the URL — so without this a guessed id
   would confirm and quote the post of a pending or frozen page.
 
-  Public because it is the first arm of `answerable_by?/2`, which the reply
-  **page** asks — and it is a fair question on its own, about the post rather
-  than about anybody wanting to answer it.
+  Public because it is the first arm of `carryable_by?/2`, which both compose
+  pages ask — and it is a fair question on its own, about the post rather than
+  about anybody wanting to answer it.
   """
   def answerable?(%Post{organization_id: nil}), do: true
 
@@ -402,25 +488,41 @@ defmodule Vutuv.Posts do
     end
   end
 
+  # The gate answering and quoting share (issue #1610). Both take somebody else's
+  # post and put it in front of a new audience, and both ask the same four
+  # questions in the same order about it, so they ask them in one place: a page's
+  # post only while the page is visible, the post visible to the author, public,
+  # and no block either way. The two ways of failing are the reply page's
+  # vocabulary because they reached it first — `:not_visible` for a post this
+  # member has no business seeing, `:restricted` for one they may see but may not
+  # republish, which is also the opaque answer a quiet block gives.
+  #
+  # Both names widened here (issue #1797 landed them as `answerable_by?/2` and
+  # `check_reply_allowed/2`, when answering was the only caller): the rule was
+  # never about answering, it is about putting somebody else's post in front of
+  # a new audience, and a second page arriving is what makes that visible.
   @doc """
-  Whether `user` may open a composer answering `post` — the compose page's half
-  of `check_reply_allowed/2` below, which is the same rule minus the block.
+  Whether `user` may open a composer that carries `post` — the compose page's
+  half of `check_carry_allowed/2` below, which is the same rule minus the block.
 
   The block is deliberately left out: quiet blocking has to let the blocked
   member reach the composer and be refused on submit, or the block leaks. That
-  one difference is the whole reason the page cannot simply call the gate, and
-  it is why the rule was written out a second time in
-  `VutuvWeb.PostLive.Reply.mount/3` — where nothing tied it to the gate, so a
-  fifth arm added here would have silently missed the page (issue #1797).
+  one difference is the whole reason a page cannot simply call the gate, and it
+  is why the rule was once written out a second time in
+  `VutuvWeb.PostLive.Reply.mount/3`, where nothing tied it to the gate (issue
+  #1797). Both pages (`VutuvWeb.PostLive.Reply`, `VutuvWeb.PostLive.Quote`) ask
+  this one predicate rather than spelling its three arms out, so a fourth arm
+  cannot land on one page and miss the other — the same reason `answerable?/1`,
+  its first arm, is public.
 
   `restricted?/1` here rather than the gate's fresh re-read: the page is a cheap
   "may I show you this at all", and the submit path re-asks anyway.
   """
-  def answerable_by?(%Post{} = post, user) do
+  def carryable_by?(%Post{} = post, user) do
     answerable?(post) and visible_to?(post, user) and not restricted?(post)
   end
 
-  defp check_reply_allowed(%User{} = author, %Post{} = parent) do
+  defp check_carry_allowed(%User{} = author, %Post{} = parent) do
     cond do
       not answerable?(parent) -> {:error, :not_visible}
       not visible_to?(parent, author) -> {:error, :not_visible}
@@ -451,7 +553,7 @@ defmodule Vutuv.Posts do
 
   Editing closes with the edit window (`editable?/1`): `{:error,
   :edit_window_closed}` once the post is older than `edit_window_minutes/0`,
-  `{:error, :edit_engaged}` once someone liked, reposted or answered it.
+  `{:error, :edit_engaged}` once someone liked, reposted, answered or quoted it.
   """
   def update_post(%Post{} = post, attrs) do
     post = Repo.preload(post, [:denials, :post_tags, :post_hashtags, :images, :review])
@@ -560,7 +662,12 @@ defmodule Vutuv.Posts do
     # the person on the other network who was answered (issue #1070). The
     # in-memory struct is the only place that address is left afterwards.
     post = Repo.preload(post, [:images, :screenshot, :review, :remote_reply_ref])
-    parent_id = reply_parent_id(post.id)
+    parent_id = carried_post_id(PostReply, :parent_post_id, post.id)
+    # Both figures this post moved when it was written have to move back, and
+    # both rows are gone a line below: a reply's parent count and — for a quote
+    # — the quoted post's, whose open action bars would otherwise keep a count
+    # of a card that no longer exists until somebody reloads (issue #1610).
+    quoted_id = carried_post_id(PostQuote, :quoted_post_id, post.id)
 
     case Repo.delete(post) do
       {:ok, deleted} ->
@@ -572,6 +679,7 @@ defmodule Vutuv.Posts do
         if post.review, do: ReviewCovers.delete_files(post.review)
         broadcast_post_deleted(post.id, deletion_recipients(post))
         if parent_id, do: broadcast_reply_count(parent_id)
+        if quoted_id, do: broadcast_counters(quoted_id)
         # Deleting reported content settles its moderation case.
         Vutuv.Moderation.content_deleted(deleted)
         # Remote copies get a Delete(Tombstone) — best effort by protocol. The
@@ -732,9 +840,9 @@ defmodule Vutuv.Posts do
   # Stamps the Berlin-day publication date (the archive coordinate; the same
   # calendar day the rendered timestamps use) and commits the post, its image
   # claims and — for a reply — the PostReply row (plus, when it answers another
-  # network, the PostRemoteReply sidecar) in one transaction, so post and
-  # references land (or roll back) together.
-  defp insert_post(changeset, image_ids, parent, remote_target) do
+  # network, the PostRemoteReply sidecar; for a quote, the PostQuote one) in one
+  # transaction, so post and references land (or roll back) together.
+  defp insert_post(changeset, image_ids, parent, remote_target, quoted \\ nil) do
     Repo.transaction(fn ->
       changeset
       |> Ecto.Changeset.change(published_on: Vutuv.BerlinTime.today())
@@ -744,6 +852,7 @@ defmodule Vutuv.Posts do
           attach_images!(post, image_ids)
           insert_reply_ref!(post, parent)
           insert_remote_reply_ref!(post, remote_target)
+          insert_quote_ref!(post, quoted)
           mark_images_pending!(post)
 
         {:error, changeset} ->
@@ -795,6 +904,21 @@ defmodule Vutuv.Posts do
     %PostRemoteReply{post_id: post.id}
     |> PostRemoteReply.changeset(attrs)
     |> Repo.insert!()
+  end
+
+  defp insert_quote_ref!(_post, nil), do: :ok
+
+  defp insert_quote_ref!(%Post{} = post, %Post{} = quoted) do
+    Repo.insert!(%PostQuote{
+      post_id: post.id,
+      quoted_post_id: quoted.id,
+      # Whichever of the two authors the quoted post has (issue #1334), read as
+      # a pair everywhere: the page's activity list is derived from
+      # `quoted_organization_id` the way a member's notification is derived from
+      # `quoted_author_id`.
+      quoted_author_id: quoted.user_id,
+      quoted_organization_id: quoted.organization_id
+    })
   end
 
   defp insert_reply_ref!(_post, nil), do: :ok
@@ -1627,6 +1751,11 @@ defmodule Vutuv.Posts do
     Repo.exists?(from(r in PostReply, where: r.parent_post_id == ^post_id))
   end
 
+  @doc "Whether any quotes of this post exist (the audience lock, like reposts)."
+  def has_quotes?(%Post{id: id}) do
+    Repo.exists?(from(q in PostQuote, where: q.quoted_post_id == ^id))
+  end
+
   # Whether any likes of this post exist (the edit lock, like reposts).
   defp has_likes?(%Post{id: id}), do: has_likes?(id)
 
@@ -1799,7 +1928,8 @@ defmodule Vutuv.Posts do
 
   @doc """
   Whether the author may still edit this post: inside the edit window and not
-  yet liked, reposted or answered by anyone (issue #1023). Costs one query; the
+  yet liked, reposted, answered or quoted by anyone (issue #1023). Costs a few
+  cheap `EXISTS` reads; the
   post card gates on `edit_window_open?/1` instead and lets the edit page
   explain the rest.
   """
@@ -1821,14 +1951,32 @@ defmodule Vutuv.Posts do
     end
   end
 
+  # A quote is on this list for the same reason a repost is, and with one more
+  # argument behind it (issue #1610): a reshare carries the words away, while a
+  # quote **reproduces** them, as a teaser inside somebody else's post — so an
+  # edit after being quoted rewrites what that card shows, under a comment
+  # nobody gets to revise.
   defp engaged?(%Post{} = post),
-    do: has_likes?(post) or has_reposts?(post) or has_replies?(post)
+    do: has_likes?(post) or audience_locked?(post)
 
-  # A repost or reply pins the audience open: someone else now carries or
-  # answers the post, so narrowing it would silently break their share or
-  # strand their reply's context. Deleting stays possible.
+  @doc """
+  Whether somebody else has taken this post somewhere: reshared, answered or
+  quoted it (issue #1610).
+
+  Public because the composer asks it too — it hides the audience select on a
+  post in this state, and a second spelling of the list there is a second place
+  to forget the next kind of carrying (this one had to widen both). The write
+  side is `check_visibility_lock/2` below.
+  """
+  def audience_locked?(%Post{} = post),
+    do: has_reposts?(post) or has_replies?(post) or has_quotes?(post)
+
+  # A repost, reply or quote pins the audience open: someone else now carries,
+  # answers or reproduces the post, so narrowing it would silently break their
+  # share, strand their reply's context or leave their quote card promising a
+  # reader something they may no longer see. Deleting stays possible.
   defp check_visibility_lock(%Post{} = post, denials) do
-    if denials != [] and (has_reposts?(post) or has_replies?(post)) do
+    if denials != [] and audience_locked?(post) do
       {:error, :visibility_locked}
     else
       :ok
@@ -1890,7 +2038,8 @@ defmodule Vutuv.Posts do
   # rather than false — `party_is/2` spells the pair predicate once.
   defp engaged_by(party), do: dynamic([e], party_is(e, party))
 
-  # The four engagement counters (likes / bookmarks / reposts / replies),
+  # The five engagement counters (likes / bookmarks / reposts / replies /
+  # quotes),
   # counted live from the rows. Defined once here so both `engagement_counts/1`
   # and `post_engagement/2` select the exact same fragments; pass the post
   # binding so the correlated subqueries reference its id. Keep the map keys in
@@ -1921,6 +2070,25 @@ defmodule Vutuv.Posts do
                 AND rp.frozen_at IS NULL
                 AND NOT EXISTS (SELECT 1 FROM post_denials d WHERE d.post_id = rp.id)
                 AND NOT EXISTS (SELECT 1 FROM users mu WHERE mu.id = rp.user_id
+                                  AND (mu.frozen_at IS NOT NULL
+                                    OR mu.deactivated_at IS NOT NULL
+                                    OR mu.unreachable_at IS NOT NULL
+                                    OR mu.suspended_until > (NOW() AT TIME ZONE 'utc'))))
+            """,
+            unquote(post).id
+          ),
+        # Quotes of this post (issue #1610), filtered exactly like the replies
+        # above and for the same reason: the figure sits on the public action
+        # bar, so a frozen quote or one by a hidden account must not move it.
+        quotes:
+          fragment(
+            """
+            (SELECT count(*) FROM post_quotes q
+               JOIN posts qp ON qp.id = q.post_id
+              WHERE q.quoted_post_id = ?
+                AND qp.frozen_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM post_denials d WHERE d.post_id = qp.id)
+                AND NOT EXISTS (SELECT 1 FROM users mu WHERE mu.id = qp.user_id
                                   AND (mu.frozen_at IS NOT NULL
                                     OR mu.deactivated_at IS NOT NULL
                                     OR mu.unreachable_at IS NOT NULL
@@ -1994,6 +2162,7 @@ defmodule Vutuv.Posts do
         bookmarks: 0,
         reposts: 0,
         replies: 0,
+        quotes: 0,
         fediverse_likes: 0,
         fediverse_reposts: 0,
         fediverse_reaction_actors: [],
@@ -2022,7 +2191,14 @@ defmodule Vutuv.Posts do
     %{
       likes: engagement.likes + remote_count(engagement, :fediverse_likes),
       reposts: engagement.reposts + remote_count(engagement, :fediverse_reposts),
-      replies: engagement.replies + remote_count(engagement, :fediverse_replies)
+      replies: engagement.replies + remote_count(engagement, :fediverse_replies),
+      # Quotes have no figure from out there yet (issue #1610; the outgoing
+      # FEP-044f half is #1608/#1609/#1611), so this one is vutuv's own tally —
+      # read through the same tolerant helper, because it reaches the bar the
+      # same way: on a dead page the engagement map travels in the LiveView
+      # session, and across a blue/green switch it was built by a release that
+      # did not have the key.
+      quotes: remote_count(engagement, :quotes)
     }
   end
 
@@ -2042,17 +2218,32 @@ defmodule Vutuv.Posts do
   `list_replies/3` thread (issue #774). The action bar's `engagement_counts/1`
   applies the same filter.
   """
-  def reply_count(post_id) do
+  def reply_count(post_id), do: carrier_count(PostReply, :parent_post_id, post_id)
+
+  @doc """
+  How many publicly-visible quotes a post has (issue #1610) — the same filter
+  `reply_count/1` applies, and the same figure `engagement_counts/1` puts on the
+  action bar.
+  """
+  def quote_count(post_id), do: carrier_count(PostQuote, :quoted_post_id, post_id)
+
+  # "How many publicly-visible posts of this shape point at this post" — one
+  # definition for both sidecars, since a reply and a quote are the same query
+  # with a different table and a different column (the same generalisation
+  # `Vutuv.Organizations.activity_carried/6` makes of the two activity sources).
+  # The filter is the anonymous view's: the carrying post must still exist, be
+  # unfrozen, carry no denials and have an author in good standing — a reply or
+  # quote that `list_replies/3` and the card hide must not inflate a number
+  # everybody can read.
+  defp carrier_count(schema, field, post_id) do
     Repo.one(
-      from(r in PostReply,
-        join: rp in Post,
-        on: rp.id == r.post_id,
-        where: r.parent_post_id == ^post_id and is_nil(rp.frozen_at),
-        where: fragment("NOT EXISTS (SELECT 1 FROM post_denials d WHERE d.post_id = ?)", rp.id),
-        # A reply whose author's account is hidden is excluded by list_replies /
-        # scope_visible, so it must not inflate the public count either.
-        where: not account_hidden(rp.user_id),
-        select: count(r.id)
+      from(c in schema,
+        join: cp in Post,
+        on: cp.id == c.post_id,
+        where: field(c, ^field) == ^post_id and is_nil(cp.frozen_at),
+        where: fragment("NOT EXISTS (SELECT 1 FROM post_denials d WHERE d.post_id = ?)", cp.id),
+        where: not account_hidden(cp.user_id),
+        select: count(c.id)
       )
     )
   end
@@ -5519,6 +5710,101 @@ defmodule Vutuv.Posts do
 
   def reply_ref_state(_post), do: nil
 
+  @doc """
+  The same three states for the post a quote carries (issue #1610), read off the
+  preloaded `quote_ref`: `{:quoted, post}` while it lives, `{:author_only,
+  author}` once it is deleted but its author is not, `:gone` once the account
+  behind it is gone too, and nil for a post that quotes nothing.
+
+  Structs are pattern-matched rather than tested for truthiness: an
+  un-preloaded `has_one` is a truthy `%Ecto.Association.NotLoaded{}`.
+  """
+  def quote_ref_state(%Post{quote_ref: %PostQuote{} = ref}) do
+    cond do
+      match?(%Post{}, ref.quoted_post) -> {:quoted, ref.quoted_post}
+      match?(%User{}, ref.quoted_author) -> {:author_only, ref.quoted_author}
+      match?(%Organization{}, ref.quoted_organization) -> {:author_only, ref.quoted_organization}
+      true -> :gone
+    end
+  end
+
+  def quote_ref_state(_post), do: nil
+
+  @doc """
+  What a reader is actually shown for the post a quote carries: the sidecar's
+  own three states above, narrowed by the three things that can put the quoted
+  post out of this reader's reach after the fact — `:unavailable` then, rather
+  than a card.
+
+  One owner, because three surfaces render it and no drift test can see them
+  disagree: the compact card (`VutuvWeb.PostComponents`), the agent formats'
+  `quote_of` (`VutuvWeb.AgentDocs.PostDoc`) and `VutuvWeb.PostJSON`. The two
+  document surfaces pass no viewer — they are the anonymous view.
+
+  **Moderation** is the first: a frozen post, or one whose author was suspended,
+  deactivated or hidden. `moderation_hidden?/1` answers it off the preloaded
+  columns, so a page of cards pays nothing for it.
+
+  **A page that has stopped being public** is the second, and it is why
+  `answerable?/1` exists: page visibility lives in the queries, not in
+  `visible_to?/2` or `moderation_hidden?/1`, so a post published in the name of
+  a page that has since been frozen or sent back to `pending` would otherwise
+  keep showing its words inside every quote of it. Read off the preloaded
+  `:organization` (`post_preloads/0` carries it), dispatching on the
+  `organization_id` **column** rather than on the association — and falling back
+  to a lookup for the caller who did not preload it.
+
+  **A block is the third, and it needs asking here.** `visible_to?/2`
+  deliberately does not (`scope_visible/2` never checks blocks — the feed asks
+  separately, see `reaches_feed?/2`), and this card carries a third party's name
+  and words into a post the reader did not choose to open. It is the one arm
+  that costs a query, so a caller rendering many cards can hand in the viewer's
+  blocked set (`Vutuv.Social.blocked_user_ids/1`, one query for the whole page)
+  as `blocked_ids` instead; `nil` means "ask about this one".
+
+  Denials, by contrast, need no asking at all: `check_carry_allowed/2` refuses a
+  restricted post and the audience lock keeps one from acquiring denials while a
+  quote of it exists, so the query `visible_to?/2` would run could only ever
+  answer "not denied".
+  """
+  def quoted_state(%Post{} = post, viewer, blocked_ids \\ nil) do
+    case quote_ref_state(post) do
+      {:quoted, quoted} ->
+        if quote_out_of_reach?(quoted, viewer, blocked_ids),
+          do: :unavailable,
+          else: {:quoted, quoted}
+
+      other ->
+        other
+    end
+  end
+
+  defp quote_out_of_reach?(%Post{} = quoted, viewer, blocked_ids) do
+    moderation_hidden?(quoted) or not page_visible?(quoted) or
+      quote_blocked?(quoted, viewer, blocked_ids)
+  end
+
+  defp page_visible?(%Post{organization_id: nil}), do: true
+
+  defp page_visible?(%Post{organization: %Organization{} = page}),
+    do: Organizations.public_visible?(page)
+
+  defp page_visible?(%Post{organization_id: id}) do
+    case Organizations.get_organization(id) do
+      nil -> false
+      page -> Organizations.public_visible?(page)
+    end
+  end
+
+  # The handed-in set answers for the whole page; without one this is a single
+  # `EXISTS` per rendered quote card, which is why the set exists.
+  defp quote_blocked?(%Post{user_id: author_id}, %User{id: viewer_id}, %MapSet{} = blocked_ids)
+       when is_binary(author_id),
+       do: author_id != viewer_id and MapSet.member?(blocked_ids, author_id)
+
+  defp quote_blocked?(%Post{} = quoted, %User{} = viewer, nil), do: blocked?(viewer, quoted)
+  defp quote_blocked?(_quoted, _viewer, _blocked_ids), do: false
+
   defp preload_post(nil), do: nil
   defp preload_post(%Post{} = post), do: Repo.preload(post, post_preloads(), force: true)
 
@@ -5567,6 +5853,17 @@ defmodule Vutuv.Posts do
       # account behind the post. Two extra batched queries per page, and only
       # for the handful of posts that carry the sidecar at all.
       remote_reply_ref: [remote_post: :remote_account],
+      # The post a quote carries (issue #1610), one level deep and no further:
+      # the card inside is compact — author, time, a teaser and at most one
+      # picture — so it needs its own author and images and nothing else. A
+      # quote OF a quote therefore renders its inner card as a plain link, which
+      # is the depth rule the feature was specified with. Both author kinds ride
+      # along for the placeholder line a deleted quoted post degrades to.
+      quote_ref: [
+        :quoted_author,
+        :quoted_organization,
+        quoted_post: [:images, :organization, :user]
+      ],
       denials: [:denied_user],
       tags: from(t in Tag, order_by: t.name),
       # Both kinds of parent author, at both levels (issue #1336): a member may
@@ -6409,6 +6706,31 @@ defmodule Vutuv.Posts do
     notify_thread_participants(parent, reply)
   end
 
+  # A new quote ticks the quoted post's open action bars (its quote count is one
+  # of the figures they show) and notifies its author. Self-quotes are not news,
+  # and — exactly as with a reply — a post published in a page's name notifies
+  # nobody here: the page's activity list is **derived** from
+  # `post_quotes.quoted_organization_id` (`Vutuv.Organizations.activity_page/2`).
+  # Guarded on the column, never on the notifier's own nil tolerance.
+  #
+  # No `broadcast_about_post/3` beside it, unlike a reply: a quote is a
+  # top-level post of the quoter's, reaching their followers through
+  # `broadcast_new_post/1`, and pushing it into the quoted author's feed as well
+  # would put a card there that the feed's own queries never produce.
+  defp broadcast_quote(%Post{} = quoted, %Post{} = quote_post) do
+    broadcast_counters(quoted.id)
+
+    if is_binary(quoted.user_id) and quoted.user_id != quote_post.user_id do
+      Vutuv.Activity.notify_quote(
+        quoted.user_id,
+        quote_post.user,
+        quoted.id,
+        quote_post.id,
+        quote_post.quote_ref && quote_post.quote_ref.id
+      )
+    end
+  end
+
   # Everyone else who wrote in the thread gets the quieter "replied in a
   # thread you posted in" push (the feed's "thread" kind): the root author
   # and every earlier replier — minus the replier themselves, the directly
@@ -6658,26 +6980,42 @@ defmodule Vutuv.Posts do
   Snapshot — taken *before* an account is deleted — of what its post teardown
   must broadcast afterwards, when the follow edges and posts are already gone:
   the account's `post_ids`, the `follower_ids` whose feeds may show them, and
-  the `reply_parent_ids` of surviving parents whose reply counters must tick
-  down. Pair with `broadcast_post_deleted/2` + `broadcast_reply_count/1`.
+  the `counter_post_ids` of surviving posts of **other** people whose counters
+  must tick down — the parents this account answered and the posts it quoted
+  (issue #1610), which are the same question one table apart. Pair with
+  `broadcast_post_deleted/2` + `broadcast_post_counters/1`.
   """
   def deletion_targets_for_user(user_id) do
     post_ids = Repo.all(from(p in Post, where: p.user_id == ^user_id, select: p.id))
 
-    reply_parent_ids =
-      Repo.all(
-        from(r in PostReply,
-          join: reply in Post,
-          on: reply.id == r.post_id,
-          join: parent in Post,
-          on: parent.id == r.parent_post_id,
-          where: reply.user_id == ^user_id and parent.user_id != ^user_id,
-          distinct: true,
-          select: r.parent_post_id
-        )
+    counter_post_ids =
+      Enum.uniq(
+        carried_post_ids(user_id, PostReply, :parent_post_id) ++
+          carried_post_ids(user_id, PostQuote, :quoted_post_id)
       )
 
-    %{post_ids: post_ids, follower_ids: follower_ids(user_id), reply_parent_ids: reply_parent_ids}
+    %{
+      post_ids: post_ids,
+      follower_ids: follower_ids(user_id),
+      counter_post_ids: counter_post_ids
+    }
+  end
+
+  # The posts of other people that this account's replies/quotes point at. Their
+  # own posts are excluded: those are deleted with the account, and a counter
+  # broadcast about a post that is gone tells nobody anything.
+  defp carried_post_ids(user_id, schema, field) do
+    Repo.all(
+      from(c in schema,
+        join: carrier in Post,
+        on: carrier.id == c.post_id,
+        join: carried in Post,
+        on: carried.id == field(c, ^field),
+        where: carrier.user_id == ^user_id and carried.user_id != ^user_id,
+        distinct: true,
+        select: field(c, ^field)
+      )
+    )
   end
 
   # Each clause **returns the ids it told**, so a second fan-out about the same
@@ -6707,8 +7045,10 @@ defmodule Vutuv.Posts do
     Repo.all(from(c in Follow, where: c.followee_id == ^user_id, select: c.follower_id))
   end
 
-  defp reply_parent_id(post_id) do
-    Repo.one(from(r in PostReply, where: r.post_id == ^post_id, select: r.parent_post_id))
+  # The post a reply answers / a quote carries, from its sidecar — one read for
+  # both, the singular of `carried_post_ids/3` twelve lines up.
+  defp carried_post_id(schema, field, post_id) do
+    Repo.one(from(c in schema, where: c.post_id == ^post_id, select: field(c, ^field)))
   end
 
   ## Param helpers (attrs arrive with atom keys from code, string keys from forms)

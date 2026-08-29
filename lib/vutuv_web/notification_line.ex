@@ -63,6 +63,11 @@ defmodule VutuvWeb.NotificationLine do
 
   def notification_text(%{kind: "reply"}), do: gettext("replied to your post.")
 
+  # Somebody's own post carries one of the reader's (issue #1610). Deliberately
+  # not the reply wording: no answer sits under their post, and sending them to
+  # look for one would be a lie in one word.
+  def notification_text(%{kind: "quote"}), do: gettext("quoted your post.")
+
   # The four everyday kinds. They used to be spelled only in the notifications
   # page's grouping code, where a row can stand for several actors, so a single
   # one of them fell through to the untranslated English `:text` the event was
@@ -319,12 +324,14 @@ defmodule VutuvWeb.NotificationLine do
     end
   end
 
-  # A mention opens the post that named the reader, and a thread event the new
-  # reply — both belong to the *actor*, not to the reader, unlike reply/like
-  # below. The row carries that permalink ready-made (`Vutuv.Activity`, built
-  # through `Posts.path/2`): assembling it here from `actor_param` linked a
-  # page's mention into the member namespace, where nothing answers.
-  def notification_target(%{kind: kind} = n, _viewer) when kind in ["mention", "thread"] do
+  # A mention opens the post that named the reader, a thread event the new reply
+  # and a quote the post that carries theirs — all three belong to the *actor*,
+  # not to the reader, unlike reply/like below. The row carries that permalink
+  # ready-made (`Vutuv.Activity`, built through `Posts.path/2`): assembling it
+  # here from `actor_param` linked a page's mention into the member namespace,
+  # where nothing answers.
+  def notification_target(%{kind: kind} = n, _viewer)
+      when kind in ["mention", "thread", "quote"] do
     n[:post_path] || actor_target(n)
   end
 

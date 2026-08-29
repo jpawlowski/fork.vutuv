@@ -54,6 +54,7 @@ defmodule VutuvWeb.PostComponents do
   alias VutuvWeb.Live.PostTranslations
   alias VutuvWeb.Markdown
   alias VutuvWeb.PostLive.RemoteActionsComponent
+  alias VutuvWeb.PostTeaser
   alias VutuvWeb.UserHelpers
 
   # The idle tint every action control wears while it is off, paired with each
@@ -177,6 +178,14 @@ defmodule VutuvWeb.PostComponents do
         "Only the post permalink passes it — a per-card avatar row down a long " <>
         "feed is a query-batching problem and visual noise, so the feed keeps " <>
         "the plain count"
+  )
+
+  attr(:blocked_ids, :any,
+    default: nil,
+    doc:
+      "the viewer's blocked-either-way ids (`Vutuv.Social.blocked_user_ids/1`) — the " <>
+        "quoted card asks per post without one (issue #1610). A host that renders many " <>
+        "cards reads the set once and hands it down; nil is correct everywhere else"
   )
 
   attr(:translations, :map,
@@ -333,6 +342,14 @@ defmodule VutuvWeb.PostComponents do
       |> assign(:reporter?, user? and not Posts.author?(post, viewer))
       |> assign(:frozen?, post.frozen_at != nil)
       |> assign(:reply_banner, reply_banner(post, assigns.show_reply_banner, assigns[:viewer]))
+      # The post this one quotes (issue #1610), resolved to what this reader may
+      # actually be shown: the card, one of the two deleted-post lines, or the
+      # "not available" line for a quoted post that is still there but frozen or
+      # closed to them. nil for a post that quotes nothing.
+      |> assign(
+        :quoted_state,
+        Posts.quoted_state(post, assigns[:viewer], assigns[:blocked_ids])
+      )
       |> assign(:reposters, repost_roster(assigns))
       |> assign(:edited?, Posts.edited?(post))
 
@@ -850,6 +867,7 @@ defmodule VutuvWeb.PostComponents do
   )
 
   attr(:translations, :map, default: nil)
+  attr(:blocked_ids, :any, default: nil)
 
   def post_thread_entry(assigns) do
     # An explicit [] means "collapsed, no ancestors" (a root/standalone) and must
@@ -876,6 +894,7 @@ defmodule VutuvWeb.PostComponents do
         surface={@surface}
         conn_or_socket={@conn_or_socket}
         translations={@translations}
+        blocked_ids={@blocked_ids}
         show_reply_banner={@nest_parent}
       />
     <% else %>
@@ -890,6 +909,7 @@ defmodule VutuvWeb.PostComponents do
         surface={@surface}
         conn_or_socket={@conn_or_socket}
         translations={@translations}
+        blocked_ids={@blocked_ids}
       />
     <% end %>
     """
@@ -998,6 +1018,7 @@ defmodule VutuvWeb.PostComponents do
 
   attr(:acting_as, :any, default: nil)
   attr(:translations, :map, default: nil)
+  attr(:blocked_ids, :any, default: nil)
 
   defp thread_chain(assigns) do
     # `@thread_indent_cap` is a module attribute, not an assign, so resolve the
@@ -1126,6 +1147,7 @@ defmodule VutuvWeb.PostComponents do
               mode={Map.get(node, :mode, :preview)}
               likers={Map.get(node, :likers)}
               translations={@translations}
+              blocked_ids={@blocked_ids}
               show_reply_banner={reply_banner?(node, @connected?, @indent?)}
             />
         <% end %>
@@ -1139,6 +1161,7 @@ defmodule VutuvWeb.PostComponents do
         surface={@surface}
         conn_or_socket={@conn_or_socket}
         translations={@translations}
+        blocked_ids={@blocked_ids}
       />
     </div>
     """
@@ -3550,6 +3573,12 @@ defmodule VutuvWeb.PostComponents do
             tags={@post.tags}
           />
 
+          <%!-- The quoted post (issue #1610), one level deep: a compact card of
+          somebody else's post inside this one, below the author's own words and
+          their tags. A quote of a quote shows only the outer one's text, never
+          a card inside a card — the inner post is one tap away. --%>
+          <.quoted_card :if={@quoted_state} state={@quoted_state} />
+
           <.liked_by :if={@likers} likers={@likers} />
 
           <%!-- The translation line (issue #1462): the quiet Translate action
@@ -4538,6 +4567,111 @@ defmodule VutuvWeb.PostComponents do
     """
   end
 
+  attr(:state, :any,
+    required: true,
+    doc:
+      "what `Vutuv.Posts.quoted_state/2` resolved: {:quoted, post} | {:author_only, author} | :gone | :unavailable"
+  )
+
+  # The quoted post itself, compact: who wrote it, when, a few lines of what
+  # they wrote and one thumbnail if they attached pictures. The whole tile is
+  # the link to it, because there is nothing else to do with it here — the
+  # like, the answer and the reshare belong to the post that quotes it, and a
+  # second action bar inside a card would put two of each on one screen.
+  #
+  # The three other states are one calm line apiece rather than an empty tile:
+  # a quote outlives what it carries, so "there was a post here" is the honest
+  # thing to say, and the author is still named while the account behind it
+  # exists (the same degradation the reply banner makes).
+  defp quoted_card(%{state: {:quoted, quoted}} = assigns) do
+    assigns =
+      assigns
+      |> assign(:quoted, quoted)
+      |> assign(:author, Posts.author(quoted))
+      |> assign(:organization_author?, Posts.organization_post?(quoted))
+      |> assign(:teaser, PostTeaser.plain_line(quoted, length: PostTeaser.quoted_length()))
+      # One picture, not the mosaic: the card is a pointer to a post, and a
+      # gallery inside a quote competes with the quoting author's own words.
+      # Only released ones — a photo still in the AI scan is absent here for
+      # everybody, since this tile has no room for the "we are looking at it"
+      # sentence the full card carries.
+      |> assign(:thumb, quoted |> Posts.released_images() |> List.first())
+
+    ~H"""
+    <.link
+      href={Posts.path(@quoted)}
+      data-quoted-post={@quoted.id}
+      class={[
+        "mt-3 block no-underline hover:bg-slate-100 dark:hover:bg-slate-800",
+        quoted_tile_class()
+      ]}
+    >
+      <span class="flex items-center gap-2">
+        <.organization_logo :if={@organization_author?} organization={@author} class="h-6 w-6" />
+        <.avatar :if={!@organization_author?} user={@author} size="2xs" />
+        <span class="min-w-0 truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+          {UserHelpers.author_name(@author)}
+        </span>
+        <%!-- `post_time/1`, not a formatted date of our own: it is the one owner
+        of a post stamp (issue #1502), so this one reads in the viewer's zone
+        and date shape and rolls over at their midnight like every other. --%>
+        <.post_time
+          id={"quoted-time-#{@quoted.id}"}
+          at={@quoted.inserted_at}
+          class="shrink-0 text-xs text-slate-500 dark:text-slate-400"
+        />
+      </span>
+
+      <span class="mt-2 flex items-start gap-3">
+        <span
+          :if={@teaser != ""}
+          class="line-clamp-4 min-w-0 flex-1 text-sm text-slate-700 dark:text-slate-300"
+        >
+          {@teaser}
+        </span>
+        <img
+          :if={@thumb}
+          src={PostImage.url(@thumb, "thumb")}
+          alt=""
+          loading="lazy"
+          class="h-16 w-16 shrink-0 rounded-lg object-cover"
+        />
+      </span>
+    </.link>
+    """
+  end
+
+  defp quoted_card(%{state: {:author_only, author}} = assigns) do
+    quoted_notice(
+      assigns,
+      "gone",
+      gettext("Quoting a now-deleted post by %{handle}", handle: author_handle(author))
+    )
+  end
+
+  defp quoted_card(%{state: :unavailable} = assigns),
+    do: quoted_notice(assigns, "unavailable", gettext("The quoted post is not available."))
+
+  defp quoted_card(%{state: :gone} = assigns),
+    do: quoted_notice(assigns, "gone", gettext("Quoting a deleted post"))
+
+  # The tile the three degraded states share — same box as the card above, one
+  # sentence instead of a post, so a quote whose target is gone still reads as a
+  # quote. `data-quoted-post-state` names which of them it is, for the tests and
+  # for anybody reading the DOM.
+  defp quoted_notice(assigns, state, line) do
+    assigns = assigns |> assign(:state_name, state) |> assign(:line, line)
+
+    ~H"""
+    <p
+      class={["mt-3 text-sm text-slate-600 dark:text-slate-400", quoted_tile_class()]}
+      data-quoted-post-state={@state_name}
+    >
+      {@line}
+    </p>
+    """
+  end
+
   # The three banner states a reply card can be in, resolved from the
   # preloaded reply_ref (one level deep — `Vutuv.Posts.post_preloads/0`).
   # Pattern-match the structs: an un-preloaded has_one is a truthy
@@ -5190,7 +5324,7 @@ defmodule VutuvWeb.PostComponents do
       |> assign(:counts, assigns.engagement && Posts.shown_counts(assigns.engagement))
 
     ~H"""
-    <%!-- justify-between spreads the four controls across the column's full
+    <%!-- justify-between spreads the five controls across the column's full
           width (X-style); -mx-2 cancels the outer buttons' px-2 so the first
           and last glyphs line up with the column edges. --%>
     <div
@@ -5205,12 +5339,18 @@ defmodule VutuvWeb.PostComponents do
         count={@counts.likes}
       />
 
-      <.reply_link
+      <.compose_link
         id={"#{@id}-reply"}
         post_id={@post_id}
+        kind="reply"
+        href={~p"/posts/#{@post_id}/reply"}
         count={@counts.replies}
         disabled={@engagement.restricted?}
-      />
+        label={gettext("Reply")}
+        disabled_title={gettext("Only public posts can be answered.")}
+      >
+        <:icon><.icon_reply /></:icon>
+      </.compose_link>
 
       <.action_button
         id={control_id(@id, "repost", @reset)}
@@ -5226,6 +5366,23 @@ defmodule VutuvWeb.PostComponents do
       >
         <:icon><.icon_repost /></:icon>
       </.action_button>
+
+      <%!-- Quoting (issue #1610) sits beside the reshare because it is the same
+      act with words added, and it is refused wherever the reshare is: a
+      restricted post cannot be republished to a new audience under any
+      spelling. --%>
+      <.compose_link
+        id={"#{@id}-quote"}
+        post_id={@post_id}
+        kind="quote"
+        href={~p"/posts/#{@post_id}/quote"}
+        count={@counts.quotes}
+        disabled={@engagement.restricted?}
+        label={gettext("Quote this post")}
+        disabled_title={gettext("Only public posts can be quoted.")}
+      >
+        <:icon><.icon_quote_marks /></:icon>
+      </.compose_link>
 
       <.action_button
         id={control_id(@id, "bookmark", @reset)}
@@ -5489,26 +5646,37 @@ defmodule VutuvWeb.PostComponents do
     """
   end
 
-  # The reply control is a navigation, not a toggle: it leads to the reply page
-  # (which requires login itself). Restricted posts cannot be answered,
-  # mirroring the disabled repost button. rel="nofollow" because for a crawler
-  # every reply URL is just a 302 to /login — without it, every public post
-  # card feeds one useless URL into the crawl frontier, which piled up as
-  # "blocked by robots.txt" noise in Search Console.
+  # Neither of these is a toggle: both lead to a compose page (which requires
+  # login itself), and restricted posts allow neither, mirroring the disabled
+  # repost button. rel="nofollow" because for a crawler a reply or quote URL is
+  # just a 302 to /login — without it, every public post card feeds two useless
+  # URLs into the crawl frontier, which piled up as "blocked by robots.txt"
+  # noise in Search Console.
   attr(:id, :string, required: true)
   attr(:post_id, :any, required: true)
   attr(:count, :integer, required: true)
-  attr(:disabled, :boolean, required: true)
+  attr(:disabled, :boolean, default: false)
+  attr(:kind, :string, required: true, doc: ~s|"reply" or "quote" — names the count pill|)
+  attr(:href, :string, required: true)
+  attr(:label, :string, required: true, doc: "the control's accessible name and tooltip")
+  attr(:disabled_title, :string, required: true, doc: "why it is a dead span instead")
+  slot(:icon, required: true)
 
-  defp reply_link(assigns) do
+  # The two controls on the bar that are **links to a compose page** rather than
+  # toggles: answering a post and quoting it. Neither has a state to switch, both
+  # are refused on exactly the same posts (a restricted post can be neither
+  # answered nor republished), and both then render as a dead span that says why
+  # — so they are one control with two labels rather than two copies of one
+  # recipe. The toggles beside them share `action_button/1` for the same reason.
+  defp compose_link(assigns) do
     ~H"""
     <.link
       :if={!@disabled}
       id={@id}
-      href={~p"/posts/#{@post_id}/reply"}
+      href={@href}
       rel="nofollow"
-      aria-label={gettext("Reply")}
-      title={gettext("Reply")}
+      aria-label={@label}
+      title={@label}
       class={[
         "inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm",
         "hover:bg-slate-100 dark:hover:bg-slate-800",
@@ -5517,17 +5685,17 @@ defmodule VutuvWeb.PostComponents do
         "text-slate-600 dark:text-slate-400"
       ]}
     >
-      <.icon_reply />
-      <.count_pill count={@count} kind="reply" />
+      {render_slot(@icon)}
+      <.count_pill count={@count} kind={@kind} />
     </.link>
     <span
       :if={@disabled}
       id={@id}
       aria-disabled="true"
-      title={gettext("Only public posts can be answered.")}
+      title={@disabled_title}
       class="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-slate-500 opacity-40 dark:text-slate-400"
     >
-      <.icon_reply />
+      {render_slot(@icon)}
       <.count_pill count={@count} />
     </span>
     """
@@ -5668,4 +5836,29 @@ defmodule VutuvWeb.PostComponents do
     </span>
     """
   end
+
+  # The quotation-marks glyph on the quote control (issue #1610). Private here
+  # rather than in `VutuvWeb.UI`: that kit holds the icons more than one module
+  # draws, and this one has a single call site — the action bar above.
+  #
+  # Filled rather than stroked, unlike its neighbours on that bar: at 20px a
+  # hollow outline of a shape this small reads as two smudges, and quotation
+  # marks are a glyph everybody already knows by their solid silhouette. The
+  # bookmark and heart next to it fill too, so a filled mark is not foreign to
+  # the row.
+  attr(:class, :any, default: "h-5 w-5")
+
+  defp icon_quote_marks(assigns) do
+    ~H"""
+    <svg class={@class} fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 8h4.5v4.2c0 2.6-1.5 4.6-3.9 5.4l-.7-1.9c1.3-.5 2.1-1.4 2.3-2.5H6V8Zm7.5 0H18v4.2c0 2.6-1.5 4.6-3.9 5.4l-.7-1.9c1.3-.5 2.1-1.4 2.3-2.5h-2.2V8Z" />
+    </svg>
+    """
+  end
+
+  # The box every quoted-post state wears — the card and the three one-line
+  # notices alike, so the tile a reader learns to recognise stays one tile.
+  defp quoted_tile_class,
+    do:
+      "rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700"
 end

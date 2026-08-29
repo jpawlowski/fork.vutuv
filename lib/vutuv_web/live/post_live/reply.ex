@@ -1,10 +1,12 @@
 defmodule VutuvWeb.PostLive.Reply do
   @moduledoc """
   Reply page — the parent post (read-only preview) above the same composer
-  as the feed. Which parents may be answered is `Vutuv.Posts.answerable_by?/2`,
+  as the feed. Which parents may be answered is `Vutuv.Posts.carryable_by?/2`,
   the one predicate that also states the compose half of `create_reply/3`'s own
   gate (issue #1797) — this page used to spell its three arms out here, where
-  nothing tied them to the gate. Everything it refuses is sent away with the
+  nothing tied them to the gate. The quote page asks the same predicate, which
+  is what widened its name from `answerable_by?/2` (issue #1610): the rule was
+  never about answering. Everything it refuses is sent away with the
   unknown-id flash, so existence never leaks. A post published in a page's name
   is answerable like any other (issue #1336) as long as the page itself is
   publicly visible, which is what `answerable?/1`, that predicate's first arm,
@@ -38,9 +40,10 @@ defmodule VutuvWeb.PostLive.Reply do
     user = socket.assigns.current_user
     parent = Posts.get_post(id)
 
-    # `Vutuv.Posts.answerable_by?/2` is the compose page's half of the submit
+    # `Vutuv.Posts.carryable_by?/2` is the compose page's half of the submit
     # gate, and lives beside it — see its doc for why the block is not in it.
-    if parent && Posts.answerable_by?(parent, user) do
+    # Shared with the quote page, which is what widened its name (issue #1610).
+    if parent && Posts.carryable_by?(parent, user) do
       {:ok,
        socket
        |> assign(:page_title, gettext("Reply"))

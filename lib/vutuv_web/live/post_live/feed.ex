@@ -167,6 +167,17 @@ defmodule VutuvWeb.PostLive.Feed do
   end
 
   defp mount_feed(socket, user, {day, open?}) do
+    # The reader's blocked-either-way ids, read once for the whole page: a
+    # quoted post's card asks whether a block stands between the reader and the
+    # quoted author, and asking that per card would be a query per card on the
+    # app's longest page (issue #1610). The set is what `Vutuv.Posts` prefers to
+    # be handed; every other surface falls back to asking about its one card.
+    # Re-read on the periodic tick below, so a block placed while the feed is
+    # open takes effect without a reload — the per-card fallback is live, and a
+    # batched set that never moved would be the one thing it does worse.
+    blocked_ids = Social.blocked_user_ids(user.id)
+    socket = assign(socket, :blocked_ids, blocked_ids)
+
     # The sources they left on (issue #1499). It opens the page *and* keys the
     # handoff below: the stash holds one entry per member, so two devices
     # opening /feed within its 15s TTL would otherwise let one take a page the
@@ -186,11 +197,14 @@ defmodule VutuvWeb.PostLive.Feed do
       # (VutuvWeb.Live.MountHandoff); take it and skip re-running the same
       # queries. Any miss (expired, consumed, a reconnect) recomputes.
       case MountHandoff.take(user.id, {:feed, remembered, day}) do
-        {:ok, payload} -> apply_feed_payload(socket, payload, day, open?)
-        :error -> apply_feed_payload(socket, feed_payload(user, remembered, day), day, open?)
+        {:ok, payload} ->
+          apply_feed_payload(socket, payload, day, open?)
+
+        :error ->
+          apply_feed_payload(socket, feed_payload(user, remembered, day, blocked_ids), day, open?)
       end
     else
-      payload = feed_payload(user, remembered, day)
+      payload = feed_payload(user, remembered, day, blocked_ids)
       MountHandoff.stash(user.id, {:feed, remembered, day}, payload)
       apply_feed_payload(socket, payload, day, open?)
     end
@@ -198,7 +212,7 @@ defmodule VutuvWeb.PostLive.Feed do
 
   # Everything a feed mount computes, as data — what the dead render hands the
   # connected mount through the single-use stash.
-  defp feed_payload(user, remembered, day) do
+  defp feed_payload(user, remembered, day, blocked_ids) do
     # The member's private content filters (issue #940): compiled once, applied
     # to every page, and the set of posts they chose to reveal anyway.
     compiled = ContentFilters.compile_for(user)
@@ -250,17 +264,17 @@ defmodule VutuvWeb.PostLive.Feed do
       # again — computed here once, riding the handoff to the connected mount.
       # Phones keep it hidden by CSS; that they pay its queries on the dead
       # render is the accepted cost of the immediate desktop paint.
-      rails: rail_data(user)
+      rails: rail_data(user, blocked_ids)
     }
   end
 
   # Everything the three rail cards render, as data. Shared by the payload
   # (mount) and the socket-side redraw helpers below, so mount and refresh
   # cannot drift.
-  defp rail_data(user) do
+  defp rail_data(user, blocked_ids) do
     Map.merge(
       %{followed_tags: Vutuv.Tags.followed_tags(user)},
-      newcomer_rail(user)
+      newcomer_rail(user, blocked_ids)
     )
   end
 
@@ -429,11 +443,11 @@ defmodule VutuvWeb.PostLive.Feed do
   # The random draw is made **here**, not at render: it has to survive every
   # re-render of the page, and only a fresh draw (a reshuffle, the periodic
   # tick, a new mount) may change who is on it.
-  defp newcomer_rail(user) do
-    # Never suggest a member the viewer blocked (or who blocked them): the follow
-    # would be refused as :blocked and the suggestion would just reappear.
-    blocked = Social.blocked_user_ids(user.id)
-
+  #
+  # `blocked` is handed in rather than read here: the socket holds the same set
+  # for the quoted post cards (issue #1610, see the mount), and reading it twice
+  # for one page is exactly the cost that batching exists to avoid.
+  defp newcomer_rail(user, blocked) do
     candidates =
       @newcomer_pool
       |> Social.newest_members_with_avatar()
@@ -486,8 +500,15 @@ defmodule VutuvWeb.PostLive.Feed do
   end
 
   defp assign_newcomers(socket) do
+    user = socket.assigns.current_user
+    # One read for both readers of the set: the rail below and the quoted cards
+    # (issue #1610), whose block answer would otherwise go stale on a page that
+    # stays open for hours.
+    blocked_ids = Social.blocked_user_ids(user.id)
+
     socket
-    |> assign(newcomer_rail(socket.assigns.current_user))
+    |> assign(:blocked_ids, blocked_ids)
+    |> assign(newcomer_rail(user, blocked_ids))
     |> assign_following()
   end
 
@@ -2714,6 +2735,7 @@ defmodule VutuvWeb.PostLive.Feed do
                     conn_or_socket={@socket}
                     engagement={entry.engagement}
                     translations={@post_translations}
+                    blocked_ids={@blocked_ids}
                     surface={:flat}
                   />
               <% end %>

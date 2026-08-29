@@ -167,6 +167,9 @@ defmodule VutuvWeb.PostLive.ActionBar do
         bookmarks: payload.bookmarks,
         reposts: payload.reposts,
         replies: payload.replies,
+        # The quote count moves without anybody here pressing anything —
+        # somebody else wrote a post — so it rides the same tick (issue #1610).
+        quotes: payload.quotes,
         fediverse_likes: payload.fediverse_likes,
         fediverse_reposts: payload.fediverse_reposts,
         fediverse_reaction_actors: payload.fediverse_reaction_actors,

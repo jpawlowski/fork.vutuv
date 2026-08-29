@@ -55,6 +55,7 @@ defmodule Vutuv.Activity do
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostLike
   alias Vutuv.Posts.PostMention
+  alias Vutuv.Posts.PostQuote
   alias Vutuv.Posts.PostReply
   alias Vutuv.Profiles.CvUpdates
   alias Vutuv.References.Check
@@ -168,6 +169,22 @@ defmodule Vutuv.Activity do
       select: %{ts: max(r.inserted_at)}
     )
   end
+
+  # Quotes of the member's own posts (issue #1610). Self-quotes are excluded
+  # here as self-replies are above: quoting yourself is not news. Named once and
+  # shared by all three arms of the kind (`thread`/`mention` do the same), so the
+  # rule cannot drift between the badge, the count and the list.
+  defp quote_events(user_id) do
+    from(q in PostQuote,
+      as: :quote_ref,
+      join: quoting in assoc(q, :post),
+      as: :quoting_post,
+      where: q.quoted_author_id == ^user_id and quoting.user_id != ^user_id
+    )
+  end
+
+  defp quote_max(user_id),
+    do: select(quote_events(user_id), [quote_ref: q], %{ts: max(q.inserted_at)})
 
   defp thread_max(user_id),
     do: select(thread_replies(user_id), [thread_ref: r], %{ts: max(r.inserted_at)})
@@ -649,6 +666,41 @@ defmodule Vutuv.Activity do
   end
 
   @doc ~S"""
+  Convenience: a "quoted your post" notification for the quoted post's author
+  (issue #1610). `post_id` is their own post, which is what the row links to;
+  `quote_post_id` is the post that carries it, so the row can quote both.
+
+  Its own kind rather than a reply: a quote starts no thread and moves no reply
+  count, and telling somebody "X replied to your post" when no answer exists
+  under it would send them looking for one.
+  """
+  def notify_quote(quoted_author_id, quoter, quoted_post_id, quote_post_id, quote_ref_id) do
+    Vutuv.Webhooks.emit(quoted_author_id, "post.quoted", %{
+      "by" => actor_param(quoter),
+      "post_id" => quoted_post_id
+    })
+
+    notify(
+      quoted_author_id,
+      Map.merge(actor_fields(quoter), %{
+        kind: "quote",
+        text: "quoted your post.",
+        post_id: quoted_post_id,
+        quote_post_id: quote_post_id,
+        # Where the row leads, built here for the same reason `quote_items/3`
+        # builds it there: the view holds `actor_param`, and a post path is not
+        # derivable from it. Without it the pushed row would fall back to the
+        # quoter's profile while the same event, read back from the feed a
+        # reload later, leads to the post that carries theirs.
+        post_path: post_path(quoter, quote_post_id),
+        # The `post_quotes` row the feed counts — what a dismissal names.
+        source_id: quote_ref_id,
+        at: DateTime.utc_now()
+      })
+    )
+  end
+
+  @doc ~S"""
   Convenience: a "replied in a thread you posted in" notification for another
   participant of a thread — the root author or an earlier replier. The
   directly answered author gets `notify_reply/4` instead, never both.
@@ -1014,6 +1066,14 @@ defmodule Vutuv.Activity do
         dismiss: [{"reply", :id}]
       },
       %{
+        kind: "quote",
+        email_pref: nil,
+        max_arms: [quote_max(user_id)],
+        items: &quote_items(user_id, &1, &2),
+        counts: [count_quotes(user_id, read_at, unread?)],
+        dismiss: [{"quote", :id}]
+      },
+      %{
         kind: "thread",
         email_pref: nil,
         max_arms: [thread_max(user_id)],
@@ -1361,6 +1421,35 @@ defmodule Vutuv.Activity do
       # itself, so the row can quote both.
       |> Map.put(:post_id, parent_post_id)
       |> Map.put(:reply_post_id, reply_post_id)
+    end)
+  end
+
+  # "X quoted your post" (issue #1610), the same shape as the reply source one
+  # table over. The quoting post's author is always a member — a page cannot
+  # quote anything yet — so the join to `users` is inner by nature.
+  defp quote_items(user_id, limit, cursor) do
+    user_id
+    |> quote_events()
+    |> join(:inner, [quoting_post: p], quoter in assoc(p, :user), as: :quoter)
+    |> order_by([quote_ref: q], desc: q.inserted_at, desc: q.id)
+    |> limit(^limit)
+    |> select(
+      [quote_ref: q, quoter: quoter],
+      {q.id, q.inserted_at, struct(quoter, ^User.listing_fields()), q.quoted_post_id, q.post_id}
+    )
+    |> at_or_before(cursor)
+    |> Repo.all()
+    |> Enum.map(fn {id, at, quoter, quoted_post_id, quote_post_id} ->
+      event_id("quote", id)
+      |> actor_item("quote", at, quoter)
+      # The recipient's own post that was quoted…
+      |> Map.put(:post_id, quoted_post_id)
+      # …and the post carrying it, which is where the row leads and what it
+      # quotes: the news is what the quoter wrote, and the reader's own post is
+      # the breadcrumb above it. Its permalink is built here, the one place with
+      # the author struct to hand `Posts.path/2` (see `post_path/2`).
+      |> Map.put(:quote_post_id, quote_post_id)
+      |> Map.put(:post_path, post_path(quoter, quote_post_id))
     end)
   end
 
@@ -2062,6 +2151,14 @@ defmodule Vutuv.Activity do
       where: r.parent_author_id == ^user_id and reply.user_id != ^user_id,
       select: %{count: count()}
     )
+    |> since(read_at)
+    |> unless_seen(user_id, unread?)
+  end
+
+  defp count_quotes(user_id, read_at, unread?) do
+    user_id
+    |> quote_events()
+    |> select([quote_ref: q], %{count: count()})
     |> since(read_at)
     |> unless_seen(user_id, unread?)
   end

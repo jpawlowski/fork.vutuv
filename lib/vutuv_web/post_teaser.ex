@@ -130,6 +130,14 @@ defmodule VutuvWeb.PostTeaser do
   def line(post, opts \\ []), do: teaser(post, &fold/1, opts)
 
   @doc """
+  How much of a post rides along when it is **quoted** by another one (issue
+  #1610): the compact card's four clamped lines, and — because the drift test
+  compares the two texts — the same cut in the agent formats' `quote_of.text`.
+  Here rather than on either surface, since it is a fact about a teaser.
+  """
+  def quoted_length, do: 320
+
+  @doc """
   `line/2` flattened to plain text: Markdown markers gone, whitespace folded to
   single spaces. For a surface that renders no markup of its own.
   """

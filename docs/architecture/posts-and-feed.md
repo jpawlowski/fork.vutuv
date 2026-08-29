@@ -976,7 +976,7 @@ enforces it (web composer and API alike):
   `Posts.edit_window_minutes/0` — 30 minutes by default, configurable per
   installation (`:post_edit_window_minutes`, env `POST_EDIT_WINDOW_MINUTES`).
   The window exists for the typo you spot right after posting.
-- `{:error, :edit_engaged}` once **anyone has liked, reposted or answered** the
+- `{:error, :edit_engaged}` once **anyone has liked, reposted, answered or quoted** the
   post, even inside those minutes: each of the three leaves a person standing
   behind text they no longer chose.
 - A **frozen** post (a moderation case in the owner's court) is the one
@@ -991,7 +991,7 @@ card. A post liked inside the window therefore still shows the menu item, and
 The API answers both cases `409` (`reason: edit_window_closed` /
 `edit_engaged`).
 
-This subsumes the old audience lock (below): a reposted or answered post cannot
+This subsumes the old audience lock (below): a reposted, answered or quoted post cannot
 be edited at all any more, so the lock only still fires inside a moderation
 round, where the freezer exception reopens editing on such a post.
 
@@ -1256,6 +1256,72 @@ a banner (which names the account as `@handle`, never the clear name) that
 degrades from "Reply to a now-deleted post by @handle" (profile link) to a
 nameless "Reply to a deleted post" once the account is gone too — no name is
 retained past account deletion.
+
+## Quotes
+
+A **quote** (issue #1610) is a post of one's own that carries somebody else's
+inside it, shown as a compact card. Underneath it is a normal top-level post
+plus a `post_quotes` row naming the quoted post and its author
+(`Vutuv.Posts.create_quote/3`) — a sidecar beside `post_replies`, deliberately
+**not** a flag on it, because a quote is not a reply: it opens no thread, moves
+no reply count and fires no thread notification. Passing a post on with your own
+words used to mean a reshare plus a separate post, with the two halves
+unconnected everywhere they were read.
+
+**The gate is the reshare's, not the reply's**, because the act is the
+reshare's — it puts somebody else's post in front of a new audience. Answering
+and quoting ask the same four questions, so they ask them in one place
+(`check_carry_allowed/2`): a page's post only while the page is visible, visible
+to the author, **public**, and no block either way — and the compose pages ask
+the first three of them through `carryable_by?/2`, since a quiet block has to
+let the blocked member reach the composer and be refused on submit. The quote itself publishes
+public (any audience in the params is dropped), and once quoted, the quoted post
+is `Posts.audience_locked?/1` — its audience pinned open and its edit window
+closed, exactly as a reshare or an answer closes them. A quote earns the edit
+lock twice over: it does not only carry the words away, it **reproduces** them
+as a teaser inside somebody else's post.
+
+**The card is one level deep.** Every surface that renders a post card renders
+the quoted post inside it: author, time, the shared teaser line
+(`VutuvWeb.PostTeaser`) and one released photo, the whole tile a link to the
+original — the like/answer/reshare belong to the post that quotes it. A quote of
+a quote therefore shows only the outer one's text; the inner post is one tap
+away.
+
+**What a reader is shown has one owner**, `Posts.quoted_state/3`, because three
+surfaces render it (the card, the agent formats' `quote_of`, `PostJSON`) and no
+drift test can see them disagree. It narrows `quote_ref_state/1`'s three sidecar
+states — the post, its author alone once it is deleted, a nameless line once the
+account is gone too — by the three things that can put the quoted post out of
+reach afterwards: **moderation** (frozen, or a hidden author), **a page that has
+stopped being publicly visible** (page visibility lives in the queries, which is
+why `answerable?/1` exists at all), and **a block either way between the reader
+and the quoted author**. That last one has to be asked here — `visible_to?/2`
+deliberately never checks blocks, and this card carries a third party's name and
+words into a post the reader did not choose to open — and it is the one arm that
+costs a query, so a host rendering many cards hands in the viewer's blocked set
+(`Social.blocked_user_ids/1`, one query per page; the feed does). Denials need no
+asking: the gate refuses a restricted post and the audience lock keeps one from
+acquiring denials while a quote exists.
+
+Entry points: the **quote control** on the action bar beside the reshare
+(`VutuvWeb.PostComponents.post_actions/1` — a link, not a toggle, since a quote
+is something you write) with the post's quote count beside it, and the compose
+page `/posts/:id/quote` (`VutuvWeb.PostLive.Quote`), shaped like the reply page
+and sharing its composer. It publishes to the quote's **own** permalink: there
+is no conversation to go back to.
+
+The quoted author is told — the `"quote"` notification kind, derived from
+`post_quotes` like every other kind (see [realtime.md](realtime.md)), with the
+`post.quoted` webhook beside it; a page learns about it through its own activity
+list (`post_quotes.quoted_organization_id`, the page-shaped half of the pair).
+The agent formats and `PostJSON` carry `quote_of` (its four states) and
+`quote_count`, so a `.md`/`.json` sibling says what the card shows.
+
+Not (yet) part of it: the quote does not travel to other networks — the
+outgoing FEP-044f properties and the self-issued `QuoteAuthorization` belong
+with the fediverse phases (issues #1608/#1609/#1611), see
+[fediverse.md](fediverse.md).
 
 ## Post images
 

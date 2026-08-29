@@ -44,6 +44,10 @@ defmodule Vutuv.Webhooks do
     "endorsement.created" => "social:read",
     "post.liked" => "posts:read",
     "post.replied" => "posts:read",
+    # Somebody quoted the member's post (issue #1610). Its own topic rather
+    # than a shape of `post.replied`: a quote opens no thread, so an integrator
+    # that goes looking for the answer would find none.
+    "post.quoted" => "posts:read",
     "message.created" => "messages:read",
     # The poster's own event, so it rides on their `jobs:read` grant. Unlike
     # every other topic this payload carries the posting's public structured

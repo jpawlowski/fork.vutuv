@@ -336,6 +336,17 @@ defmodule Vutuv.Factory do
     }
   end
 
+  # The sidecar that makes a post a quote of another (issue #1610), the twin of
+  # `post_reply_factory/0`. Inserted directly, without the gates and broadcasts
+  # of `Vutuv.Posts.create_quote/3`, for tests that only need the row.
+  def post_quote_factory do
+    %Vutuv.Posts.PostQuote{
+      post: build(:post),
+      quoted_post: build(:post),
+      quoted_author: build(:user)
+    }
+  end
+
   def post_reply_factory do
     %Vutuv.Posts.PostReply{
       post: build(:post),

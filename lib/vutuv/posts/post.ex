@@ -94,6 +94,12 @@ defmodule Vutuv.Posts.Post do
     # own copy of the delivery target so it outlives the cached remote note.
     has_one(:remote_reply_ref, Vutuv.Posts.PostRemoteReply, foreign_key: :post_id)
 
+    # Present iff this post quotes another one (issue #1610) — deliberately its
+    # own sidecar rather than a flag on `reply_ref`, because a quote is not a
+    # reply: no thread, no reply count, no thread notification. Survives the
+    # quoted post's deletion (see PostQuote).
+    has_one(:quote_ref, Vutuv.Posts.PostQuote, foreign_key: :post_id)
+
     has_many(:denials, Vutuv.Posts.PostDenial, on_replace: :delete)
     has_many(:images, Vutuv.Posts.PostImage, preload_order: [asc: :position])
 

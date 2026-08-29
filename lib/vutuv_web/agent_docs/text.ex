@@ -104,6 +104,7 @@ defmodule VutuvWeb.AgentDocs.Text do
       heading("#{gettext("Post by %{name}", name: doc.author.name)} · #{doc.published_on}"),
       doc.in_reply_to && in_reply_to_line(doc.in_reply_to),
       doc.body_markdown,
+      doc[:quote_of] && quote_of_line(doc.quote_of),
       Markdown.verified_links_line(doc),
       Markdown.review_line(doc.review),
       tags_line(doc.tags),
@@ -771,6 +772,23 @@ defmodule VutuvWeb.AgentDocs.Text do
 
   defp in_reply_to_line(%{url: url, author: author}),
     do: gettext("In reply to a post by %{name}.", name: author) <> " #{url}"
+
+  # The plain-text twin of the Markdown renderer's quoted-post block: the same
+  # four states, the link spelled out rather than wrapped in Markdown.
+  defp quote_of_line(%{state: "post"} = quote_of) do
+    head = gettext("Quoting a post by %{name}.", name: quote_of.author) <> " #{quote_of.url}"
+
+    case quote_of[:text] do
+      text when is_binary(text) and text != "" -> head <> "\n" <> text
+      _no_text -> head
+    end
+  end
+
+  defp quote_of_line(%{state: "unavailable"}), do: gettext("The quoted post is not available.")
+  defp quote_of_line(%{author: nil}), do: gettext("Quoting a deleted post.")
+
+  defp quote_of_line(%{author: author}),
+    do: gettext("Quoting a now-deleted post by %{name}.", name: author)
 
   defp tags_line([]), do: nil
   defp tags_line(tags), do: "Tags: " <> Enum.join(tags, ", ")

@@ -1,9 +1,10 @@
 defmodule VutuvWeb.PostLive.Composer do
   @moduledoc """
-  The post composer, used by the feed (new posts), the edit page and the
+  The post composer, used by the feed (new posts), the edit page, the
   reply page (pass `parent` to create the post as a reply via
   `Vutuv.Posts.create_reply/3`, and `initial_body` to open it with text
-  already in the editor).
+  already in the editor) and the quote page (pass `quoted` to create the post as
+  a quote via `Vutuv.Posts.create_quote/3`).
 
   **Images upload eagerly**: the moment a file is picked it is processed
   (`Vutuv.Posts.create_pending_image/3` — AVIF versions, private original)
@@ -89,6 +90,9 @@ defmodule VutuvWeb.PostLive.Composer do
           :acting_as,
           :post,
           :parent,
+          # The post this composer quotes (issue #1610) — a top-level post
+          # carrying somebody else's, never a reply.
+          :quoted,
           :remote_note,
           :remote_post,
           :initial_body,
@@ -111,6 +115,13 @@ defmodule VutuvWeb.PostLive.Composer do
     {:ok, socket}
   end
 
+  # A reposted, answered or quoted post has its audience pinned to public
+  # (`Posts.update_post/2` enforces it; the select disappears here). The list of
+  # what counts as carrying lives in `Vutuv.Posts` — asked, never restated, or
+  # the select would offer a narrowing the save then refuses.
+  defp audience_locked?(nil), do: false
+  defp audience_locked?(%Post{} = post), do: Posts.audience_locked?(post)
+
   defp init_composer(socket) do
     post = socket.assigns[:post]
     {preset, wildcards, denied_users} = derive_audience(post)
@@ -119,6 +130,7 @@ defmodule VutuvWeb.PostLive.Composer do
     socket
     |> assign(:composer_ready?, true)
     |> assign_new(:parent, fn -> nil end)
+    |> assign_new(:quoted, fn -> nil end)
     # Set when this composer answers a reply from another network (issue #1070);
     # it then saves through Posts.create_remote_reply/3 instead.
     |> assign_new(:remote_note, fn -> nil end)
@@ -126,13 +138,7 @@ defmodule VutuvWeb.PostLive.Composer do
     # (issue #1165): Posts.create_remote_post_reply/3, a top-level post rather
     # than a reply.
     |> assign_new(:remote_post, fn -> nil end)
-    # Reposted or answered posts carry other people's shares and replies:
-    # the audience is pinned to public (Posts.update_post/2 enforces it; the
-    # select disappears).
-    |> assign(
-      :audience_locked?,
-      post != nil and (Posts.has_reposts?(post) or Posts.has_replies?(post))
-    )
+    |> assign(:audience_locked?, audience_locked?(post))
     # `initial_body` opens the composer with text already in it — the reply
     # page seeds a Markdown blockquote when the reader marked part of the post
     # before pressing Reply (issue #1114). An edited post's own body wins.
@@ -217,7 +223,13 @@ defmodule VutuvWeb.PostLive.Composer do
   # The edit page is deliberately draft-free: its composer opens full of a
   # *published* post, and silently restoring a weeks-old unsaved edit over text
   # other people have already read is a different promise from keeping a draft.
-  defp draftable?(assigns), do: assigns[:post] == nil and assigns[:remote_post] == nil
+  # A quote is draft-free for the same reason the answer-to-a-followed-post
+  # composer is: a draft belongs to a composer context, and the quoted post has
+  # no column of its own on `post_drafts` (adding one is an expand/contract pair
+  # of deploys — see `Vutuv.Posts.PostDraft`). Without this it would autosave
+  # into the feed composer's row and overwrite the draft on /feed.
+  defp draftable?(assigns),
+    do: assigns[:post] == nil and assigns[:remote_post] == nil and assigns[:quoted] == nil
 
   # Which composer this is, in the terms `Vutuv.Posts` keys drafts by. The
   # answer-to-a-followed-post composer (issue #1165) is deliberately absent: it
@@ -949,7 +961,7 @@ defmodule VutuvWeb.PostLive.Composer do
   # `close-composer` and a click therefore kills the LiveView.
   defp feed_composer?(assigns) do
     is_nil(assigns.post) and is_nil(assigns.parent) and is_nil(assigns.remote_note) and
-      is_nil(assigns.remote_post)
+      is_nil(assigns.remote_post) and is_nil(assigns.quoted)
   end
 
   # Answering a reply from another network goes through its own context function:
@@ -966,6 +978,12 @@ defmodule VutuvWeb.PostLive.Composer do
 
   defp save_post(%{post: nil, parent: %Post{} = parent, current_user: author}, attrs),
     do: Posts.create_reply(author, parent, attrs)
+
+  # Quoting a post (issue #1610): a top-level post carrying another one, so it
+  # is neither a reply nor an ordinary post and gets its own context function,
+  # which holds the quote gate and writes the sidecar.
+  defp save_post(%{post: nil, quoted: %Post{} = quoted, current_user: author}, attrs),
+    do: Posts.create_quote(author, quoted, attrs)
 
   # Writing as an organization (issue #1335). Below the reply clauses on
   # purpose: a reply is always personal, because an organization cannot answer
@@ -992,9 +1010,11 @@ defmodule VutuvWeb.PostLive.Composer do
       socket.assigns.post ->
         {:noreply, push_navigate(socket, to: Posts.path(post))}
 
-      socket.assigns[:remote_note] || socket.assigns[:remote_post] ->
+      socket.assigns[:quoted] || socket.assigns[:remote_note] || socket.assigns[:remote_post] ->
         # An answer to a remote reply has no `parent` assign of its own, so its
-        # own permalink is the way back into that conversation.
+        # own permalink is the way back into that conversation — and a quote
+        # goes to its own permalink too: it starts no conversation to return
+        # to, and what it carries is on the card there anyway.
         {:noreply, push_navigate(socket, to: Posts.path(post))}
 
       socket.assigns.parent ->
@@ -1013,8 +1033,18 @@ defmodule VutuvWeb.PostLive.Composer do
   end
 
   defp handle_save_result({:error, reason}, socket) do
-    {:noreply, assign(socket, :error, save_error_message(reason))}
+    {:noreply, assign(socket, :error, refusal_message(reason, socket.assigns))}
   end
+
+  # `Vutuv.Posts` refuses a quote with the same two reasons it refuses a reply
+  # with (`:restricted` / `:not_visible`, which is also how a quiet block reads,
+  # deliberately), so the word the member sees comes from which composer this
+  # is. Saying "reply" on the quote page would send them looking for an answer
+  # box that is not there.
+  defp refusal_message(reason, %{quoted: %Post{}}) when reason in [:restricted, :not_visible],
+    do: gettext("You can no longer quote this post.")
+
+  defp refusal_message(reason, _assigns), do: save_error_message(reason)
 
   # Back to an empty form: after a successful post, and after "Discard draft".
   # The audience choice sticks on purpose. The stored draft is dropped by the
@@ -1041,12 +1071,15 @@ defmodule VutuvWeb.PostLive.Composer do
   defp save_error_message(:invalid_denials), do: gettext("The audience selection is not valid.")
 
   defp save_error_message(:visibility_locked),
-    do: gettext("The audience cannot be restricted while reposts or replies exist.")
+    do: gettext("The audience cannot be restricted while reposts, replies or quotes exist.")
 
   # The edit window can close while the form sits open — a like arrives, or the
   # 30 minutes run out mid-edit (issue #1023).
   defp save_error_message(:edit_engaged),
-    do: gettext("This post can no longer be edited: someone has liked, reposted or answered it.")
+    do:
+      gettext(
+        "This post can no longer be edited: someone has liked, reposted, answered or quoted it."
+      )
 
   defp save_error_message(:edit_window_closed) do
     gettext(
@@ -1844,7 +1877,7 @@ defmodule VutuvWeb.PostLive.Composer do
                   if(@acting_as,
                     do: gettext("A post in an organization's name is always public."),
                     else:
-                      gettext("The audience cannot be restricted while reposts or replies exist.")
+                      gettext("The audience cannot be restricted while reposts, replies or quotes exist.")
                   )
                 }
                 class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400"
@@ -1983,7 +2016,7 @@ defmodule VutuvWeb.PostLive.Composer do
 
           <p :if={@audience_locked?} class="mt-1 text-xs text-slate-600 dark:text-slate-400" id={"#{@id}-audience-lock-hint"}>
             {gettext(
-              "This post has been reposted or answered. Its audience stays public while reposts or replies exist; you can still delete the post."
+              "This post has been reposted, answered or quoted. Its audience stays public while any of those exist; you can still delete the post."
             )}
           </p>
 

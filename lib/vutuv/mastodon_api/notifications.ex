@@ -28,6 +28,14 @@ defmodule Vutuv.MastodonApi.Notifications do
 
   # A reply and a thread answer both arrive as `mention`, which is the type
   # Mastodon uses for "somebody wrote to you"; it has no separate reply type.
+  #
+  # **`"quote"` is deliberately absent** (issue #1610). Mastodon does have a
+  # `quote` notification type, but what it names is a *federated* quote — one
+  # carrying the FEP-044f authorization the quoted server issued. vutuv's quotes
+  # are local-only for now (nothing in `Vutuv.Fediverse` writes or reads a
+  # `quote` property yet, see issues #1608/#1609/#1611), so a client shown that
+  # type would go looking for a quoted status it can neither fetch nor verify.
+  # It joins this table when the quote itself starts travelling.
   @types %{
     "mention" => "mention",
     "reply" => "mention",

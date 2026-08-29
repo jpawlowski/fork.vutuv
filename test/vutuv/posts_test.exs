@@ -1893,10 +1893,10 @@ defmodule Vutuv.PostsTest do
       assert {:error, :not_visible} = Posts.create_reply(replier, parent, %{body: "y"})
     end
 
-    test "answerable_by?/2 refuses what the submit gate refuses, save a block (issue #1797)" do
+    test "carryable_by?/2 refuses what the submit gate refuses, save a block (issue #1797)" do
       # The point of the shared predicate: every arm the compose page can ask
       # is an arm the submit gate asks too, so the two cannot answer
-      # differently. Drop an arm from `answerable_by?/2` and the matching pair
+      # differently. Drop an arm from `carryable_by?/2` and the matching pair
       # below goes red on its own.
       replier = user()
       author = user()
@@ -1905,12 +1905,12 @@ defmodule Vutuv.PostsTest do
       restricted =
         create_post!(author, %{body: "x", denials: [%{"wildcard" => "logged_out"}]})
 
-      refute Posts.answerable_by?(restricted, replier)
+      refute Posts.carryable_by?(restricted, replier)
       assert {:error, :restricted} = Posts.create_reply(replier, restricted, %{body: "y"})
 
       hidden = create_post!(author, %{body: "x", denials: [%{"denied_user_id" => replier.id}]})
 
-      refute Posts.answerable_by?(hidden, replier)
+      refute Posts.carryable_by?(hidden, replier)
       assert {:error, :not_visible} = Posts.create_reply(replier, hidden, %{body: "y"})
 
       # The fourth arm — a page's post while the page is not publicly visible —
@@ -1925,7 +1925,7 @@ defmodule Vutuv.PostsTest do
       blocked_parent = create_post!(blocker, %{body: "x"})
       {:ok, _} = Vutuv.Social.block_user(blocker, replier)
 
-      assert Posts.answerable_by?(blocked_parent, replier)
+      assert Posts.carryable_by?(blocked_parent, replier)
       assert {:error, :restricted} = Posts.create_reply(replier, blocked_parent, %{body: "y"})
     end
 
@@ -2602,6 +2602,32 @@ defmodule Vutuv.PostsTest do
       # its own author may still fix it.
       assert Posts.editable?(reply)
       assert {:ok, _} = Posts.update_post(reply, %{body: "me too, very much"})
+    end
+
+    test "a quote closes editing, even inside the window (issue #1610)" do
+      # The fourth way somebody else ends up standing behind these words, and
+      # the strongest of them: a reshare and a reply carry the post away or
+      # answer it, while a quote **reproduces** it, as a teaser card sitting
+      # inside a stranger's post under a comment its author cannot revise.
+      # It belongs beside its three siblings here rather than only in the
+      # quote suite, because this is where the next person widening the rule
+      # will look — and where its absence was invisible.
+      post = create_post!(user(), %{body: "I love kittens"})
+      {:ok, quote_post} = Posts.create_quote(user(), post, %{body: "so do I"})
+
+      refute Posts.editable?(post)
+      assert {:error, :edit_engaged} = Posts.update_post(post, %{body: "I hate kittens"})
+
+      # A plain body change, with no denials: this asserts the EDIT gate on its
+      # own. `check_visibility_lock/2` reads the same `audience_locked?/1` and
+      # would answer `{:error, :visibility_locked}` for an update carrying
+      # denials, so a test that narrows the audience in the same call cannot
+      # tell the two rules apart.
+
+      # The quote itself is a post like any other: nobody has carried it
+      # anywhere, so its own author may still fix it.
+      assert Posts.editable?(quote_post)
+      assert {:ok, _} = Posts.update_post(quote_post, %{body: "so do I, very much"})
     end
 
     test "a frozen post keeps its moderation edit round whatever its age or reach" do

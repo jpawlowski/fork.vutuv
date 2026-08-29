@@ -209,7 +209,7 @@ defmodule VutuvWeb.ApiV2.PostController do
 
   defp post_error(conn, :visibility_locked) do
     Problem.send_problem(conn, 409, "Audience locked",
-      detail: "While reposts or replies exist the audience cannot be restricted.",
+      detail: "While reposts, replies or quotes exist the audience cannot be restricted.",
       extra: %{reason: :visibility_locked}
     )
   end
@@ -225,7 +225,7 @@ defmodule VutuvWeb.ApiV2.PostController do
   defp post_error(conn, :edit_engaged) do
     Problem.send_problem(conn, 409, "Post already engaged",
       detail:
-        "Someone has liked, reposted or answered this post, so it can no longer be edited. Deleting is still possible.",
+        "Someone has liked, reposted, answered or quoted this post, so it can no longer be edited. Deleting is still possible.",
       extra: %{reason: :edit_engaged}
     )
   end

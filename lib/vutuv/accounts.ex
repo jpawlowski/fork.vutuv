@@ -966,7 +966,7 @@ defmodule Vutuv.Accounts do
       &Vutuv.Posts.broadcast_post_deleted(&1, post_targets.follower_ids)
     )
 
-    Enum.each(post_targets.reply_parent_ids, &Vutuv.Posts.broadcast_reply_count/1)
+    Enum.each(post_targets.counter_post_ids, &Vutuv.Posts.broadcast_post_counters/1)
 
     # Best effort, after the account is gone (advisory by protocol): tell the
     # member's Fediverse followers their actor is deleted so remote servers

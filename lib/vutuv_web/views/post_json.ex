@@ -35,6 +35,11 @@ defmodule VutuvWeb.PostJSON do
       images: Enum.map(images, &image/1),
       reply_count: Posts.reply_count(post.id),
       in_reply_to: in_reply_to(post),
+      # The post this one quotes and how often this one has been quoted (issue
+      # #1610) — the same two facts the HTML card and the agent formats carry,
+      # read from the same owners, so the three cannot disagree.
+      quote_count: Posts.quote_count(post.id),
+      quote_of: quote_of(post, viewer),
       audience: audience(post, viewer)
     }
   end
@@ -72,6 +77,35 @@ defmodule VutuvWeb.PostJSON do
        do: %{post_id: nil, url: ref.in_reply_to_uri, author: ref.handle, network: "fediverse"}
 
   defp remote_in_reply_to(_post), do: nil
+
+  # The quote reference, in the four states the card renders — resolved by
+  # `Posts.quoted_state/2`, which is also what decides whether this reader may
+  # be shown the quoted post at all (a frozen one, a hidden author, a block
+  # either way answer `:unavailable` rather than a body). `nil` when the post
+  # quotes nothing.
+  defp quote_of(post, viewer) do
+    case Posts.quoted_state(post, viewer) do
+      {:quoted, quoted} ->
+        %{
+          state: "post",
+          post_id: quoted.id,
+          url: VutuvWeb.Endpoint.url() <> Posts.path(quoted),
+          author: Vutuv.Identity.ref(Posts.author(quoted))
+        }
+
+      {:author_only, author} ->
+        %{state: "deleted", post_id: nil, url: nil, author: Vutuv.Identity.ref(author)}
+
+      :gone ->
+        %{state: "deleted", post_id: nil, url: nil, author: nil}
+
+      :unavailable ->
+        %{state: "unavailable", post_id: nil, url: nil, author: nil}
+
+      nil ->
+        nil
+    end
+  end
 
   # AI-moderation limbo filter: released for everyone, everything for the
   # author and admins (the proxy enforces the same rule on the bytes).

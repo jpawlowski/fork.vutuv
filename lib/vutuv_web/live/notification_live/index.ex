@@ -102,7 +102,7 @@ defmodule VutuvWeb.NotificationLive.Index do
   # when the two lists drift apart again.
   @filters %{
     "all" => nil,
-    "posts" => ~w(reply thread mention like fediverse_reply fediverse_reaction),
+    "posts" => ~w(reply thread quote mention like fediverse_reply fediverse_reaction),
     "people" => ~w(follower connection endorsement),
     "other" =>
       ~w(organization_role moderation image_rejected report_protection handle_change cv_update
@@ -560,7 +560,10 @@ defmodule VutuvWeb.NotificationLive.Index do
         the recipient's own post it answers. A thread event carries no post of
         the recipient's, so there only the reply quotes. --%>
         <div
-          :if={@group.kind in ["reply", "thread"] and (@n[:post_preview] || @n[:reply_preview])}
+          :if={
+            @group.kind in ["reply", "thread", "quote"] and
+              (@n[:post_preview] || @n[:reply_preview] || @n[:quote_preview])
+          }
           class="mt-1.5 space-y-1"
         >
           <.link
@@ -572,12 +575,17 @@ defmodule VutuvWeb.NotificationLive.Index do
             <span class="font-medium">{gettext("Your post")}:</span>
             <span class="line-clamp-1 whitespace-pre-line align-bottom">{@n.post_preview.text}</span>
           </.link>
+          <%!-- The answer itself, or — for a quote of the reader's post (issue
+          #1610) — the post carrying it. One row is never both, so one quote
+          renders whichever it has; only the marker tells them apart. --%>
+          <% carried = @n[:reply_preview] || @n[:quote_preview] %>
           <.quoted_post
-            :if={@n[:reply_preview]}
-            id={"quote-reply-#{@group.id}"}
-            data-reply-preview="true"
-            href={Posts.path(@n.reply_preview.post)}
-            html={@n.reply_preview.html}
+            :if={carried}
+            id={"quote-#{@group.kind}-#{@group.id}"}
+            data-reply-preview={@n[:reply_preview] && "true"}
+            data-quote-preview={@n[:quote_preview] && "true"}
+            href={Posts.path(carried.post)}
+            html={carried.html}
             quote_lines={@quote_lines}
           />
         </div>
@@ -1028,7 +1036,7 @@ defmodule VutuvWeb.NotificationLive.Index do
   # Event kinds that share the brand badge colour, so the class string lives
   # in one place.
   @brand_kind_classes "bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-100"
-  @brand_kinds ~w(follower reply thread mention connection report_protection organization_role handle_change cv_update fediverse_reply fediverse_reaction)
+  @brand_kinds ~w(follower reply thread quote mention connection report_protection organization_role handle_change cv_update fediverse_reply fediverse_reaction)
 
   defp kind_classes("endorsement"),
     do: "bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300"
@@ -1049,6 +1057,9 @@ defmodule VutuvWeb.NotificationLive.Index do
   defp kind_glyph("follower"), do: "+"
   defp kind_glyph("endorsement"), do: "★"
   defp kind_glyph("reply"), do: "↩"
+  # Somebody's post carries one of the reader's (issue #1610) — quotation marks,
+  # the same glyph the action bar's quote control wears.
+  defp kind_glyph("quote"), do: "❝"
   # A reply elsewhere in a thread the recipient writes in.
   defp kind_glyph("thread"), do: "⤷"
   # Being named by @handle. Shares the glyph with the (rare, "More"-tab)
@@ -1084,6 +1095,7 @@ defmodule VutuvWeb.NotificationLive.Index do
   defp kind_label("follower"), do: gettext("Follower")
   defp kind_label("endorsement"), do: gettext("Endorsement")
   defp kind_label("reply"), do: gettext("Reply")
+  defp kind_label("quote"), do: gettext("Quote")
   defp kind_label("thread"), do: gettext("Thread reply")
   defp kind_label("mention"), do: gettext("Mention")
   defp kind_label("like"), do: gettext("Like")
@@ -1174,7 +1186,13 @@ defmodule VutuvWeb.NotificationLive.Index do
   defp with_post_previews(entries, viewer) do
     posts =
       entries
-      |> Enum.flat_map(&[&1[:post_id], &1[:reply_post_id] | List.wrap(&1[:post_ids])])
+      |> Enum.flat_map(
+        &[
+          &1[:post_id],
+          &1[:reply_post_id],
+          &1[:quote_post_id] | List.wrap(&1[:post_ids])
+        ]
+      )
       |> then(&Posts.visible_posts_by_ids(viewer, &1))
 
     lines = User.notification_post_lines(viewer)
@@ -1183,6 +1201,9 @@ defmodule VutuvWeb.NotificationLive.Index do
       entry
       |> put_preview(:post_preview, entry[:post_id], posts, lines, quoted_form(entry))
       |> put_preview(:reply_preview, entry[:reply_post_id], posts, lines, :html)
+      # The post that carries a quote of the reader's (issue #1610) — the same
+      # formatted quote a reply gets, since it is the thing worth reading.
+      |> put_preview(:quote_preview, entry[:quote_post_id], posts, lines, :html)
       |> put_change_previews(posts, lines)
     end)
   end
@@ -1192,7 +1213,7 @@ defmodule VutuvWeb.NotificationLive.Index do
   # other quoted post is rendered formatted. Deciding here (rather than building
   # both forms) keeps a page of 50 rows off the Markdown renderer's DB lookups
   # for bodies nothing will show formatted.
-  defp quoted_form(%{kind: "reply"}), do: :text
+  defp quoted_form(%{kind: kind}) when kind in ["reply", "quote"], do: :text
   defp quoted_form(_entry), do: :html
 
   # A handle-change entry links the recipient's own posts that were rewritten:

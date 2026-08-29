@@ -98,6 +98,9 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       # reuse a picture should not have to parse a translated sentence.
       license: license_entry(post),
       in_reply_to: in_reply_to(post),
+      # The post this one quotes (issue #1610) — what the HTML card carries
+      # inside it, so the agent formats say it too. nil when nothing is quoted.
+      quote_of: quote_of(post),
       # Every reply the page counts, from both worlds — literally the figure the
       # HTML reply button shows, taken from the same `shown_counts/1` two lines
       # up rather than re-derived.
@@ -134,6 +137,9 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       # `build/3` also serves.
       likers: Enum.map(Posts.post_likers(post.id), &Vutuv.Identity.ref/1),
       repost_count: counts.reposts,
+      # How often this post has been quoted (issue #1610) — the figure the HTML
+      # action bar prints beside its quote control, filtered the same way.
+      quote_count: engagement.quotes,
       bookmark_count: engagement.bookmarks,
       # ...and the breakdown the card's "from other networks" panel shows when
       # you open it, so a machine can tell the two worlds apart again: how many
@@ -207,6 +213,11 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       # `.name` off either ref shape, JSON/XML carry the map as is.
       likers: Enum.map(Posts.post_likers(post.id), &Vutuv.Identity.ref/1),
       repost_count: counts.reposts,
+      # A page's post can be quoted, so the figure is real — but it can never
+      # *be* a quote itself (only `create_quote/3` writes the sidecar, and it
+      # always builds a member's post), so there is no `quote_of` here, exactly
+      # as there is no `in_reply_to` a few fields up.
+      quote_count: engagement.quotes,
       bookmark_count: engagement.bookmarks,
       fediverse_like_count: engagement.fediverse_likes,
       fediverse_repost_count: engagement.fediverse_reposts,
@@ -509,6 +520,49 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
 
   defp absolutize("/" <> _ = path), do: AgentDocs.abs_url(path)
   defp absolutize(url), do: url
+
+  # The post a quote carries (issue #1610), in the four states the HTML card
+  # renders — resolved by `Posts.quoted_state/2`, the one owner of that
+  # question, so the card and this document cannot disagree about what a reader
+  # is shown. **Anonymous**, like the whole document: the extension URLs are
+  # cache-shared and `build/3` also serves the authenticated `/api/2.0`, so a
+  # quoted post nobody logged out may read is withheld from every reader of it.
+  #
+  # `state` is what tells a reader of the document apart what the page tells
+  # them apart in words: a quoted post that is still there, one whose author
+  # deleted it, one whose author is gone too, and one that exists but is closed
+  # to the public. Without it "deleted" and "withheld" would be the same empty
+  # map.
+  #
+  # `UserHelpers.author_name/1` throughout, never `full_name/1`: the thing
+  # quoted may have been published in a page's name (issue #1336), which
+  # `full_name/1` has no clause for — a 500 on the `.md` sibling of every quote
+  # of one, where the HTML card renders fine.
+  defp quote_of(post) do
+    case Posts.quoted_state(post, nil) do
+      {:quoted, quoted} ->
+        %{
+          state: "post",
+          url: AgentDocs.abs_url(Posts.path(quoted)),
+          author: UserHelpers.author_name(quoted),
+          # The same teaser the compact card shows, so the two say the same
+          # thing about a post whose body runs long.
+          text: PostTeaser.plain_line(quoted, length: PostTeaser.quoted_length())
+        }
+
+      {:author_only, author} ->
+        %{state: "deleted", url: nil, author: UserHelpers.author_name(author), text: nil}
+
+      :gone ->
+        %{state: "deleted", url: nil, author: nil, text: nil}
+
+      :unavailable ->
+        %{state: "unavailable", url: nil, author: nil, text: nil}
+
+      nil ->
+        nil
+    end
+  end
 
   defp in_reply_to(post) do
     case Posts.reply_ref_state(post) do

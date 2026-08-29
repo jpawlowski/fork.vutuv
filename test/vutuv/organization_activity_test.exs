@@ -101,6 +101,29 @@ defmodule Vutuv.OrganizationActivityTest do
     assert Organizations.unread_activity_count(organization) >= 2
   end
 
+  # A quote of a page's post (issue #1610) reaches the page the same derived way
+  # an answer does: `post_quotes.quoted_organization_id` beside the member-shaped
+  # `quoted_author_id`, so nothing is written twice and the entry disappears with
+  # the row. Without the page-shaped half the team would never learn their post
+  # had been quoted — the exact silence the nullable-pair model produced twice
+  # before (issues #1334/#1336).
+  test "a quote of the page's post reaches its activity list" do
+    {organization, owner} = publishing_organization()
+    {:ok, post} = Posts.create_organization_post(organization, owner, %{body: "Unser Beitrag."})
+
+    quoter = insert(:activated_user)
+    {:ok, quote_post} = Posts.create_quote(quoter, post, %{body: "Lest das."})
+
+    %{entries: entries} = Organizations.activity_page(organization)
+    entry = Enum.find(entries, &(&1.kind == "quote"))
+
+    assert entry, "a quote of the page's post never reached the list"
+    assert entry.actor.id == quoter.id
+    # The quoting post, not the page's own: the team wants to read what was
+    # written about them, and the card carries their post inside it anyway.
+    assert entry.post.id == quote_post.id
+  end
+
   test "a post naming the page by its handle reaches its activity, and an edit undoes it" do
     {organization, owner} = active_organization()
     {:ok, organization} = Organizations.claim_handle(organization, %{"username" => "genanntag"})

@@ -38,6 +38,7 @@ defmodule Vutuv.Organizations do
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostLike
   alias Vutuv.Posts.PostMention
+  alias Vutuv.Posts.PostQuote
   alias Vutuv.Posts.PostReply
   alias Vutuv.Posts.PostRepost
   alias Vutuv.Profiles.WorkExperience
@@ -468,9 +469,10 @@ defmodule Vutuv.Organizations do
   One page of `organization`'s activity, newest first, in the
   `%{entries:, more?:}` shape. Each entry is
   `%{id:, kind:, at:, actor:, post: }` — `kind` one of `"follow"`,
-  `"post_like"`, `"post_repost"`, `"mention"`, `"reply"`; `post` nil on a follow,
-  and on a `"reply"` it is the **answer** (what the team wants to read), not the
-  post of the page's that was answered.
+  `"post_like"`, `"post_repost"`, `"mention"`, `"reply"`, `"quote"`; `post` nil
+  on a follow, and on a `"reply"` / `"quote"` it is the **answer** resp. the
+  quoting post (what the team wants to read), not the post of the page's that was
+  answered or quoted.
   """
   def activity_page(%Organization{} = organization, opts \\ []) do
     limit = Keyword.get(opts, :limit, @activity_per_page)
@@ -483,7 +485,8 @@ defmodule Vutuv.Organizations do
           &activity_post_engagement(organization, PostLike, "post_like", &1, &2),
           &activity_post_engagement(organization, PostRepost, "post_repost", &1, &2),
           &activity_mentions(organization, &1, &2),
-          &activity_replies(organization, &1, &2)
+          &activity_carried(organization, PostReply, :parent_organization_id, "reply", &1, &2),
+          &activity_carried(organization, PostQuote, :quoted_organization_id, "quote", &1, &2)
         ],
         limit,
         offset
@@ -603,30 +606,36 @@ defmodule Vutuv.Organizations do
     end)
   end
 
-  # Somebody answered one of the page's posts (issue #1336). This is the source
-  # that receives a reply, and its existence is what made answering a page's post
-  # allowed at all: `Vutuv.Posts.broadcast_reply/2` writes no notification for a
-  # page, because there is no member to address and a row written per publisher
-  # would contradict the one shared read marker.
+  # Somebody answered one of the page's posts (issue #1336), or quoted one
+  # (issue #1610). This is the source that receives a reply, and its existence is
+  # what made answering a page's post allowed at all: `Vutuv.Posts` writes no
+  # notification for a page, because there is no member to address and a row
+  # written per publisher would contradict the one shared read marker. A quote
+  # reaches the team the same derived way, off its own sidecar.
   #
-  # Read off `post_replies.parent_organization_id`, the page-shaped half of the
-  # pair `Vutuv.Activity` reads as `parent_author_id` for a member — deliberately
-  # not by joining the answered post, which nilifies away when the page deletes
-  # it: "somebody answered you" stays news even then, exactly as it does for a
-  # member.
+  # Read off `post_replies.parent_organization_id` resp.
+  # `post_quotes.quoted_organization_id`, the page-shaped half of the pair
+  # `Vutuv.Activity` reads as `parent_author_id` / `quoted_author_id` for a
+  # member — deliberately not by joining the post that was answered or quoted,
+  # which nilifies away when the page deletes it: "somebody answered you" stays
+  # news even then, exactly as it does for a member.
   #
-  # `post` is the **answer**: the team wants to read what was written, and the
-  # post of theirs it hangs under is one click further on (the answer's card
-  # carries its own "Replying to …" line). The reply's author is always a member,
-  # so the join to `users` is an inner one by nature rather than by oversight — a
-  # page cannot answer anything.
-  defp activity_replies(%Organization{id: id}, fetch_n, _cursor) do
-    from(r in PostReply,
+  # `post` is the **answer**, resp. the **quoting post**: the team wants to read
+  # what was written, and the post of theirs it hangs under is one click further
+  # on (the card carries its own "Replying to …" line, or the quoted post inside
+  # it). Its author is always a member — a page can neither answer nor quote —
+  # so the join to `users` is an inner one by nature rather than by oversight.
+  #
+  # One function for both, like `activity_post_engagement/5` below: the two
+  # tables are the same shape and the only differences are the schema, the
+  # page-shaped column and the word.
+  defp activity_carried(%Organization{id: id}, schema, field, kind, fetch_n, _cursor) do
+    from(r in schema,
       join: p in Post,
       on: p.id == r.post_id,
       join: u in User,
       on: u.id == p.user_id,
-      where: r.parent_organization_id == ^id,
+      where: field(r, ^field) == ^id,
       where: account_confirmed_row(u) and not account_hidden_row(u),
       where: not p.images_pending? and is_nil(p.frozen_at),
       order_by: [desc: r.inserted_at, desc: r.id],
@@ -635,11 +644,10 @@ defmodule Vutuv.Organizations do
     )
     |> Repo.all()
     |> Enum.map(fn {row_id, at, actor, post} ->
-      # Same reason as the mentions above: `Vutuv.Posts.path/1` reads the
-      # preloaded author, and here the actor IS that author (the join is on
-      # `p.user_id`), so no query and no `preload:`.
+      # `Vutuv.Posts.path/1` reads the preloaded author, and here the actor IS
+      # that author (the join is on `p.user_id`), so no query and no `preload:`.
       post = %{post | user: actor}
-      %{id: "reply-#{row_id}", kind: "reply", at: at, actor: actor, post: post}
+      %{id: "#{kind}-#{row_id}", kind: kind, at: at, actor: actor, post: post}
     end)
   end
 

@@ -554,6 +554,14 @@ defmodule Vutuv.MastodonApi.Presenter do
     )
   end
 
+  # **No `quote` key** (issue #1610), and the same reason its twin is missing from
+  # `Vutuv.MastodonApi.Notifications`' type table: what Mastodon's status `quote`
+  # names is a *federated* quote — one carrying the FEP-044f authorization the
+  # quoted server issued — and vutuv's quotes are local-only for now (nothing in
+  # `Vutuv.Fediverse` writes or reads the property yet, see #1608/#1609/#1611).
+  # A client shown the key would go looking for a quoted status it can neither
+  # fetch nor verify. It joins these keys when the quote itself starts
+  # travelling; until then a quote presents as the ordinary post it is here.
   defp base_status(fields) do
     Map.merge(
       %{

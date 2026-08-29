@@ -43,6 +43,9 @@ defmodule VutuvWeb.NotificationDigestText do
   def line(%{kind: "reply"} = item),
     do: gettext("%{who} replied to your post.", who: handle(item))
 
+  def line(%{kind: "quote"} = item),
+    do: gettext("%{who} quoted your post.", who: handle(item))
+
   def line(%{kind: "thread"} = item),
     do: gettext("%{who} answered in a conversation you are part of.", who: handle(item))
 
