@@ -13,10 +13,19 @@ defmodule Vutuv.RemoteHtml do
     * `<br>` and `</p>` become the line breaks that carried the meaning,
     * every remaining tag is stripped (`HtmlSanitizeEx.strip_tags/1`), so there
       is no allowlist to get wrong and nothing to render `raw`,
-    * the base entities are decoded exactly **once**,
+    * HTML entities are decoded exactly **once** (`decode_entities/1`),
     * the sending server's own **custom-emoji shortcodes** go out with it
       (`strip_shortcodes/1`), and
     * the result is clamped, so one hostile delivery cannot park a novel.
+
+  **One consequence of that decode worth knowing before you read this text:**
+  `&nbsp;` resolves to a real U+00A0, where the six-replacement chain it
+  replaced produced an ASCII space — a stored body now keeps the non-breaking
+  space its author wrote. Everything downstream already copes: `String.trim/1`
+  counts it as whitespace, the `\\s` in `Vutuv.SocialFeed.Post.truncate/2` and
+  in `Vutuv.LinkSummary`'s squash both match it because both carry `/u`, and
+  post search is Postgres full-text, which splits on it. A new reader reaching
+  for a byte-mode `\\s` would not — that is the trap.
 
   The script/style pass matters because `strip_tags/1` removes the *tags* and
   keeps the *text between them*: without it `<script>alert(1)</script>Hallo`
@@ -24,6 +33,14 @@ defmodule Vutuv.RemoteHtml do
   output is escaped again on the way to the page), but it let a remote server
   push arbitrary invisible text into a member's profile feed, and it would have
   put the same junk into a stored reply.
+
+  It also owns the two small pieces every reader of a stranger's markup needs and
+  nobody should own a second copy of (issue #1741): `tag_attributes/1`, the
+  attribute-quoting grammar for the callers that read a stranger's tags without
+  parsing the HTML around them (`Vutuv.OpenGraph`'s `<meta>` scan,
+  `Vutuv.WebVerification`'s `rel=me` scan), and `decode_entities/1`, which
+  `Vutuv.OpenGraph` needs for the same values — the same "one place, one rule"
+  reason as the text reduction below.
 
   What comes out is plain text that HEEx escapes again on the way to the page,
   and that the agent-format siblings can carry unchanged. Links survive as bare
@@ -87,6 +104,7 @@ defmodule Vutuv.RemoteHtml do
     |> String.replace(~r{<br\s*/?>}i, "\n")
     |> String.replace(~r{</p>}i, "\n\n")
     |> HtmlSanitizeEx.strip_tags()
+    |> scrub_nul()
     |> decode_entities()
     |> String.trim()
     |> strip_shortcodes()
@@ -95,6 +113,9 @@ defmodule Vutuv.RemoteHtml do
   end
 
   def to_text(_html, _max, _tags), do: ""
+
+  # `name="value"` / `name='value'` / `name=value`, any order, any case.
+  @attribute_regex ~r/([a-zA-Z0-9_:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/
 
   @doc """
   `text` — already plain, not HTML — with its custom-emoji shortcodes taken out
@@ -141,17 +162,121 @@ defmodule Vutuv.RemoteHtml do
   defp clamp(text, nil), do: Post.truncate(text)
   defp clamp(text, max), do: Post.truncate(text, max)
 
-  # strip_tags/1 returns text with the base named entities still escaped (the
-  # numeric ones it decodes itself); undo them exactly once. `&amp;` must come
-  # last so a literal "&amp;amp;" cannot double-unescape.
-  defp decode_entities(text) do
-    text
-    |> String.replace("&lt;", "<")
-    |> String.replace("&gt;", ">")
-    |> String.replace("&quot;", "\"")
-    |> String.replace("&#39;", "'")
-    |> String.replace("&nbsp;", " ")
-    |> String.replace("&amp;", "&")
+  @doc """
+  Removes NUL bytes from text taken off a remote server.
+
+  A NUL is valid UTF-8 and Postgres refuses it (`22021
+  character_not_in_repertoire`), so one in here is not a display problem, it is
+  a raise on `Repo.insert` — and this text is stored: `Vutuv.Fediverse`'s
+  `remote_text/3` writes it into a delivered post's body, so any federating
+  server can reach that by putting `&#0;` in a Note.
+
+  **Its own step, and not part of `decode_entities/1`**, where the same guard
+  already lives (`entity_text/2` refuses to build a NUL). That guard cannot
+  help, because a NUL arrives by two routes that both bypass it:
+  `strip_tags/1` decodes numeric entities **itself**, so `&#0;` is already a
+  raw byte by the time the decoder runs, and a `<meta content>` or `<title>`
+  can simply contain the byte, which is not an entity at all. A guard the
+  pipeline steps around is not a guard.
+
+  **Public, and that is the point.** `Vutuv.OpenGraph.normalise/2` is the
+  second door into the same column — its output lands in
+  `Screenshots.mark_ready/2`'s `{:ok, _} = Repo.update()`, which on a raise
+  leaves the job `capturing` for `resume_stuck/0` to hand back *without*
+  counting an attempt, i.e. the unbounded retry loop `result_changeset/2`
+  exists to avoid. Leaving this private would have made every caller that needs
+  it write its own, which is the shape issue #1741 was about.
+
+  It does **not** cover every path from a stranger's bytes to a text column —
+  a remote actor's `preferred_username` and `name`, and a YouTube oEmbed title,
+  still reach `Repo` unscrubbed. That belongs at the changeset layer; see the
+  follow-up issue.
+  """
+  def scrub_nul(text) when is_binary(text), do: String.replace(text, <<0>>, "")
+
+  @entity_regex ~r/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z][a-zA-Z0-9]*);/
+
+  @doc """
+  The HTML entities in a fragment of a stranger's markup, resolved to the text
+  they stand for. An entity nothing knows is left standing rather than
+  swallowed.
+
+  Here rather than in each caller, for the reason `tag_attributes/1` is here
+  (issue #1741): every module in this stack reads somebody else's markup and
+  every one of them meets `&rsquo;`. `to_text/3` needs it because
+  `HtmlSanitizeEx.strip_tags/1` hands back text with named entities still
+  escaped, and `Vutuv.OpenGraph` needs it because a `content` attribute and a
+  `<title>` are entity-encoded — without it a card headline reads
+  `Bild &amp; Ton`, and an `&amp;` inside an `og:image` URL breaks the fetch.
+
+  **One pass, not a chain of replacements.** A chain has to decode `&amp;`
+  LAST or a literal `&amp;amp;` unescapes twice, and that ordering is a rule
+  somebody has to keep obeying — it lived in a comment above the version this
+  replaced. A single pass cannot double-decode at all, because `Regex.replace/3`
+  does not re-scan what it has written.
+  """
+  def decode_entities(text) when is_binary(text) do
+    Regex.replace(@entity_regex, text, fn whole, body -> entity(body, whole) end)
+  end
+
+  # `:mochiweb_charref` is the full HTML5 table, and it already ships here —
+  # `:html_sanitize_ex` depends on it and `strip_tags/1` above leans on it. It
+  # answers all three spellings the regex captures (`rsquo`, `#8217`, `#x2019`)
+  # and `:undefined` for anything it does not know.
+  #
+  # The two versions this replaced were a six-entry table typed out by hand and
+  # a slightly longer one beside it, and the hand-typed version is what shipped
+  # `Google&rsquo;s new phone` into a card headline: six entries where the web
+  # has two thousand. Extending it by another forty names would only have moved
+  # the edge — `&frac12;`, `&sup2;`, `&eacute;` were all one page away from the
+  # same bug.
+  #
+  # Case matters and is not folded: `&Aacute;` is Á and `&aacute;` is á.
+  defp entity(body, whole) do
+    case :mochiweb_charref.charref(body) do
+      :undefined -> whole
+      codepoint -> entity_text(codepoint, whole)
+    end
+  end
+
+  # A lone surrogate is not a codepoint `<<n::utf8>>` can build (it raises), and
+  # neither is a number past the Unicode range: those stay text.
+  #
+  # **`0` is refused with them**, for the reason `scrub_nul/1` sets out above —
+  # here it stops `&#0;` in a linked page's `<title>` from raising inside
+  # `Screenshots.mark_ready/2` and leaving that job stuck `capturing`.
+  defp entity_text(number, _whole)
+       when is_integer(number) and (number in 1..0xD7FF or number in 0xE000..0x10FFFF),
+       do: <<number::utf8>>
+
+  # A few entities are two codepoints (`&NotEqualTilde;` is ≂ plus a combining
+  # slash); each half goes through the same guard.
+  defp entity_text(numbers, whole) when is_list(numbers) do
+    Enum.map_join(numbers, &entity_text(&1, whole))
+  end
+
+  defp entity_text(_number, whole), do: whole
+
+  @doc """
+  Every attribute of one HTML tag, as a map from the downcased attribute name to
+  its value — tolerating double, single and unquoted values in any order and
+  any case.
+
+  Here rather than in either caller because both read a stranger's markup
+  **without** parsing it (no HTML library is a dependency): `Vutuv.OpenGraph`
+  wants `property`/`name`/`content` off a `<meta>` tag and
+  `Vutuv.WebVerification` wants `rel`/`href` off an `<a>`/`<link>` one. Two
+  copies of the quoting grammar means a fix to one silently leaves the other
+  wrong, which is the whole reason this module exists for the text half.
+  """
+  def tag_attributes(tag) when is_binary(tag) do
+    @attribute_regex
+    |> Regex.scan(tag)
+    |> Enum.reduce(%{}, fn [_whole, name | values], acc ->
+      # The three value alternatives are mutually exclusive; the unmatched ones
+      # come back as "". First declaration of a name wins, as in a browser.
+      Map.put_new(acc, String.downcase(name), Enum.find(values, "", &(&1 != "")))
+    end)
   end
 
   defp expand_mentions(text, tags) do

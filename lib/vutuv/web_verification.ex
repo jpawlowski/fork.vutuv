@@ -27,6 +27,7 @@ defmodule Vutuv.WebVerification do
   require Logger
 
   alias Vutuv.Dns
+  alias Vutuv.RemoteHtml
   alias Vutuv.SocialFeed.Http
   alias Vutuv.Ssrf
 
@@ -286,14 +287,14 @@ defmodule Vutuv.WebVerification do
     end
   end
 
-  # Reads one HTML attribute value, tolerating double / single / unquoted forms
-  # and arbitrary attribute order. Returns nil when absent or empty.
+  # One HTML attribute value, or nil when absent or empty. The quoting grammar
+  # is `Vutuv.RemoteHtml.tag_attributes/1` — shared with the `<meta>` scan in
+  # `Vutuv.OpenGraph`, so a fix to it cannot leave one of the two behind. (It
+  # also stopped compiling a fresh regex per attribute per tag.)
   defp attr(tag, name) do
-    regex = ~r/\b#{name}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i
-
-    case Regex.run(regex, tag) do
-      nil -> nil
-      [_ | groups] -> Enum.find(groups, &(&1 not in [nil, ""]))
+    case RemoteHtml.tag_attributes(tag)[name] do
+      "" -> nil
+      value -> value
     end
   end
 

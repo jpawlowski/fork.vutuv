@@ -177,6 +177,8 @@ Everything else has a default (the vutuv.de production value):
 | `PRECOMPUTE_TRANSLATIONS` | `true` | Whether this installation also translates **its own posts** in the background, into every locale it serves, so a reader who taps Translate usually gets an instant cache hit instead of waiting for the model. Only takes effect with `TRANSLATE_POSTS=true`. It is deliberately the slowest thing on the box: at most 20 of its jobs are ever queued, every one of them ranks behind every reader's request, and it stands down completely while image moderation has a picture waiting. Set `false` to keep translation on demand only — worth doing if your Ollama has other work, or if it is a CPU-only instance |
 | `TAG_MERGE_ASSIST` | `true` | Whether the tag merge screen (`/admin/tag_merges`) may ask a local model which of its proposed tag pairs name one topic. It only ever **proposes**: an admin approves each merge and sees what it would move first. With this `false` (or Ollama unreachable) the queue still fills from the deterministic rules and is administered by hand, which is the air-gapped case. The one thing it costs: a pair found only because the two names share a word (`Linux` / `embedded linux`) is left out unless a model has vouched for it, since unjudged it is nearly always wrong |
 | `TAG_MERGE_ASSIST_MODEL` | `qwen3.5:9b` | The text model that judges those pairs. Pull it once (`ollama pull qwen3.5:9b`); it is asked one narrow question per pair and told to answer "different topics" whenever unsure |
+| `SUMMARIZE_LINKS` | `false` | `true` fills in a link preview's teaser for pages that publish none of their own — one sentence, at most 200 characters, written by a local Ollama text model from the **whole** page rather than from the part the screenshot shows. It is never asked about a page that declares an `og:description`: the publisher's own blurb wins, so this costs a model call only where the card would otherwise have no second line. Written after the preview is already stored and shown, once per capture, and never retried: with the flag off, no Ollama, or a page that answers nothing readable, the card simply shows its headline and picture. One answer gets 30 seconds, which is not a knob. Leave off on installations without an Ollama that can carry the model |
+| `LINK_SUMMARY_MODEL` | `qwen3.5:9b` | The text model that writes that sentence. Summarising is an easier job than translating, so the small model is enough; pull it once (`ollama pull qwen3.5:9b`) |
 | `DEFAULT_COUNTRY` | `DE` | ISO 3166-1 alpha-2 code that preselects country inputs (job postings, organization pages, employment references) |
 | `REFERENCE_CHECKS_ENABLED` | `true` | Whether members may have an uploaded Arbeitszeugnis reviewed by a text model. Off = they can still upload, attach and publish references; only the review disappears |
 | `REFERENCE_CHECK_MODEL` | `qwen3.6:27b` | The text model that performs the review. Pull it once (`ollama pull qwen3.6:27b`). A smaller model fits the prompt but grades German wording measurably worse |
@@ -201,11 +203,17 @@ A few rarely-changed switches are compile-time settings in
 and the Content-Signal headers), `:fetch_gravatar`, `:fetch_mastodon_posts`,
 `:fetch_bluesky_posts`, `:fetch_code_stats` (the profile "Code" card's
 GitHub/GitLab/Codeberg and self-hosted Gitea/Forgejo statistics), `:generate_screenshots` (profile link
-previews **and** the auto-screenshot for single-link posts, including cached
+previews **and** the automatic preview for single-link posts, including cached
 fediverse posts in the feed — admins watch the
 capture queue and browse the gallery at `/admin/screenshots`; a YouTube video
 link stores the video's published thumbnail instead of a capture, fetched
-server-side from YouTube under this same flag), and
+server-side from YouTube under this same flag), `:fetch_open_graph` (whether a
+post's link preview may read the linked page's own words — its `og:title` /
+`og:description` / `og:image`, and failing those its `<title>`. A link preview
+is one card either way; this flag decides how much of that card the page itself
+fills in. Off, the picture is always a Chromium capture and the card has no
+headline, so it falls back to the small floated screenshot beside the post,
+which is the behaviour before v7.383.0), and
 `:serve_uploads_locally` (see nginx below).
 
 ## systemd
@@ -433,8 +441,13 @@ vutuv runs fine without internet access:
   plain links, and a self-hosted address is taken at its word because the
   instance cannot be asked), and
   `:generate_screenshots` (profile link-preview screenshots **and** the
-  auto-screenshot for single-link posts — these fetch the linked page and run
-  headless Chromium).
+  automatic preview for single-link posts — these fetch the linked page and run
+  headless Chromium). That one flag also stops the Open Graph metadata fetch,
+  because it stops the whole preview queue; `:fetch_open_graph` is the finer
+  switch for an installation that *does* have internet access but would rather
+  photograph a page than repeat what its publisher says about it. Note that one
+  also turns off the page's `<title>`, so previews go back to the small floated
+  screenshot with no headline beside it.
 - Set `FETCH_BOOK_METADATA=false`: the cover fetch and the
   page-count/publisher lookup behind book-review posts call Open Library, and
   an audiobook's running time is read from a library catalogue (`DNB_SRU_URL`).

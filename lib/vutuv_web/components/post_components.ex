@@ -80,6 +80,26 @@ defmodule VutuvWeb.PostComponents do
   @square_ratio_min 0.8
   @square_ratio_max 1.25
 
+  # The link preview's landscape strip, shared by `link_preview_card/1` and the
+  # `link_preview_skeleton/1` that stands in for it while the fetch runs. One
+  # string because the placeholder's whole job is to be the shape the card
+  # fades into: written out twice, the two sat ninety lines and three doc
+  # blocks apart, so a height or radius tweak would silently apply to one of
+  # them and the composer would jump when the card landed after all.
+  # The link preview's landscape strip, shared by `link_preview_card/1` and the
+  # `link_preview_skeleton/1` that stands in for it while the fetch runs. One
+  # string because the placeholder's whole job is to be the shape the card fades
+  # into: written out twice, the two sat ninety lines and three doc blocks
+  # apart, so a height or radius tweak would silently apply to one of them and
+  # the composer would jump when the card landed after all.
+  defp link_strip_class,
+    do:
+      "flex h-20 items-center overflow-hidden rounded-xl bg-slate-50 ring-1 ring-slate-200 sm:h-28 dark:bg-slate-800/60 dark:ring-slate-800"
+
+  # The strip's picture cell: fixed width, full height, never shrinking. Also
+  # shared, and for the same reason.
+  defp link_strip_thumb_class, do: "h-full w-24 shrink-0 sm:w-40"
+
   attr(:post, :any, required: true, doc: "preloaded %Vutuv.Posts.Post{}")
   attr(:viewer, :any, default: nil)
 
@@ -277,7 +297,7 @@ defmodule VutuvWeb.PostComponents do
         :square_layout?,
         not inline_media? and square_layout?(post, gallery, assigns.mode)
       )
-      |> assign_link_screenshot(post, assigns.mode)
+      |> assign_link_preview(link_preview(post), assigns.mode)
       # The book/film review sidecar; nil for ordinary posts (and for nested
       # renderings whose preload chain didn't carry it).
       |> assign(:review, review_of(post))
@@ -2443,7 +2463,7 @@ defmodule VutuvWeb.PostComponents do
       |> assign(:body_style, post_body_style(User.post_prefs(assigns.viewer)))
       |> assign(:account, account)
       |> assign(:initials, name_initials(RemoteAccount.display_name(account) || account.handle))
-      |> assign_remote_link_screenshot(post, assigns.images)
+      |> assign_link_preview(remote_link_preview(post, assigns.images), :preview)
       |> assign(:permalink, remote_post_permalink(post, assigns.viewer))
       |> assign(:origin, RemotePost.origin(post))
 
@@ -2579,6 +2599,18 @@ defmodule VutuvWeb.PostComponents do
               />
             </:float>
           </.remote_body>
+
+          <%!-- The same card a member post gets, from the same component: a
+          reader deciding whether to follow a link should not have to learn two
+          layouts for it depending on which world the post came from. A warned
+          post never has one — the queue refuses it — so the card can never
+          prop open a lid its author closed. --%>
+          <.link_preview_card
+            :if={@link_card}
+            card={@link_card}
+            pixelated_url={@screenshot_pixelated}
+            class="mt-3"
+          />
 
           <.translation_line
             state={@translation.state}
@@ -3462,6 +3494,19 @@ defmodule VutuvWeb.PostComponents do
               aside={@review_aside?}
             />
           </div>
+
+          <%!-- The linked page's own preview card (issue #1706). Below the
+          body and the full width of it, because it carries text: the floated
+          third of a column that a bare screenshot lives in is fine for a
+          picture and unreadable for a headline. Both modes render it the same
+          way, so a single-link post looks like itself in the feed and on its
+          permalink. --%>
+          <.link_preview_card
+            :if={@link_card}
+            card={@link_card}
+            pixelated_url={@screenshot_pixelated}
+            class="mt-3"
+          />
 
           <%!-- AI-moderation limbo. The post itself is published from the
           moment it is written; only the picture waits. For every viewer but
@@ -4605,36 +4650,28 @@ defmodule VutuvWeb.PostComponents do
 
   defp square_image?(_), do: false
 
-  # The auto link screenshot to render beside/below a post: a ready
-  # %PostScreenshot{} when the post has no image attachments, else nil. The plain
-  # map patterns guard un-preloaded associations — a bare has_one/has_many is an
-  # %Ecto.Association.NotLoaded{}, which matches neither `[]` nor `%PostScreenshot{}`.
-  # The auto link screenshot (a ready %PostScreenshot{} for an image-less
-  # single-URL post, else nil), the pixelated preview standing in for it while
-  # the AI scan is out, and whether the preview lays it beside the text (3/4
-  # body, 1/4 screenshot). One helper because it is one question asked once —
-  # it used to be asked three times per card, each answer costing a clock read
-  # and a `File.exists?`.
-  defp assign_link_screenshot(card_assigns, post, mode) do
-    {screenshot, pixelated} = link_screenshot(post)
+  # `{row_or_nil, pixelated_url_or_nil}` — the link preview this card shows and,
+  # while the AI scan is still out on its picture, the blurred stand-in that
+  # takes its place (issue #1720). A held preview with no stand-in is no slot at
+  # all, which reads as "no preview" rather than as a hole. The plain map
+  # patterns guard un-preloaded associations — a bare has_one/has_many is an
+  # %Ecto.Association.NotLoaded{}, which matches neither `[]` nor
+  # `%PostScreenshot{}`.
+  defp link_preview(%{images: [], screenshot: %PostScreenshot{} = ps}), do: preview_slot(ps)
+  defp link_preview(_post), do: {nil, nil}
 
-    card_assigns
-    |> assign(:link_screenshot, screenshot)
-    |> assign(:screenshot_pixelated, pixelated)
-    |> assign(:link_screenshot_layout?, screenshot != nil and mode == :preview)
+  # The remote twin, for a cached fediverse post: its preview when the card
+  # shows no pictures and the author raised no content warning. The reconcile
+  # enforces those on the queue side; this re-check guards a row from before an
+  # edit and, via the struct pattern, a caller that did not preload
+  # `:screenshot`.
+  defp remote_link_preview(%{screenshot: %PostScreenshot{} = ps} = post, []) do
+    if RemotePost.warned?(post), do: {nil, nil}, else: preview_slot(ps)
   end
 
-  # `{screenshot_or_nil, pixelated_url_or_nil}` — the capture this card shows and,
-  # while the AI scan is still out on it, the preview standing in its place
-  # (issue #1720). A held capture with no preview keeps the old behaviour: no
-  # slot at all, which on a link card reads as "no preview" rather than as a
-  # hole.
-  defp link_screenshot(%{images: [], screenshot: %PostScreenshot{} = ps}),
-    do: screenshot_slot(ps)
+  defp remote_link_preview(_post, _images), do: {nil, nil}
 
-  defp link_screenshot(_post), do: {nil, nil}
-
-  defp screenshot_slot(%PostScreenshot{} = ps) do
+  defp preview_slot(%PostScreenshot{} = ps) do
     cond do
       PostScreenshot.ready?(ps) -> {ps, nil}
       url = Vutuv.Screenshot.pixelated_url(ps) -> {ps, url}
@@ -4642,24 +4679,27 @@ defmodule VutuvWeb.PostComponents do
     end
   end
 
-  # The remote twin of `link_screenshot/1`, for a cached fediverse post: its
-  # ready screenshot when the card shows no pictures and the author raised no
-  # content warning. The reconcile enforces those on the queue side; this
-  # re-check guards a row from before an edit and, via the struct pattern, a
-  # caller that did not preload `:screenshot` (NotLoaded matches nothing).
-  defp assign_remote_link_screenshot(card_assigns, post, images) do
-    {screenshot, pixelated} = remote_link_screenshot(post, images)
+  # The two shapes a preview can take, split once per card so the assigns can
+  # never disagree and the row is read once — it used to be asked three times
+  # per card, each answer costing a clock read and a `File.exists?`. A page's
+  # OWN card (Open Graph: headline, teaser, its image) goes full width below the
+  # post; a bare capture, which says nothing, floats beside the text.
+  #
+  # `@link_screenshot_layout?` is the float-wrap body clamp the PREVIEW needs (a
+  # height clamp instead of a line clamp, since `-webkit-line-clamp` cannot wrap
+  # text around a float). Full mode floats the screenshot too, but its body is
+  # unclamped, so it just renders it inside the body div. A card never needs it:
+  # nothing floats.
+  defp assign_link_preview(card_assigns, {preview, pixelated}, mode) do
+    card? = PostScreenshot.card?(preview)
+    screenshot = if not card?, do: preview
 
     card_assigns
     |> assign(:link_screenshot, screenshot)
+    |> assign(:link_card, if(card?, do: preview))
     |> assign(:screenshot_pixelated, pixelated)
+    |> assign(:link_screenshot_layout?, mode == :preview and screenshot != nil)
   end
-
-  defp remote_link_screenshot(%{screenshot: %PostScreenshot{} = ps} = post, []) do
-    if RemotePost.warned?(post), do: {nil, nil}, else: screenshot_slot(ps)
-  end
-
-  defp remote_link_screenshot(_post, _images), do: {nil, nil}
 
   # The post's review sidecar, nil when absent — and nil for a nested parent
   # card whose preload chain didn't carry it (NotLoaded must not crash).
@@ -5053,21 +5093,194 @@ defmodule VutuvWeb.PostComponents do
     |> Enum.join(" · ")
   end
 
-  # The link screenshot image, shared by the preview and full layouts — both
-  # float it beside the body. A decorative duplicate of the body's autolinked
-  # URL — `aria-hidden` + `tabindex=-1` so assistive tech and the tab order keep
-  # the one link in the prose — opening the page in a new tab. `class` positions
-  # it and sets the width.
+  @doc """
+  The **link preview card**: the site a link goes to, its headline, and the
+  first line or two of a teaser.
+
+  One shape for every link, whatever the page gave us. The picture is the
+  publisher's own `og:image` where they declare one and our capture of the page
+  where they do not; the headline is their `og:title` or, failing that, the
+  `<title>` every page has; the teaser is their `og:description` or, failing
+  that, the sentence `Vutuv.LinkSummary` wrote (`PostScreenshot.teaser/1` holds
+  that order). None of those distinctions is visible to a reader, and none of
+  them should be: letting them pick the layout is what made two posts linking
+  two ordinary pages look like two different features.
+
+  A different shape from `link_screenshot_image/1` on purpose. A bare capture
+  says nothing, so it is decorative and floats beside the prose at a third of
+  the width; this one carries words, and words squeezed into that column are
+  unreadable. So it takes the full width **below** the post — but it is a
+  **landscape strip**, thumbnail left and text right, roughly the height of
+  three lines: the post is what the member wrote, and the card is a footnote to
+  it. A big picture-on-top card looks better in isolation and is wrong here,
+  because it makes every single-link post louder than every other post in the
+  feed. Same arrangement Teams, Slack and the mail clients use, and the same one
+  in the feed, on the permalink and on a cached fediverse post.
+
+  Unlike the float it is a **real link**, not an `aria-hidden` duplicate: its
+  accessible name is the page's own headline, which is genuinely more than the
+  bare URL in the prose above, so a screen reader gains a line rather than
+  hearing the same address twice. `nofollow ugc` because the target is a
+  member-supplied outbound link.
+
+  `noreferrer` is the load-bearing one, and it is not decoration: the *picture*
+  cannot be tracked (our server fetched it and this `img src` is our own
+  `/screenshots/` path, so a reader's device never speaks to the linked host),
+  which leaves the click as the single moment the target learns a vutuv reader
+  exists. `VutuvWeb.Markdown` already withholds the referrer from the autolinked
+  URL two lines above this card; without the same `rel` here, which of the two
+  copies of one address a reader happened to click would decide what the target
+  gets told.
+  """
+  attr(:card, :any, required: true)
+  attr(:pixelated_url, :any, default: nil, doc: "set while the AI scan holds the card's image")
+  attr(:class, :string, default: nil)
+
+  def link_preview_card(assigns) do
+    # Once, not twice: the `:if` and the paragraph it guards read the same
+    # value, and computing it in both places is how one of them grows a clamp
+    # the other does not have.
+    assigns = assign(assigns, :teaser, PostScreenshot.teaser(assigns.card))
+
+    ~H"""
+    <.link
+      href={@card.url}
+      target="_blank"
+      rel="ugc nofollow noopener noreferrer"
+      data-link-card
+      class={[link_strip_class(), "transition hover:ring-brand-400", @class]}
+    >
+      <%!-- The strip's height is FIXED (5rem on a phone, 7rem from `sm`) and
+      the thumbnail is cropped to fill it. Deliberately not "as tall as its
+      contents": an og:image is a 1.91:1 banner on one site and a square logo
+      on the next, and a headline wraps to one line or two, so a height that
+      followed either of them would make a feed of link posts jitter. The text
+      below is clamped to fit that height rather than the other way round. --%>
+      <%!-- While the AI scan is out on the picture, the blurred stand-in takes
+      its place with the same badge the floated capture wears (issue #1720) —
+      the card's words are ours to show either way, so hiding the whole strip
+      would lose them for nothing. --%>
+      <span :if={@pixelated_url} class={["relative block", link_strip_thumb_class()]}>
+        <img
+          src={@pixelated_url}
+          width="400"
+          height="264"
+          loading="lazy"
+          alt=""
+          class="h-full w-full object-cover"
+        />
+        <.checking_badge />
+      </span>
+      <img
+        :if={!@pixelated_url}
+        src={Vutuv.Screenshot.url({@card.screenshot, @card}, :thumb)}
+        width="400"
+        height="264"
+        loading="lazy"
+        alt=""
+        class={[link_strip_thumb_class(), "object-cover"]}
+      />
+      <%!-- Normal flow, not a nested `flex-col`: a column flex item shrinks
+      along the MAIN axis, so inside the fixed-height strip the three lines
+      were squashed to 9px and 17px instead of simply being clamped. --%>
+      <%!-- `m-0` on each line is load-bearing, not tidiness: `components.css`
+      gives every `p` an element-level bottom margin for the classic pages, and
+      three of those inside a fixed-height strip push the text out of it. --%>
+      <div class="min-w-0 px-3 py-2">
+        <p
+          :if={@card.site_name}
+          class="m-0 truncate text-[11px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-400"
+        >
+          {@card.site_name}
+        </p>
+        <p class="m-0 line-clamp-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+          {@card.title}
+        </p>
+        <%!-- The teaser is the first thing to go when there is no room: on a
+        phone the text column is about 100px wide and the headline is what a
+        reader is deciding on, so the teaser is not rendered at all there.
+        `sm:line-clamp-2` re-shows it, because `line-clamp` sets its own
+        `display` and so beats `hidden` from the same cascade. --%>
+        <p :if={@teaser} class="m-0 hidden text-xs text-slate-600 sm:line-clamp-2 dark:text-slate-400">
+          {@teaser}
+        </p>
+      </div>
+    </.link>
+    """
+  end
+
+  @doc """
+  The card's **placeholder**, in the card's own shape — used by the composer
+  while the preview is still being made.
+
+  Deliberately the strip and not a line of prose where the strip will be. Once
+  the picture can come from a Chromium capture rather than from a page's own
+  `og:image`, the wait is seconds rather than milliseconds — and on an
+  installation that summarises links there is a model call after it. A text
+  note that is replaced by a 7rem strip reads as the page breaking, not as the
+  preview arriving; reserving the shape means the card fades in where the
+  placeholder stood.
+
+  It wears the card's own strip and picture-cell classes (`link_strip_class/0`,
+  `link_strip_thumb_class/0`) rather than a copy of them: the placeholder's job
+  is to be the shape the card fades into, so a height or radius tweak that
+  reached only one of the two would put the jump back.
+
+  `role="status"` announces the wait on its own rather than having the whole
+  composer re-read; the message says which wait it is.
+  """
+  attr(:message, :string, required: true)
+
+  def link_preview_skeleton(assigns) do
+    ~H"""
+    <div role="status" data-link-preview-skeleton class={link_strip_class()}>
+      <span class={[
+        link_strip_thumb_class(),
+        "flex items-center justify-center bg-slate-200 dark:bg-slate-700"
+      ]}>
+        <.hourglass class="h-5 w-5 text-slate-500 dark:text-slate-400" />
+      </span>
+      <%!-- `m-0` for the same reason the card's lines carry it: `components.css`
+      gives every `p` a bottom margin, and inside a fixed-height strip that
+      pushes the text out of it. --%>
+      <div class="min-w-0 px-3 py-2">
+        <p class="m-0 text-sm text-slate-600 dark:text-slate-400">{@message}</p>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  The link screenshot image, shared by the preview and full layouts — both float
+  it beside the body — and by the composer, which shows the author the same
+  picture their post will carry.
+
+  On a post card it is a decorative duplicate of the body's autolinked URL —
+  `aria-hidden` + `tabindex=-1`, so assistive tech and the tab order keep the
+  one link in the prose — opening the page in a new tab. `class` positions it
+  and sets the width.
+
+  `title` is the hover tooltip (issue #1709): what the linked page is about,
+  through `PostScreenshot.teaser/1` — the one owner of "what text describes this
+  page", so the float and the card can never answer it differently. It sits on
+  the link rather than on the image so the tooltip covers the whole tile, and
+  `nil` renders no attribute at all — which is what every capture taken before
+  this, and every installation that does not summarise links, has.
+
+  This float is what a page with **no headline at all** falls back to; anything
+  with words renders as `link_preview_card/1` instead.
+  """
   attr(:screenshot, :any, required: true)
   attr(:pixelated_url, :any, default: nil, doc: "set while the AI scan holds the capture")
   attr(:class, :string, default: nil)
 
-  defp link_screenshot_image(assigns) do
+  def link_screenshot_image(assigns) do
     ~H"""
     <.link
       href={@screenshot.url}
+      title={PostScreenshot.teaser(@screenshot)}
       target="_blank"
-      rel="noopener"
+      rel="noopener noreferrer"
       aria-hidden="true"
       tabindex="-1"
       data-link-screenshot

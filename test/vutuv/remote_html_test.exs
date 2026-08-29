@@ -19,6 +19,37 @@ defmodule Vutuv.RemoteHtmlTest do
     assert RemoteHtml.to_text("<p>&amp;amp;</p>") == "&amp;"
   end
 
+  test "an entity nobody knows is left standing rather than swallowed" do
+    assert RemoteHtml.to_text("<p>&bogus; bleibt</p>") == "&bogus; bleibt"
+  end
+
+  test "no NUL byte leaves to_text/3" do
+    # Deliberately NOT titled "a NUL never leaves here": this closes the
+    # fediverse/Mastodon door, and a remote actor's `preferred_username` and
+    # `name` still reach `Repo` by another route (see the changeset-layer
+    # follow-up issue). Claiming more than the test covers is how the next
+    # reader stops looking.
+    #
+    # Not cosmetic on this door either: the text is STORED — `Vutuv.Fediverse`'s
+    # `remote_text/3` writes it into a delivered post's body — and Postgres
+    # refuses a NUL with `22021 character_not_in_repertoire`, so a federating
+    # server could raise our insert with `&#0;` in a Note.
+    #
+    # `decode_entities/1`'s own guard cannot catch it: `strip_tags/1` decodes
+    # numeric entities itself, so the byte exists before the decoder runs.
+    assert RemoteHtml.to_text("<p>hallo &#0; welt</p>") == "hallo  welt"
+    refute RemoteHtml.to_text("<p>&#0;</p>") =~ <<0>>
+  end
+
+  test "scrub_nul/1 is public, because the card path needs it too" do
+    # `Vutuv.OpenGraph.normalise/2` is the second door into the same kind of
+    # column, and it meets a shape `to_text/3` never does: a LITERAL NUL in a
+    # `content` attribute or a `<title>`. That is not an entity, so the
+    # decoder's refusal never sees it, and `\s` does not match it.
+    assert RemoteHtml.scrub_nul("hallo" <> <<0>> <> "welt") == "hallowelt"
+    assert RemoteHtml.scrub_nul("nichts zu tun") == "nichts zu tun"
+  end
+
   describe "script and style go with their contents" do
     test "a paired element leaves nothing behind" do
       assert RemoteHtml.to_text("<script>alert(1)</script><p>safe</p>") == "safe"

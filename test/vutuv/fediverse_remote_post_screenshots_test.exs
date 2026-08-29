@@ -169,11 +169,13 @@ defmodule Vutuv.FediverseRemotePostScreenshotsTest do
       assert is_nil(job_of(sensitive))
     end
 
-    test "two distinct URLs get no job" do
+    test "two distinct URLs: the job is for the first one (issue #1714)" do
       content = "<p>Read #{@url} and https://other.example/page</p>"
       post = recorded_post(%{object: %{"content" => content}})
 
-      assert is_nil(job_of(post))
+      # Used to be "no job at all"; a cached post now previews its first link,
+      # the same rule a member's post follows.
+      assert job_of(post).url == @url
     end
 
     test "a redelivery keeps the one existing job" do

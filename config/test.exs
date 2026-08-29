@@ -8,6 +8,12 @@ config :vutuv, :serve_uploads_locally, true
 # under async tests) and make a live HTTP request / launch headless Chromium.
 config :vutuv, :generate_screenshots, false
 config :vutuv, :fetch_gravatar, false
+# Off like its neighbours, and for the same reason: the tests that drive the
+# capture path directly (`deliver_due(force: true)`) would otherwise reach the
+# real linked host — the SSRF check resolves it and Req dials out. The Open
+# Graph tests turn it on for themselves and stub HTTP through
+# :open_graph_req_options.
+config :vutuv, :fetch_open_graph, false
 # Ads ship disabled (config/config.exs); the test suite exercises the full ad
 # flow, so it runs with the system on. ads_disabled_test.exs flips it off.
 config :vutuv, :ads_enabled, true

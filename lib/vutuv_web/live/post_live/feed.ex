@@ -55,6 +55,8 @@ defmodule VutuvWeb.PostLive.Feed do
   # The origin's like/repost figures on a card from another network tick
   # while this page is open (issue #1283). One line, no handler.
   on_mount(VutuvWeb.Live.RemoteCounts)
+  # The composer's link preview appears by itself (issue #1714).
+  on_mount(VutuvWeb.Live.DraftPreview)
 
   # What a mount loads, and what every older page after it adds. The arrival
   # page is deliberately double the rest: it is the one page nobody asked for,
@@ -2022,7 +2024,7 @@ defmodule VutuvWeb.PostLive.Feed do
           <div id="composer-panel" class={[!@composer_open? && "hidden"]}>
             <.live_component
               module={VutuvWeb.PostLive.Composer}
-              id="composer"
+              id={VutuvWeb.PostLive.Composer.dom_id()}
               current_user={@current_user}
               acting_as={@acting_as}
               post={nil}

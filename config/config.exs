@@ -78,6 +78,16 @@ config :vutuv, Vutuv.Repo,
 config :vutuv, :generate_screenshots, true
 config :vutuv, :fetch_gravatar, true
 
+# Whether a link preview may read the page's OWN preview first (Open Graph:
+# `og:title` / `og:description` / `og:image`, see `Vutuv.OpenGraph`) instead of
+# going straight to a headless-Chromium capture. Off means every preview is a
+# capture, as it was before: the metadata fetch is an outbound request to the
+# linked host, and an operator who does not want their installation making one
+# — or who prefers to see the page rather than its publisher's chosen framing —
+# turns it off here. An air-gapped installation is already covered by
+# `:generate_screenshots` above, which stops the whole queue.
+config :vutuv, :fetch_open_graph, true
+
 # Pages that are never worth a link-preview screenshot: they answer a headless
 # capture with a cookie-consent banner, a login wall or a bot check, so the
 # shot is a picture of a dialog rather than of the page. Skipping them (in
@@ -162,6 +172,20 @@ config :vutuv, :precompute_translations, true
 # Runtime overrides: TAG_MERGE_ASSIST, TAG_MERGE_ASSIST_MODEL.
 config :vutuv, :tag_merge_assist, true
 config :vutuv, :tag_merge_assist_model, "qwen3.5:9b"
+
+# The hover tooltip on a link preview (Vutuv.LinkSummary, issue #1709): one
+# sentence, at most 200 characters, saying what the linked page is about — read
+# off the WHOLE page by a local Ollama text model, not off the part the
+# screenshot happens to show and not out of the page's own og:description.
+#
+# Default OFF, like the translations above: it costs a model an installation
+# may not have. Fail-open in every direction — flag off, no Ollama, a page that
+# answers nothing readable — leaves the preview exactly as it is today, with no
+# tooltip. It is best-effort and never retried: a capture is not worth losing
+# over a tooltip. Runtime overrides: SUMMARIZE_LINKS, LINK_SUMMARY_MODEL,
+# LINK_SUMMARY_TIMEOUT (config/runtime.exs).
+config :vutuv, :summarize_links, false
+config :vutuv, :link_summary_model, "qwen3.5:9b"
 
 # Arbeitszeugnis analysis (Vutuv.References.Checks): a member may have an
 # uploaded employment reference reviewed by a text model against an open

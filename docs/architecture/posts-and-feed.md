@@ -1565,21 +1565,60 @@ publishes each photo as an `ImageObject` with `license` /
 `acquireLicensePage` / `creditText`, which is what makes an image-search result
 licensable.
 
-## Link screenshots
+## Link previews
 
-A post that carries **exactly one URL and no image attachment** gets an
-auto-generated screenshot of the linked page, captured off the request path so
-the save is never slowed. The subsystem is `Vutuv.Posts.Screenshots` with the
+A post that carries **at least one URL and no image attachment** gets an
+automatic preview of the linked page, built off the request path so the save is
+never slowed. It renders as **one card** for every link — a landscape strip
+below the post, picture left and words right.
+
+**Where each half of that card comes from is invisible to the reader, and that
+is deliberate.** The `source` column records where the *picture* came from: the
+artwork the page publishes about itself (`open_graph`), the artwork a video
+publishes about itself (`youtube`, off the oEmbed endpoint), or a
+headless-Chromium `screenshot` of the page. The words are assembled per field,
+best source first:
+
+| the card's… | first choice | fallback | last resort |
+| --- | --- | --- | --- |
+| picture | `og:image` | our capture | — |
+| headline | `og:title` | the `<title>` element | *(no headline → no card)* |
+| teaser | `og:description` | `Vutuv.LinkSummary`'s sentence | *(none — the card shows two lines)* |
+| site | `og:site_name` | the URL's host | — |
+
+An earlier cut let `source` pick the *layout* — an Open Graph page got the card,
+everything else the old capture floated beside the prose. Two posts linking two
+ordinary pages then looked like two different features, and which one a member
+got depended on whether a stranger had maintained their meta tags. So the
+question the render path asks is `PostScreenshot.card?/1`: **are there words to
+put in a card** — not where the picture came from. Only a page that answered
+nothing at all (no `og:title`, no `<title>`) keeps the bare float.
+
+`PostScreenshot.teaser/1` owns the description-then-summary order in one place,
+and `Screenshots.summarize/1` never asks the model about a page that already
+published an `og:description` — the publisher's blurb is written by someone who
+knows the page, and ours is a stand-in for when nobody wrote one.
+
+**Which link, and who decides.** The preview is for the link the author chose,
+defaulting to the **first** one in the text (`candidate_urls/1` lists them in
+order, minus the internal and blocklisted ones; `qualifying_url/1` is that
+list's head). It used to be "exactly one URL or nothing", so a post with two
+links silently got no preview at all. The choice needs no column of its own: the
+row already records which page it describes, so `reconcile/1` keeps the URL that
+is on the row as long as it is still in the text, and falls back to the first
+otherwise. The subsystem is `Vutuv.Posts.Screenshots` with the
 `post_screenshots` table (one row per post, unique `post_id`), which is **both
 the durable queue and the attachment record**: a `pending`/`capturing`/`failed`
 row is work, a `ready` row carries the stored screenshot.
 
-The queue serves **two owners**: a member's post (`post_id`) and a cached
+The queue serves **three owners**: a member's post (`post_id`), a cached
 fediverse post from a followed account (`remote_post_id`,
-`Vutuv.Fediverse.RemotePost`; a check constraint enforces exactly one). The
+`Vutuv.Fediverse.RemotePost`) and the composer draft a post is still being
+written in (`post_draft_id`, see below; a check constraint enforces exactly
+one). The
 remote side's qualifying rule, wiring and cleanup live in
-`fediverse.md` ("Their link screenshots"); everything below — worker, probe,
-YouTube branch, retries, moderation, admin views — is shared.
+`fediverse.md` ("Their link previews"); everything below — worker, probe,
+Open Graph branch, YouTube branch, retries, moderation, admin views — is shared.
 
 Some links are deliberately **not** screenshotted. Two are caught in
 `qualifying_url/1` (a pure, no-network check on the request path, so no row is
@@ -1596,6 +1635,107 @@ link. Entries are domains or URLs — see
 [images.md](images.md) for the grammar. The same blocklist gates the
 profile-link previews inside `capture_framed/2` (returning `:blocklisted`, a
 permanent outcome).
+
+**The author sees it before publishing (issue #1714).** The queue serves a
+**third** owner: the composer draft the post is still being written in
+(`post_draft_id`, `Vutuv.Posts.PostDraft`). `VutuvWeb.PostLive.Composer`
+reconciles it from the **debounced draft autosave** and renders the card exactly
+as the post will (`Vutuv.Posts.reconcile_draft_preview/1`). Beneath it sits one
+button per link in the text plus **No preview**, all `aria-pressed`, so the
+current choice is visible rather than remembered (`choose/2`; a URL that is not
+in the author's own text is refused rather than fetched, since this arrives from
+the browser). Turning it off writes the same `dismissed` tombstone the edit
+page's Remove button writes — one answer to "they said no", not two — and
+pressing the link again lifts it. The panel is hidden entirely where
+`:generate_screenshots` is off, or it would be a spinner that can never resolve.
+
+**Only a link that survived a pause is fetched.** `@url_regex` matches a
+*partial* URL, so the autosave in the middle of typing one offers
+`https://githu`, the next `https://github.com/us` — and each of those would be a
+real outbound fetch, several of them resolving to real pages, so it is captures
+and AI-scan spend on addresses nobody asked for. The composer therefore fetches
+only a candidate list that is unchanged from the round before, and when the
+links *did* change it arms a single one-shot timer (`settle_link_preview`) so a
+member who simply stops typing still gets their preview — the confirming
+autosave would otherwise never come, which is a bug this had until it was driven
+in a browser. The cost is that the card appears one pause after the text.
+
+**The wait has the card's shape** (`link_preview_skeleton/1`), not a line of
+prose where the card will be. Once the picture can come from a Chromium capture
+rather than from a page's own `og:image`, that wait is seconds rather than
+milliseconds — and on an installation that summarises links there is a model
+call after it. A text note replaced by a 7rem strip reads as the page breaking;
+reserving the shape means the card fades in where the placeholder stood, and the
+Post button below it never moves. A *settled* answer ("no preview", "this page
+offers none") stays a line of prose: nothing is coming, so reserving height
+would leave a hole that never fills.
+
+Note this moves the capture **earlier**, not extra: a draft's row is adopted by
+the post on publish, so the same page is captured once either way. Only an
+abandoned draft costs a capture that nothing ends up showing, and those are
+swept with their files (`delete_for_drafts/1`).
+
+On publish the row's owner simply **flips** from the draft to the post
+(`adopt_draft/2`, called from the composer before the draft is deleted): the row
+keeps its id, so the stored image never moves, the AI verdict on those bytes
+still stands, and there is no gap where the just-published post has no preview.
+The `pending` row `create_post/2`'s own reconcile had just enqueued is dropped
+in the same transaction. A draft that is discarded or swept takes its preview's
+**files** with it (`Screenshots.delete_for_drafts/1`) — the row cascades, the
+files never do. Draft-owned rows are excluded from the `/admin/screenshots`
+views: they are somebody's unpublished half-written post, and have no page to
+link a row to.
+
+A LiveComponent cannot subscribe to PubSub, so the card is pushed to it:
+`announce_ready/1` broadcasts `{:draft_preview_ready, …}` on the **author's own**
+`Vutuv.Activity` topic (the preview belongs to their unpublished draft, so
+nobody else has business hearing about it) and `VutuvWeb.Live.DraftPreview`
+turns that into a `send_update/2`. It is an `on_mount` hook rather than a
+`handle_info` clause copied into each of the four hosts, for the reason
+`VutuvWeb.Live.RemoteCounts` already documents: a clause missing from one host
+is invisible, and `attach_hook/4` means a page that has no `handle_info/2` at
+all still opts in with one line.
+
+**The page's own preview comes first (issue #1706).** Most sites publish one —
+Open Graph's `og:title` / `og:description` / `og:site_name` / `og:image` — and
+it beats a photograph of the page every time: it is the headline the publisher
+chose, it is not covered by a cookie dialog, and it costs one small GET instead
+of a Chromium run. `Vutuv.OpenGraph` reads it and the worker tries it after the
+YouTube branch and before the capture, so the chain is **YouTube thumbnail →
+Open Graph → Chromium**, and a page that publishes nothing usable is exactly as
+well served as before.
+
+What counts: `og:title` and `og:image` are both **required** (no headline means
+nothing card-shaped to show, no image means nothing to look at), `og:description`
+and `og:site_name` ride along, `og:image:secure_url` and the `twitter:` twins
+stand in where the `og:` ones are missing, and a relative `og:image` is resolved
+against the page it was declared on. The parser is deliberately **not** an HTML
+parser — the `<meta>` tags in the first 512 KB are scanned with a regex and the
+handful of entities that appear in attribute values are decoded — so no HTML
+library joins the dependency list for four attributes. A page that answers
+anything but a plain HTTP 200 `text/html` (a redirect is **not** followed, the
+same rule the capture applies) falls through.
+
+The image is fetched **server-side** through the same guard rail as a remote
+avatar (SSRF-vetted host, JPEG/PNG/WebP only — the formats
+`Vutuv.Screenshot`'s uploader accepts — capped at 5 MB) and stored through the
+ordinary screenshot uploader, so readers only ever see our stored copy, no
+viewer IP reaches the linked host, and the picture goes through AI image
+moderation like any capture: a page is free to declare anything as its
+`og:image` and that must not become a bypass of the gate an upload passes.
+Anything that fails here falls back to the capture. Gated by
+**`:fetch_open_graph`** (default on; an operator who does not want the outbound
+metadata request turns it off and keeps captures — an air-gapped installation is
+already covered by `:generate_screenshots`, which stops the whole queue), and
+tests stub HTTP through the `:open_graph_req_options` seam.
+
+Four columns carry the result: `source` (`"open_graph"` / `"screenshot"`),
+`title`, `description`, `site_name`. All `text` — a remote page's metadata is
+not ours to bound, so the caps (300 / 1000 / 100) are applied on ingest by
+`Vutuv.OpenGraph` and re-checked by `PostScreenshot.result_changeset/2`. A
+refresh (the post's single URL changed) and the author's dismissal both clear
+them: the row is about to describe a different page, and a stale headline
+beside a new image is the worst of both.
 
 **A YouTube video link stores YouTube's own thumbnail instead of a capture.**
 The watch page answers every logged-out request with the cookie-consent
@@ -1614,6 +1754,57 @@ falls back to the ordinary capture below. Tests stub the fetch via the
 `:youtube_thumbnail_req_options` seam; the one-shot backfill that re-queued
 the pre-existing banner captures is `Vutuv.Release.requeue_youtube_screenshots/0`
 (`Screenshots.requeue_youtube/0`).
+
+**The oEmbed answer carries the video's title, and that is read rather than
+discarded** (`source: "youtube"`). It costs no extra request — that call is
+already being made for the existence check — and it is what lets a video render
+as the same card every other link gets. Without it the row had a picture and no
+headline, so `card?/1` was false and a YouTube link was the one kind that
+stayed a bare float while everything else became a card: which branch happened
+to run first was deciding the layout, the exact thing `card?/1` exists to stop
+deciding. The watch page's own `og:` tags are deliberately **not** read
+instead — it answers a consent redirect often enough that the request would
+usually buy nothing, which is the reason this branch exists at all.
+
+**A page that publishes no teaser gets one written for it.** A picture of the
+top of a page is often a navigation bar and a hero image, so
+`Vutuv.LinkSummary` (issue #1709) fills the card's teaser line: the page is
+reduced to text by `Vutuv.RemoteHtml` — which drops `<script>`/`<style>` **with
+their contents**, the difference between a page's prose and its prose with the
+JavaScript spelled out in it — and a local Ollama text model is asked for one
+sentence of at most 200 characters, in the page's own language. It is stored in
+`post_screenshots.summary`, and `PostScreenshot.teaser/1` is what decides
+between it and the publisher's own words.
+
+It normally makes **no request of its own**: the metadata fetch already
+downloaded the page and hands the HTML to `summarize_html/2`. `summarize/1`
+fetching for itself is the fallback for a caller holding no body — it used to
+be the only path, which meant a second full download of the same page per
+capture, on the operator's egress and against the target's rate limit.
+
+Deliberately **not** a replacement for the page's `og:description`: that is the
+publisher's blurb, written by somebody who knows the page, and it always wins.
+`Screenshots.summarize/2` does not even ask the model when a description is
+already there, so the model call is spent only where the card would otherwise
+have no second line.
+
+It runs **after** the row is `ready`, as a second small write. The picture is
+what a reader is waiting for, and `Vutuv.Posts.ScreenshotWorker` drains one job
+at a time — putting a model call in front of `mark_ready/2` would hold this
+member's finished preview, its temp file and every capture behind it.
+
+Off by default (`:summarize_links`, `SUMMARIZE_LINKS=true`), best-effort, and
+**never retried**: flag off, Ollama down, nothing readable on the page, junk
+back from the model — each leaves `summary` `nil` and the card showing its
+headline and picture alone, because a capture is not worth losing over a
+sentence and a sentence is not worth a queue of its own. The YouTube branch has
+no page to read (its words come from oEmbed) and never gets
+one. One answer gets a fixed 30 s under the shared `:ollama_timeout`; it is the
+least valuable model call this installation makes, so it is not given the
+fleet-wide patience and has no knob of its own. The answer is untrusted text throughout: a page can steer what is written
+about it (as it already does with its own `<title>`), so the sentence is plain
+text, escaped by HEEx, capped at 200 characters, and reaches a reader only as a
+`title` attribute.
 
 A link that does **not answer a plain HTTP 200** is rejected at capture time by
 `ensure_http_ok/1`, a `redirect: false` GET probe the worker runs before Chromium
@@ -1653,10 +1844,27 @@ Capture is **DRY** with the profile-link previews: `Vutuv.PageScreenshot`
 thumb with the `/images/screenshot.png` fallback). Everything is gated by the
 `:generate_screenshots` flag (air-gapped installs queue nothing).
 
-`VutuvWeb.PostComponents` **floats** a ready screenshot to the body's top right
-(`float-right w-2/5 sm:w-1/3`) and the text wraps around it — the same reading in
-the feed/profile preview and on the permalink, so a single-link post looks like
-itself everywhere. The preview additionally needs the float-wrap body clamp
+**The two kinds are laid out the opposite way, on purpose.**
+`VutuvWeb.PostComponents.link_preview_card/1` puts a page's own card **below**
+the post at full width, because it carries words and words squeezed into a
+third of the column are unreadable. It is a **landscape strip** — thumbnail
+left (a fixed box, cropped to fill, so a 1.91:1 banner and a square logo give
+the same row height), then site name, headline (2 lines) and teaser (1 line on
+a phone, 2 from `sm`) — roughly three lines tall, the shape Teams, Slack and
+the mail clients use. Deliberately *not* the big picture-on-top card: that
+looks better in isolation and is wrong in a feed, where it would make every
+single-link post shout over every other post. The post is what the member
+wrote; the card is a footnote to it. It is a **real** link whose accessible
+name is the page's headline, which is more than the bare URL already in the
+prose, so a screen reader gains a line rather than hearing the same address
+twice. A bare screenshot says nothing, so it stays decorative
+(`aria-hidden`, out of the tab order) and **floats** to the body's top right
+(`float-right w-2/5 sm:w-1/3`) with the text wrapping around it. `link_card/1`
+and `link_screenshot/1` split the same ready row between the two by matching on
+the `source` **column** (`PostScreenshot.card?/1`), never on whether a
+description happens to be there. Both readings are the same in the
+feed/profile preview and on the permalink, so a single-link post looks like
+itself everywhere, and a cached fediverse post gets the identical card. The preview additionally needs the float-wrap body clamp
 (`link_screenshot_layout?/2` → `.post-clamp--wrap`, since `-webkit-line-clamp`
 cannot wrap around a float); full mode has no clamp and simply renders the
 screenshot as the body div's first child. On capture the worker broadcasts

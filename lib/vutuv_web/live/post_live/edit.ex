@@ -11,12 +11,13 @@ defmodule VutuvWeb.PostLive.Edit do
   liked, reposted or answered it, this page redirects to the post and says why. Deleting
   stays possible at any time.
 
-  A single-URL, image-less post also gets an auto-captured link screenshot
-  (`Vutuv.Posts.Screenshots`). When that capture is bad (a cookie banner
-  covering the page, say) the author can remove it here — a "Remove screenshot"
-  control shown only while a captured screenshot is on the card. Removing it
-  tombstones the screenshot so it stops rendering and is not re-captured on a
-  plain re-save (`Vutuv.Posts.dismiss_screenshot/1`).
+  A single-URL, image-less post also gets an automatic link preview
+  (`Vutuv.Posts.Screenshots`) — the page's own Open Graph card, or a capture of
+  the page when it publishes none. When it is bad (a cookie banner covering the
+  page, a headline that misses the point) the author can remove it here, a
+  control shown only while a preview is on the card. Removing it tombstones the
+  row so it stops rendering and is not re-created on a plain re-save
+  (`Vutuv.Posts.dismiss_screenshot/1`).
   """
 
   use VutuvWeb, :live_view
@@ -24,6 +25,7 @@ defmodule VutuvWeb.PostLive.Edit do
   alias Vutuv.Posts
   alias Vutuv.Posts.PostScreenshot
   alias VutuvWeb.Live.InitAssigns
+  alias VutuvWeb.PostComponents
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -45,7 +47,7 @@ defmodule VutuvWeb.PostLive.Edit do
          socket
          |> assign(:page_title, gettext("Edit post"))
          |> assign(:post, post)
-         |> assign(:screenshot, ready_screenshot(post))}
+         |> assign_screenshot(post)}
     end
   end
 
@@ -70,7 +72,7 @@ defmodule VutuvWeb.PostLive.Edit do
     {:noreply,
      socket
      |> assign(:post, post)
-     |> assign(:screenshot, ready_screenshot(post))
+     |> assign_screenshot(post)
      |> put_flash(:info, gettext("Screenshot removed."))}
   end
 
@@ -82,6 +84,17 @@ defmodule VutuvWeb.PostLive.Edit do
   end
 
   defp ready_screenshot(_post), do: nil
+
+  # The preview and, beside it, whether it has a card to show — asked once here
+  # rather than at each of the three places the panel branches on it (the
+  # heading, the sentence under it, and which rendering to use).
+  defp assign_screenshot(socket, post) do
+    preview = ready_screenshot(post)
+
+    socket
+    |> assign(:screenshot, preview)
+    |> assign(:card?, PostScreenshot.card?(preview))
+  end
 
   @impl true
   def render(assigns) do
@@ -103,34 +116,60 @@ defmodule VutuvWeb.PostLive.Edit do
 
         <.live_component
           module={VutuvWeb.PostLive.Composer}
-          id="composer"
+          id={VutuvWeb.PostLive.Composer.dom_id()}
           current_user={@current_user}
           post={@post}
         />
 
+        <%!-- One panel for both kinds of automatic preview (issue #1706): the
+        page's own card, or a capture of it when the page publishes none. The
+        wording has to say which, because "it turned out wrong" means different
+        things — a capture can be a picture of a cookie banner, a card can carry
+        a headline the publisher wrote for a different audience. --%>
         <.card :if={@screenshot} id="post-screenshot-editor">
-          <.section_title>{gettext("Link preview screenshot")}</.section_title>
+          <.section_title>
+            {if @card?, do: gettext("Link preview card"), else: gettext("Link preview screenshot")}
+          </.section_title>
           <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            {gettext(
-              "This screenshot was captured automatically from the link in your post. If it turned out wrong (for example a cookie banner covering the page), you can remove it."
-            )}
+            {if @card?,
+              do:
+                gettext(
+                  "This preview comes from the linked page itself. If it does not fit what you wanted to share, you can remove it."
+                ),
+              else:
+                gettext(
+                  "This screenshot was captured automatically from the link in your post. If it turned out wrong (for example a cookie banner covering the page), you can remove it."
+                )}
           </p>
 
-          <div class="mt-3 flex flex-wrap items-start gap-4">
-            <img
-              src={Vutuv.Screenshot.url({@screenshot.screenshot, @screenshot}, :thumb)}
-              width="200"
-              height="132"
-              alt=""
-              class="aspect-[400/264] w-40 shrink-0 rounded-lg object-cover ring-1 ring-slate-200 dark:ring-slate-800"
+          <%!-- The real thing, not a picture of one — and **both** shapes come
+          from the components the post itself renders. The author is being asked
+          "does this fit what you wanted to share?", and answering that from a
+          hand-built thumbnail meant judging something readers never see: the
+          site label and the teaser were missing from the card, the float had no
+          teaser tooltip, and any change to either had to be made here a third
+          time. A row with no headline has no card to show, so it keeps the
+          float, exactly as the post will. --%>
+          <div class="mt-3">
+            <PostComponents.link_preview_card :if={@card?} card={@screenshot} />
+            <PostComponents.link_screenshot_image
+              :if={!@card?}
+              screenshot={@screenshot}
+              class="block w-40"
             />
+            <%!-- One wording for both kinds: the heading above already says
+            which one this is, and "preview" is true of a screenshot as well.
+            Two more conditionals here would have bought two more one-word
+            msgids — exactly the shape `gettext.extract --merge` fuzzy-fills
+            with an unrelated German sentence. --%>
             <.button
               id="remove-screenshot"
               variant="danger"
+              class="mt-3"
               phx-click="remove-screenshot"
-              data-confirm={gettext("Remove this screenshot from your post?")}
+              data-confirm={gettext("Remove this preview from your post?")}
             >
-              {gettext("Remove screenshot")}
+              {gettext("Remove preview")}
             </.button>
           </div>
         </.card>

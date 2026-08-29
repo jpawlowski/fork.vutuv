@@ -1,8 +1,18 @@
 defmodule Vutuv.Posts.Screenshots do
   @moduledoc """
-  The post **link-screenshot** subsystem: when a post carries a single URL and
-  no image, capture a screenshot of that page off the request path and store it
-  as an attachment shown beside the post.
+  The post **link-preview** subsystem: when a post carries a single URL and no
+  image, build a preview of that page off the request path and store it as an
+  attachment shown with the post.
+
+  **The page's own preview comes first.** Most sites publish one — Open Graph's
+  `og:title` / `og:description` / `og:image` — and it beats a photograph of the
+  page every time: it is the headline the publisher chose, it is not covered by
+  a cookie dialog, and it costs one small GET instead of a Chromium run.
+  `Vutuv.OpenGraph` reads it, the image is fetched and stored server-side like
+  any capture (readers never talk to the linked host), and the row is marked
+  `source: "open_graph"` so the render path lays it out as a **card** rather
+  than a floated thumbnail. A page that publishes nothing usable falls straight
+  through to the screenshot below, so no link is worse off than before.
 
   **Durable queue.** Each qualifying post gets one `post_screenshots` row (see
   `Vutuv.Posts.PostScreenshot`), which is both the job and the result: a
@@ -27,6 +37,17 @@ defmodule Vutuv.Posts.Screenshots do
   (`Vutuv.YoutubeThumbnail`), and falls back to the ordinary capture whenever
   that fetch fails.
 
+  **The author sees it before publishing (issue #1714).** A composer draft
+  (`Vutuv.Posts.PostDraft`) owns a job of its own, so the card appears while the
+  post is still being written, and the author can point it at a different link
+  in the text or ask for no card at all (`choose/2`). On publish the row's owner
+  flips from the draft to the post (`adopt_draft/2`) — same row, same id, so the
+  stored image never moves and the AI scan is not repeated on the same bytes.
+
+  **Which link.** The preview is for the link the author chose, defaulting to
+  the **first** one in the text. It used to be "exactly one URL or nothing",
+  which meant a post with two links silently got no preview at all.
+
   **Cached fediverse posts ride the same queue.** A followed account's post
   (`Vutuv.Fediverse.RemotePost`) qualifies by the same rule — one URL, no
   picture — plus one of its own: never behind the author's content warning /
@@ -41,8 +62,11 @@ defmodule Vutuv.Posts.Screenshots do
 
   alias Vutuv.Fediverse
   alias Vutuv.Fediverse.RemotePost
+  alias Vutuv.LinkSummary
   alias Vutuv.Moderation.ImageScans
+  alias Vutuv.OpenGraph
   alias Vutuv.Posts.Post
+  alias Vutuv.Posts.PostDraft
   alias Vutuv.Posts.PostScreenshot
   alias Vutuv.Repo
   alias Vutuv.ScreenshotBlocklist
@@ -99,12 +123,42 @@ defmodule Vutuv.Posts.Screenshots do
     |> reconcile_loaded()
   end
 
-  defp reconcile_loaded(post) do
-    case qualifying_url(post) do
-      {:ok, url} -> enqueue(post, url)
-      :none -> cancel(post)
+  def reconcile(%PostDraft{} = draft) do
+    draft
+    |> Repo.preload(:screenshot, force: true)
+    |> reconcile_loaded()
+  end
+
+  defp reconcile_loaded(owner) do
+    case chosen_url_for(owner) do
+      {:ok, url} -> enqueue(owner, url)
+      :none -> cancel(owner)
     end
   end
+
+  @doc """
+  The link this owner's preview is for: the one already chosen, as long as it is
+  still in the text, else the first one there — or `:none`. That single rule is
+  both the default ("the first link") and the memory of an author's pick, so the
+  choice needs no column of its own: the row already records which page it
+  describes.
+
+  `previous` is the URL on the existing row, passed in rather than read off a
+  preloaded `:screenshot`. A clause matching the association would fall through
+  for a caller that forgot the preload and **silently** re-point the preview at
+  the first link, which is exactly the failure the "match on a column" rule is
+  about.
+  """
+  def chosen_url(owner, previous \\ nil) do
+    case candidate_urls(owner) do
+      [] -> :none
+      urls -> {:ok, if(previous in urls, do: previous, else: hd(urls))}
+    end
+  end
+
+  defp chosen_url_for(%{screenshot: screenshot} = owner)
+       when not is_struct(screenshot, Ecto.Association.NotLoaded),
+       do: chosen_url(owner, screenshot && screenshot.url)
 
   # This installation's own login-walled / internal areas: a screenshot of them
   # would only ever be a login redirect or an admin/internal page, never useful
@@ -113,39 +167,39 @@ defmodule Vutuv.Posts.Screenshots do
   @internal_path_roots ~w(/settings /admin /system)
 
   @doc """
-  The single URL a post should be screenshotted for, or `:none`. Qualifies only
-  with **no image attachment** and **exactly one** distinct `http(s)` URL in the
-  body (surrounding text is fine). A URL pointing at this installation's own
-  `/settings`, `/admin` or `/system` area, or at a blocklisted page
-  (`Vutuv.ScreenshotBlocklist.blocked?/1`, e.g. `heise.de`), does **not**
-  qualify — a blocklisted page never screenshots, so no job is even enqueued
-  and the post simply shows its link.
+  Every link in this owner's text that a preview could be built for, in the
+  order they appear — the list the author picks from, and whose **first** entry
+  is the default. Empty when the owner carries an image attachment (a post that
+  already shows pictures does not also get a link card).
+
+  A URL pointing at this installation's own `/settings`, `/admin` or `/system`
+  area, or at a blocklisted page (`Vutuv.ScreenshotBlocklist.blocked?/1`, e.g.
+  `heise.de`), is left out — a blocklisted page never previews, so no job is
+  even enqueued and the post simply shows its link.
 
   A cached fediverse post plays by the same rules plus one of its own: a post
-  its author put behind a content warning (or flagged sensitive) never
-  qualifies — the card renders it as a closed lid, and an auto-fetched preview
-  image would prop that lid open.
+  its author put behind a content warning (or flagged sensitive) offers nothing
+  — the card renders it as a closed lid, and an auto-fetched preview image
+  would prop that lid open.
   """
-  def qualifying_url(%Post{images: [], body: body}), do: sole_url_target(body)
-  def qualifying_url(%Post{images: images}) when is_list(images), do: :none
+  def candidate_urls(%Post{images: [], body: body}), do: previewable_urls(body)
+  def candidate_urls(%Post{images: images}) when is_list(images), do: []
 
-  def qualifying_url(%RemotePost{images: [], content_text: text} = post) do
-    if RemotePost.warned?(post), do: :none, else: sole_url_target(text)
+  def candidate_urls(%RemotePost{images: [], content_text: text} = post) do
+    if RemotePost.warned?(post), do: [], else: previewable_urls(text)
   end
 
-  def qualifying_url(%RemotePost{images: images}) when is_list(images), do: :none
+  def candidate_urls(%RemotePost{images: images}) when is_list(images), do: []
 
-  defp sole_url_target(body) do
-    case extract_urls(body) do
-      [url] -> qualify(url)
-      _ -> :none
-    end
-  end
+  # A draft's images live in `image_ids` (the rows are still unattached), so the
+  # "no picture" rule reads that list rather than an association.
+  def candidate_urls(%PostDraft{image_ids: [_first | _rest]}), do: []
+  def candidate_urls(%PostDraft{body: body}), do: previewable_urls(body)
 
-  defp qualify(url) do
-    if own_internal_url?(url) or ScreenshotBlocklist.blocked?(url),
-      do: :none,
-      else: {:ok, url}
+  defp previewable_urls(body) do
+    body
+    |> extract_urls()
+    |> Enum.reject(&(own_internal_url?(&1) or ScreenshotBlocklist.blocked?(&1)))
   end
 
   @doc "Every distinct bare `http(s)` URL in `body`, trailing punctuation trimmed."
@@ -185,12 +239,8 @@ defmodule Vutuv.Posts.Screenshots do
   end
 
   defp enqueue(%{screenshot: %PostScreenshot{} = existing}, url) do
-    # The single URL changed: re-capture. Reset to pending and clear the old
-    # error/backoff; the stored file is replaced in place on the next capture.
-    existing
-    |> PostScreenshot.enqueue_changeset(url)
-    |> Ecto.Changeset.change(attempts: 0, next_attempt_at: nil, last_error: nil)
-    |> Repo.update()
+    # The chosen URL changed: re-fetch. The stored file is replaced in place.
+    refresh(existing, url)
   end
 
   defp enqueue(%Post{id: post_id, screenshot: nil}, url) do
@@ -203,6 +253,22 @@ defmodule Vutuv.Posts.Screenshots do
     %PostScreenshot{remote_post_id: remote_post_id}
     |> PostScreenshot.enqueue_changeset(url)
     |> Repo.insert()
+  end
+
+  defp enqueue(%PostDraft{id: draft_id, screenshot: nil}, url) do
+    %PostScreenshot{post_draft_id: draft_id}
+    |> PostScreenshot.enqueue_changeset(url)
+    |> Repo.insert()
+  end
+
+  # Point an existing row at `url` with a clean slate: pending, no attempts, no
+  # backoff, no error, and (through `enqueue_changeset/2`) no card left over
+  # from the page it used to describe.
+  defp refresh(%PostScreenshot{} = existing, url) do
+    existing
+    |> PostScreenshot.enqueue_changeset(url)
+    |> Ecto.Changeset.change(attempts: 0, next_attempt_at: nil, last_error: nil)
+    |> Repo.update()
   end
 
   # No longer qualifies: drop the row and its files (the render path already
@@ -239,6 +305,19 @@ defmodule Vutuv.Posts.Screenshots do
   end
 
   @doc """
+  The same for composer drafts that are about to go (published, discarded, or
+  swept). The rows cascade with `post_drafts`; the stored files never do, so a
+  draft nobody finished would otherwise leave its preview image on disk forever.
+  A published draft has already handed its row to the post (`adopt_draft/2`),
+  so nothing here matches it.
+  """
+  def delete_for_drafts(draft_ids) when is_list(draft_ids) do
+    from(ps in PostScreenshot, where: ps.post_draft_id in ^draft_ids)
+    |> Repo.all()
+    |> Enum.each(&delete/1)
+  end
+
+  @doc """
   The author's "this screenshot is bad, remove it" action from the post edit
   page (a capture spoiled by a cookie banner, say). Purges the stored files and
   tombstones the row as `dismissed`: the render path shows nothing but a `ready`
@@ -253,15 +332,117 @@ defmodule Vutuv.Posts.Screenshots do
 
     post_screenshot
     |> Ecto.Changeset.change(
-      status: "dismissed",
-      screenshot: nil,
-      width: nil,
-      height: nil,
-      captured_at: nil,
-      last_error: nil,
-      moderation: nil
+      Map.merge(PostScreenshot.no_card(), %{
+        status: "dismissed",
+        screenshot: nil,
+        width: nil,
+        height: nil,
+        captured_at: nil,
+        last_error: nil,
+        moderation: nil
+      })
     )
     |> Repo.update()
+  end
+
+  @doc """
+  The author's pick in the composer: which of the links in their text the card
+  is for, or `:none` for no card at all.
+
+  `url` must be one of `candidate_urls/1` — anything else is refused rather than
+  fetched, because this arrives from the browser and "preview this address"
+  would otherwise be a request the member's own server makes on a stranger's
+  say-so. `:none` leaves the author's `dismissed` tombstone behind, which is the
+  same "they said no" the edit page's Remove button writes, so there is one
+  answer to that question and not two.
+  """
+  def choose(%PostDraft{} = draft, :none) do
+    draft = Repo.preload(draft, :screenshot, force: true)
+
+    case draft.screenshot do
+      %PostScreenshot{} = existing -> dismiss(existing)
+      nil -> dismiss_default(draft)
+    end
+  end
+
+  def choose(%PostDraft{} = draft, url) when is_binary(url) do
+    draft = Repo.preload(draft, :screenshot, force: true)
+
+    cond do
+      url not in candidate_urls(draft) ->
+        {:error, :not_a_candidate}
+
+      # Choosing a link the author had already said no to has to lift the
+      # tombstone; `enqueue/2`'s "same URL, leave it" clause would not, and the
+      # control would do nothing.
+      PostScreenshot.dismissed?(draft.screenshot) ->
+        refresh(draft.screenshot, url)
+
+      true ->
+        enqueue(draft, url)
+    end
+  end
+
+  # Nothing has been fetched yet, but the answer still has to survive the next
+  # reconcile — so the tombstone is written against the link the preview would
+  # otherwise have been for.
+  defp dismiss_default(draft) do
+    with {:ok, url} <- chosen_url(draft),
+         {:ok, job} <- enqueue(draft, url) do
+      dismiss(job)
+    else
+      _nothing_to_refuse -> {:ok, nil}
+    end
+  end
+
+  @doc """
+  Hands the draft's preview to the post that was just published from it: the
+  row's owner flips, nothing else moves.
+
+  Deliberately not "copy the metadata across": the row keeps its id, so the
+  stored image stays exactly where it is, the AI verdict on those bytes still
+  applies, and an author who dismissed the card in the composer keeps a
+  dismissed card. `Vutuv.Posts.create_post/2` has already reconciled a fresh
+  `pending` row onto the post by the time this runs, so that one is dropped
+  first — it is seconds old and owns no files.
+
+  A no-op when the draft never had a preview.
+  """
+  def adopt_draft(%PostDraft{} = draft, %Post{} = post) do
+    case Repo.preload(draft, :screenshot, force: true).screenshot do
+      nil ->
+        :ok
+
+      %PostScreenshot{} = row ->
+        {:ok, adopted} =
+          Repo.transaction(fn ->
+            # `cancel/1` is the existing "retire this row and its files".
+            post |> Repo.preload(:screenshot, force: true) |> cancel()
+
+            row
+            |> Ecto.Changeset.change(post_id: post.id, post_draft_id: nil)
+            |> Repo.update!()
+          end)
+
+        # The submitted body is the truth and the draft is only written on a
+        # debounce, so a member who changed the link and pressed Post inside
+        # that window would otherwise publish a preview for a URL their text no
+        # longer carries. One reconcile settles it: the same URL is left alone,
+        # a changed one re-fetches, a removed one takes the row with it.
+        adopted = post |> Repo.preload(:screenshot, force: true) |> reconcile_kept(adopted)
+
+        if adopted && PostScreenshot.ready?(adopted), do: announce_ready(adopted)
+        :ok
+    end
+  end
+
+  # Reconcile the freshly adopted row against the post that now owns it, and
+  # answer with the row if it survived.
+  defp reconcile_kept(post, adopted) do
+    case reconcile_loaded(post) do
+      {:ok, %PostScreenshot{} = kept} -> kept
+      _dropped -> if Repo.get(PostScreenshot, adopted.id), do: adopted
+    end
   end
 
   @doc """
@@ -397,8 +578,11 @@ defmodule Vutuv.Posts.Screenshots do
     job = mark_capturing(job)
 
     case capture.(job) do
-      {:ok, %{screenshot: file, width: width, height: height}} ->
-        mark_ready(job, file, width, height)
+      {:ok, %{screenshot: _file} = result} ->
+        # `result[:html]` is `carry_html/2`'s page; `nil` for a `capture:` stub
+        # or a page that answered nothing readable, and `summarize/2` then
+        # falls back to fetching for itself.
+        job |> mark_ready(result) |> summarize(result[:html])
 
       {:error, reason} ->
         if permanent_failure?(reason),
@@ -419,37 +603,117 @@ defmodule Vutuv.Posts.Screenshots do
   defp permanent_failure?({:bad_status, _status}), do: true
   defp permanent_failure?(_reason), do: false
 
-  # The real capture. A YouTube video link stores the thumbnail YouTube itself
-  # publishes (a watch-page capture only ever shows the consent banner); every
-  # other link — and any YouTube fetch trouble — takes the Chromium path.
+  # The real capture, best source first. A YouTube video link stores the
+  # thumbnail YouTube itself publishes (a watch-page capture only ever shows the
+  # consent banner); any other page that publishes an Open Graph preview stores
+  # that; everything else — and any trouble along the way — takes the Chromium
+  # path, exactly as before.
   defp capture_and_store(%PostScreenshot{} = job) do
-    case youtube_capture(job) do
-      {:ok, result} -> {:ok, result}
-      :fallback -> page_capture_and_store(job)
+    # YouTube first, and it never reaches the metadata fetch: a watch page
+    # answers a consent redirect often enough that `OpenGraph.fetch/1` would
+    # spend a request to learn nothing, and the oEmbed endpoint the thumbnail
+    # branch already calls carries the video's title anyway.
+    with :fallback <- youtube_capture(job) do
+      # Read once, use three times: which branch supplies the card's PICTURE,
+      # the words that go on it either way, and the page body the summariser
+      # would otherwise download all over again (`LinkSummary.summarize_html/2`
+      # explains that one). `nil` when the page said nothing readable; every
+      # branch takes that.
+      meta =
+        case OpenGraph.fetch(job.url) do
+          {:ok, meta} -> meta
+          :error -> nil
+        end
+
+      result =
+        with :fallback <- open_graph_capture(job, meta) do
+          page_capture_and_store(job, meta)
+        end
+
+      carry_html(result, meta)
     end
   end
 
-  # The YouTube branch: `{:ok, result}` with the stored thumbnail, or
-  # `:fallback` — not a YouTube video URL, a video oEmbed doesn't know
-  # (deleted, private), fetch or store trouble — and the caller then captures
-  # the page like any other link.
+  # On the result rather than on the row: it is a 512 KB binary that must not
+  # outlive this one job, and `mark_ready/2` writes only
+  # `PostScreenshot.card_columns/0`, so it never reaches the database.
+  defp carry_html({:ok, result}, %{html: html}), do: {:ok, Map.put(result, :html, html)}
+  defp carry_html(result, _meta), do: result
+
+  # The Open Graph branch: `{:ok, result}` with the page's own image stored and
+  # its words carried alongside, or `:fallback` — the page declared no image, or
+  # that image could not be fetched or stored, and the capture branch then
+  # supplies the picture for the same words.
+  #
+  # Note the metadata GET and `ensure_http_ok/1` below are deliberately
+  # independent, so the capture path keeps its own status classification (which
+  # drives the retry cap) instead of inheriting a decision made for a different
+  # question.
+  defp open_graph_capture(%PostScreenshot{} = job, %{image_url: image} = meta)
+       when is_binary(image) do
+    with {:ok, bytes, extension} <- OpenGraph.fetch_image(image),
+         {:ok, result} <- store_remote_image(job, bytes, extension) do
+      {:ok, Map.merge(result, card_fields("open_graph", meta))}
+    else
+      _other -> :fallback
+    end
+  end
+
+  defp open_graph_capture(%PostScreenshot{}, _meta), do: :fallback
+
+  # The card's words, from whichever branch got them. One function because the
+  # three branches differ in where the PICTURE comes from and in nothing else —
+  # writing the same keys once per branch is how the screenshot card drifted
+  # away from the Open Graph one in the first place.
+  #
+  # A source that names no site is labelled by its host, which is what a reader
+  # is checking anyway ("where does this go?").
+  #
+  # Read with `meta[...]` rather than `meta.title`: a source that has nothing to
+  # say about a field should be able to leave the key out, instead of writing
+  # `description: nil` into its own map to satisfy this function's access — which
+  # is a card decision, and this is the only place that gets to make one.
+  defp card_fields(source, %{} = meta) do
+    %{
+      source: source,
+      title: meta[:title],
+      description: meta[:description],
+      site_name: meta[:site_name] || meta[:host]
+    }
+  end
+
+  defp card_fields(source, nil), do: %{source: source}
+
+  # The YouTube branch: `{:ok, result}` with the stored thumbnail **and the
+  # video's own words**, or `:fallback` — not a YouTube video URL, a video
+  # oEmbed doesn't know (deleted, private), fetch or store trouble — and the
+  # caller then captures the page like any other link.
+  #
+  # The words matter as much as the picture here. This branch used to return
+  # the thumbnail alone, so `mark_ready/2` merged `no_card/0` over it and a
+  # YouTube link — the most-shared link kind on the site — was the one kind
+  # that rendered as a bare float while every other link rendered as a card.
+  # Which branch happened to run first was deciding the layout, and that is
+  # exactly the thing `PostScreenshot.card?/1` exists to stop deciding.
   defp youtube_capture(%PostScreenshot{} = job) do
     with {:ok, video_id} <- YoutubeThumbnail.video_id(job.url),
-         {:ok, bytes} <- YoutubeThumbnail.fetch(video_id) do
-      store_thumbnail(job, bytes)
+         {:ok, bytes, meta} <- YoutubeThumbnail.fetch(video_id),
+         {:ok, result} <- store_remote_image(job, bytes, ".jpg") do
+      {:ok, Map.merge(result, card_fields("youtube", meta))}
     else
-      :error -> :fallback
+      _other -> :fallback
     end
   end
 
-  # Stored raw — no browser frame: the thumbnail is the video's artwork, not a
-  # captured web page, so browser chrome around it would be a lie.
-  defp store_thumbnail(%PostScreenshot{} = job, bytes) do
-    tmp = Path.join(System.tmp_dir!(), "yt_thumb_#{job.id}.jpg")
+  # Stored raw — no browser frame: an image the publisher handed us is their
+  # artwork, not a captured web page, so browser chrome around it would be a
+  # lie. Shared by the YouTube thumbnail and the Open Graph image.
+  defp store_remote_image(%PostScreenshot{} = job, bytes, extension) do
+    tmp = Path.join(System.tmp_dir!(), "link_preview_#{job.id}#{extension}")
 
     try do
       File.write!(tmp, bytes)
-      upload = %Plug.Upload{content_type: "image/jpeg", filename: "#{job.id}.jpg", path: tmp}
+      upload = %Plug.Upload{filename: "#{job.id}#{extension}", path: tmp}
 
       case Vutuv.Screenshot.store({upload, job}) do
         {:ok, file_name} ->
@@ -466,7 +730,7 @@ defmodule Vutuv.Posts.Screenshots do
   # The classic capture: capture only a plain HTTP-200 link, then reuse the
   # shared pipeline and store through the same uploader profile links use.
   # Returns the stored filename + display size.
-  defp page_capture_and_store(%PostScreenshot{} = job) do
+  defp page_capture_and_store(%PostScreenshot{} = job, meta) do
     with :ok <- ensure_http_ok(job.url),
          {:ok, framed_path} <- Vutuv.PageScreenshot.capture_framed(job.url, job.id) do
       upload = %Plug.Upload{
@@ -478,7 +742,11 @@ defmodule Vutuv.Posts.Screenshots do
       result =
         case Vutuv.Screenshot.store({upload, job}) do
           {:ok, file_name} ->
-            {:ok, %{screenshot: file_name, width: @display_width, height: @display_height}}
+            {:ok,
+             Map.merge(
+               %{screenshot: file_name, width: @display_width, height: @display_height},
+               card_fields("screenshot", meta)
+             )}
 
           {:error, reason} ->
             {:error, reason}
@@ -550,24 +818,106 @@ defmodule Vutuv.Posts.Screenshots do
     |> Req.get()
   end
 
+  # The card's teaser for a page that published none of its own
+  # (`Vutuv.LinkSummary`, issue #1709): what the linked page is about, read off
+  # the whole page rather than off the part the picture shows.
+  #
+  # It runs **after** the row is `ready`, never before it. The picture is what
+  # a reader is waiting for, and this is a model call — putting it in front of
+  # `mark_ready/2` would hold the finished preview, the temp file and (because
+  # `Vutuv.Posts.ScreenshotWorker` drains one job at a time) every capture
+  # behind it.
+  #
+  # Strictly best-effort and deliberately not a queue of its own: every way it
+  # can come to nothing leaves `summary` `nil` and the preview exactly as it
+  # was, and nothing retries it. `:disabled` is not logged — on an installation
+  # that never turned this on it would be a line per capture saying nothing.
+  # A page that publishes its own `og:description` has already said what it is
+  # about, in its author's words — the model has nothing to add and would be
+  # spending half a minute to overwrite a better sentence with a worse one.
+  # This is the whole division of labour between the two: the publisher's blurb
+  # when there is one, ours when the page offers nothing.
+  defp summarize(%PostScreenshot{description: description} = ready, _html)
+       when is_binary(description),
+       do: ready
+
+  defp summarize(%PostScreenshot{} = ready, html) do
+    case YoutubeThumbnail.video_id(ready.url) do
+      # A video's own artwork, not a photograph of a page: there is no page
+      # here to read, and the watch page would answer a consent wall anyway.
+      {:ok, _video_id} -> ready
+      :error -> store_summary(ready, html)
+    end
+  end
+
+  defp store_summary(%PostScreenshot{url: url} = ready, html) do
+    case summarize_page(url, html) do
+      {:ok, summary} ->
+        write_summary(ready, summary)
+
+      {:error, :disabled} ->
+        ready
+
+      {:error, reason} ->
+        Logger.info("no link summary for #{url}: #{inspect(reason)}")
+        ready
+    end
+  end
+
+  # The page is already in hand whenever the metadata fetch reached it, which
+  # is every case a summary is actually wanted for; fetching is the fallback,
+  # not the path.
+  defp summarize_page(url, html) when is_binary(html), do: LinkSummary.summarize_html(url, html)
+  defp summarize_page(url, _html), do: LinkSummary.summarize(url)
+
+  # Written by id rather than through the struct we have been holding: the
+  # model call is allowed to take half a minute, and in that time the author
+  # can delete the post (the row cascades with it) or the AI image scan can
+  # take the screenshot away. `Repo.update/1` answers a vanished row by RAISING
+  # `Ecto.StaleEntryError`, which would leave `deliver_due/1`'s loop and take
+  # the rest of the batch with it — for a tooltip. `update_all` on the id
+  # simply writes nothing.
+  defp write_summary(%PostScreenshot{} = ready, summary) do
+    {_count, _} =
+      from(ps in PostScreenshot, where: ps.id == ^ready.id)
+      |> Repo.update_all(set: [summary: summary, updated_at: NaiveDateTime.utc_now(:second)])
+
+    %{ready | summary: summary}
+  end
+
   defp mark_capturing(%PostScreenshot{} = job) do
     {:ok, job} = job |> Ecto.Changeset.change(status: "capturing") |> Repo.update()
     job
   end
 
-  defp mark_ready(%PostScreenshot{} = job, file_name, width, height) do
+  defp mark_ready(%PostScreenshot{} = job, result) do
     # A fresh capture starts in AI-moderation limbo: it is announced (and
     # rendered) only once the scan releases it — otherwise a screenshot of an
-    # NSFW page would bypass the upload gate (Vutuv.Moderation.ImageScans).
+    # NSFW page would bypass the upload gate (Vutuv.Moderation.ImageScans). An
+    # Open Graph image is a picture a stranger's page named, so it goes through
+    # exactly the same gate.
     moderation = ImageScans.initial_state()
 
     {:ok, ready} =
       job
+      # The card half (`source` and the page's own headline) is cast through
+      # the schema so the ingest caps are enforced at the write, not only at
+      # the fetch. A `capture:` stub that returns none of it leaves the
+      # defaults: a plain screenshot.
+      # The WHOLE card half, always — never `Map.take` alone. A capture result
+      # that mentions none of these is a plain screenshot and has to *say* so:
+      # a row that once carried an Open Graph card and is later re-captured (an
+      # admin requeue, the operator turning `:fetch_open_graph` off) would
+      # otherwise keep `source: "open_graph"` and the previous page's headline,
+      # and render a Chromium photograph inside a card titled by an older fetch.
+      |> PostScreenshot.result_changeset(
+        Map.merge(PostScreenshot.no_card(), Map.take(result, PostScreenshot.card_columns()))
+      )
       |> Ecto.Changeset.change(
         status: "ready",
-        screenshot: file_name,
-        width: width,
-        height: height,
+        screenshot: result.screenshot,
+        width: result.width,
+        height: result.height,
         captured_at: DateTime.utc_now(:second),
         last_error: nil,
         moderation: moderation
@@ -583,20 +933,69 @@ defmodule Vutuv.Posts.Screenshots do
     ready
   end
 
-  # Open feeds/profiles upgrade a member post's card to show the screenshot
-  # with no reload. A cached remote post has no author watching their fresh
-  # post and no topic of its own, so it simply shows the screenshot on the
-  # next feed load — no broadcast.
-  defp announce_ready(%PostScreenshot{post_id: post_id}) when is_binary(post_id),
+  @doc """
+  Tells whoever is watching this preview that it can be shown now — the post's
+  readers, or the one member still writing the draft it belongs to.
+
+  Public because the release does not always happen here: a capture held by the
+  AI image scan is announced by `Vutuv.Moderation.ImageSubjects.apply_approved/1`
+  once the verdict lands, and that is the **normal** path with
+  `:moderate_images` on. Both callers go through this one function so a new
+  owner cannot be announced on one path and forgotten on the other.
+  """
+  # Open feeds and profiles upgrade a member post's card to show the screenshot
+  # with no reload.
+  def announce_ready(%PostScreenshot{post_id: post_id}) when is_binary(post_id),
     do: Vutuv.Posts.broadcast_screenshot_ready(post_id)
 
-  defp announce_ready(%PostScreenshot{}), do: :ok
+  # A draft's preview goes to the one member writing it, on a topic of its
+  # own — deliberately **not** their `Vutuv.Activity` topic. The feed already
+  # subscribes to that one, so a second subscription from
+  # `VutuvWeb.Live.DraftPreview` would hand the busiest LiveView in the app two
+  # copies of every unrelated activity event (`Phoenix.PubSub.subscribe/2` is a
+  # bare register on a duplicate registry — it does not dedupe), and each copy
+  # costs a full `get_post/1` preload chain. A private topic also stops a page
+  # being woken for events it discards.
+  def announce_ready(%PostScreenshot{post_draft_id: draft_id} = row) when is_binary(draft_id) do
+    Phoenix.PubSub.broadcast(
+      Vutuv.PubSub,
+      draft_preview_topic(owner_user_id(row)),
+      {:draft_preview_ready, draft_id}
+    )
+  end
+
+  # A cached remote post has no author here watching for their fresh post and
+  # no topic of its own, so it simply shows the screenshot on the next feed
+  # load. By name, not as a catch-all, so a fourth owner raises rather than
+  # silently never being told (see `owner_user_id/1` below).
+  def announce_ready(%PostScreenshot{remote_post_id: id}) when is_binary(id), do: :ok
+
+  @doc """
+  Listen for this member's draft previews becoming ready.
+
+  Both halves live here, the way every other context in the app owns its topic
+  (`Posts.subscribe_post/1`, `Fediverse.subscribe_counts/0`, …): a subscriber
+  should not have to name `Vutuv.PubSub` and spell the topic itself, and a
+  second one copying those two lines is how a topic rename becomes a two-module
+  edit.
+  """
+  def subscribe_draft_previews(user_id) when is_binary(user_id),
+    do: Phoenix.PubSub.subscribe(Vutuv.PubSub, draft_preview_topic(user_id))
+
+  # Private to the member: the preview belongs to a post nobody else can see yet.
+  defp draft_preview_topic(user_id), do: "draft_preview:#{user_id}"
 
   # The AI scan's owning member: the post's author, or nobody for a remote
   # post's capture (the same ownerless shape the "remote_post_image" and
   # "remote_avatar" scans use).
-  defp owner_user_id(%PostScreenshot{post_id: nil}), do: nil
-  defp owner_user_id(%PostScreenshot{post_id: post_id}), do: Repo.get!(Post, post_id).user_id
+  defp owner_user_id(%PostScreenshot{post_id: post_id}) when is_binary(post_id),
+    do: Repo.get!(Post, post_id).user_id
+
+  defp owner_user_id(%PostScreenshot{post_draft_id: draft_id}) when is_binary(draft_id),
+    do: Repo.get!(PostDraft, draft_id).user_id
+
+  # By name and not as a catch-all, for the reason `announce_ready/1` gives.
+  defp owner_user_id(%PostScreenshot{remote_post_id: id}) when is_binary(id), do: nil
 
   defp mark_retry(%PostScreenshot{} = job, reason) do
     attempts = job.attempts + 1
@@ -644,8 +1043,10 @@ defmodule Vutuv.Posts.Screenshots do
   defp owner_label(%PostScreenshot{post_id: post_id}) when is_binary(post_id),
     do: "post #{post_id}"
 
-  defp owner_label(%PostScreenshot{remote_post_id: remote_post_id}),
-    do: "remote post #{remote_post_id}"
+  defp owner_label(%PostScreenshot{remote_post_id: id}) when is_binary(id),
+    do: "remote post #{id}"
+
+  defp owner_label(%PostScreenshot{post_draft_id: id}) when is_binary(id), do: "draft #{id}"
 
   ## Admin reads
 
@@ -654,15 +1055,25 @@ defmodule Vutuv.Posts.Screenshots do
   / `failed`), newest first, with the owning post + author (or the cached
   remote post + its account) preloaded. Returns `{rows, total}`.
   Author-`dismissed` tombstones are neither unfinished work nor a gallery item,
-  so they are excluded from both admin views.
+  so they are excluded from both admin views — and so are the rows a composer
+  **draft** owns, which are somebody's unpublished half-written post, not
+  moderatable content, and have no page to link a row to.
   """
   def queue_page(params) do
     page(
-      from(ps in PostScreenshot, where: ps.status not in ["ready", "dismissed"]),
+      published_owners(
+        from(ps in PostScreenshot, where: ps.status not in ["ready", "dismissed"])
+      ),
       params,
       desc: :inserted_at
     )
   end
+
+  # The admin views are about published things. A row a composer **draft** owns
+  # is somebody's unfinished post: not moderatable content, and with no page for
+  # a row to link to. One named function so a fourth owner is one edit, not
+  # three (the rule this repo learned from the nullable-pair model).
+  defp published_owners(query), do: from(ps in query, where: is_nil(ps.post_draft_id))
 
   @doc """
   One page of the admin gallery: captured (`ready`) screenshots, newest capture
@@ -670,16 +1081,19 @@ defmodule Vutuv.Posts.Screenshots do
   `{rows, total}`.
   """
   def gallery_page(params) do
-    page(from(ps in PostScreenshot, where: ps.status == "ready"), params, desc: :captured_at)
+    page(
+      published_owners(from(ps in PostScreenshot, where: ps.status == "ready")),
+      params,
+      desc: :captured_at
+    )
   end
 
   @doc "Count of unfinished vs ready jobs, for the admin tab labels."
   def counts do
-    from(ps in PostScreenshot,
-      where: ps.status != "dismissed",
-      group_by: fragment("? = 'ready'", ps.status),
-      select: {fragment("? = 'ready'", ps.status), count(ps.id)}
-    )
+    from(ps in PostScreenshot, where: ps.status != "dismissed")
+    |> published_owners()
+    |> group_by([ps], fragment("? = 'ready'", ps.status))
+    |> select([ps], {fragment("? = 'ready'", ps.status), count(ps.id)})
     |> Repo.all()
     |> Enum.reduce(%{queue: 0, ready: 0}, fn
       {true, n}, acc -> %{acc | ready: n}

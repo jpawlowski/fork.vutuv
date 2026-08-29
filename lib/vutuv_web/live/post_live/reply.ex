@@ -23,6 +23,9 @@ defmodule VutuvWeb.PostLive.Reply do
 
   use VutuvWeb, :live_view
 
+  # The composer's link preview appears by itself (issue #1714).
+  on_mount(VutuvWeb.Live.DraftPreview)
+
   import VutuvWeb.PostComponents
 
   alias Vutuv.Posts
@@ -70,7 +73,7 @@ defmodule VutuvWeb.PostLive.Reply do
 
         <.live_component
           module={VutuvWeb.PostLive.Composer}
-          id="composer"
+          id={VutuvWeb.PostLive.Composer.dom_id()}
           current_user={@current_user}
           post={nil}
           parent={@parent}

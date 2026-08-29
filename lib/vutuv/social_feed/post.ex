@@ -40,15 +40,47 @@ defmodule Vutuv.SocialFeed.Post do
   def truncate(text), do: truncate(text, @max_text_length)
 
   @doc """
-  Clamps `text` to `max` characters, replacing the tail with a trailing ellipsis
-  when it runs over (the shared clamp `Vutuv.CodeStats.Snapshot` reuses for its
-  own, shorter description cap).
+  Clamps `text` to at most `max` characters, replacing the tail with a trailing
+  ellipsis when it runs over.
+
+  **The cut lands between words, not inside one.** Every caller here shows the
+  result to a reader — a remote post's body, a repository description, a card
+  headline, a link teaser — and `Bild & Ton: das neue Sm…` reads as a glitch
+  where `Bild & Ton: das neue…` reads as a clamp. The `max - 1` leaves room for
+  the ellipsis, so the result never exceeds `max`; a first word longer than the
+  whole budget has no space to cut at and keeps the blunt slice, which is the
+  only shape that still fits.
+
+  This is the one clamp in the remote-content stack (issue #1741). It used to
+  be two — a blunt one here and a word-aware one private to
+  `Vutuv.LinkSummary` — and both fed the *same* link preview card: an over-long
+  `og:description` was cut mid-word while the model-written teaser beside it
+  was not, which is a difference no reader could attribute to anything.
   """
+  # Neither clause asks how long `text` IS — only whether it reaches past `max`,
+  # which is the cheaper question and the only one that matters. `String.length/1`
+  # walks the whole input, and this is now the clamp on the `RemoteHtml` →
+  # `LinkSummary` path, where "the whole input" is up to 128 KB of a stranger's
+  # page being cut to 12,000 characters: 72,255 reductions to answer it that way
+  # against 16,334 this way, and a short post that needs no cut at all drops from
+  # 226 to 6. `byte_size/1` is O(1) and sound as a first pass because bytes are
+  # never fewer than graphemes, so the common no-op leaves immediately;
+  # `String.split_at/2` then bounds the test at `max` graphemes and hands back the
+  # head it already walked.
+  def truncate(text, max) when byte_size(text) <= max, do: text
+
   def truncate(text, max) do
-    if String.length(text) > max do
-      String.slice(text, 0, max - 1) <> "…"
-    else
-      text
+    case String.split_at(text, max) do
+      {_head, ""} ->
+        text
+
+      {head, _rest} ->
+        head = String.slice(head, 0, max - 1)
+        trimmed = String.replace(head, ~r/\s+\S*$/u, "")
+
+        # `/u` is load-bearing, not decoration: `Vutuv.RemoteHtml.decode_entities/1`
+        # resolves `&nbsp;` to U+00A0, which `\s` matches only under `/u`.
+        if(trimmed == "", do: head, else: trimmed) <> "…"
     end
   end
 end

@@ -96,7 +96,43 @@ defmodule Vutuv.YoutubeThumbnailTest do
         end
       end)
 
-      assert YoutubeThumbnail.fetch(@id) == {:ok, "MAXRES"}
+      assert {:ok, "MAXRES", _meta} = YoutubeThumbnail.fetch(@id)
+    end
+
+    test "the oEmbed answer's words come back with the picture" do
+      stub(fn conn ->
+        if conn.request_path == "/oembed",
+          do: oembed_ok(conn),
+          else: jpeg(conn, "MAXRES")
+      end)
+
+      # The words are what let a video link render as the same card every other
+      # link gets; without them it was the one kind that stayed a bare float.
+      assert {:ok, _bytes, meta} = YoutubeThumbnail.fetch(@id)
+      assert meta.title == "stub"
+      assert meta.site_name == "YouTube"
+      assert meta.host == "youtube.com"
+
+      # Only what oEmbed said. A video has no teaser, but deciding that is a
+      # card's call, not this module's — `Screenshots.card_fields/2` reads a
+      # missing key as absent, so nothing has to write `description: nil` here
+      # to satisfy somebody else's dot-access.
+      refute Map.has_key?(meta, :description)
+    end
+
+    test "an oEmbed answer that is not readable JSON still yields the picture" do
+      stub(fn conn ->
+        if conn.request_path == "/oembed" do
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.send_resp(200, "not json at all")
+        else
+          jpeg(conn, "MAXRES")
+        end
+      end)
+
+      # Best-effort by design: no words, but the thumbnail is not lost over them.
+      assert {:ok, "MAXRES", nil} = YoutubeThumbnail.fetch(@id)
     end
 
     test "falls back to hqdefault when maxresdefault is missing" do
@@ -111,7 +147,7 @@ defmodule Vutuv.YoutubeThumbnailTest do
         end
       end)
 
-      assert YoutubeThumbnail.fetch(@id) == {:ok, "HQ"}
+      assert {:ok, "HQ", _meta} = YoutubeThumbnail.fetch(@id)
     end
 
     test "an unknown video (oEmbed non-200) is :error and no image is fetched" do
