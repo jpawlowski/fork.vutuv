@@ -603,9 +603,9 @@ defmodule Vutuv.References.ChecksTest do
       #
       # Both halves used to be the other way round, which inverted the claim
       # into something the clock can break: `- before <= 300` is false the
-      # moment a second ticks between `before` and the read, and that is a
-      # coin flip on a loaded machine. It failed with `left: 301, right: 300`.
-      # The `>= 299` beside it was slack papering over the same inversion.
+      # moment a second ticks between `before` and the read, and that is a coin
+      # flip on a loaded machine. It failed with `left: 301, right: 300`. The
+      # `>= 299` beside it was slack papering over the same inversion.
       #
       # As written now both are deterministic AND the stronger claim — the wait
       # IS 300 seconds, not merely at most it.
