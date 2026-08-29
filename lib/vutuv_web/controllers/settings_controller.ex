@@ -828,6 +828,24 @@ defmodule VutuvWeb.SettingsController do
     reset_prefs(conn, :maps, gettext("Map preferences reset to the site defaults."))
   end
 
+  # Whether the feed carries answers written to accounts this member does not
+  # follow (issue #1740). A reading preference like the ones around it, so it
+  # shares their page.
+  def update_feed_replies(conn, %{"user" => params}) do
+    save(
+      conn,
+      params,
+      "preferences.html",
+      ~p"/settings/preferences",
+      gettext("Feed answer settings saved."),
+      event: "preferences_changed"
+    )
+  end
+
+  def reset_feed_replies(conn, _params) do
+    reset_prefs(conn, :feed_replies, gettext("Feed answer settings reset to the site defaults."))
+  end
+
   # The browser tab's teaser (issue #1681): whether a post arriving while this
   # member is looking somewhere else pages its first line through the tab
   # title. The sibling of the setting above, and on the same page for that

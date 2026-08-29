@@ -85,6 +85,12 @@ defmodule VutuvWeb.GettextExtractionAnchors do
         "What your feed does with posts outside your chosen languages: show them as they are, translate them for you, or hide them. Posts that declare no language always show."
       ),
       gettext("Feed"),
+      # Vutuv.Prefs — answers to strangers in the feed (issue #1740)
+      gettext("Answers in your feed"),
+      gettext("Show answers to people I do not follow"),
+      gettext(
+        "When somebody you follow answers an account you do not, their answer is left out of your feed. Answers to you, answers to people you follow, and their own follow-ups always stay."
+      ),
       # Vutuv.Prefs — the feed's tab ticker (issue #1668)
       gettext("Feed tabs"),
       gettext("Quote what arrives on the other tab"),

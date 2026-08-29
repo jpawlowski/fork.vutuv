@@ -620,6 +620,16 @@ feed turns *Quote what arrives on the other tab* off at `/admin/preferences`,
 or shortens the window there; the dot is unaffected, and every member can set
 both for themselves.
 
+A fourth decides **how much of other people's conversations a feed carries**.
+When somebody a member follows answers an account that member does *not*
+follow, the answer reads as half a conversation about a stranger — so vutuv
+leaves it out, which is what every network people arrive from does. What always
+stays: a member's own answers, answers written to them, answers to accounts they
+do follow, and an author continuing their own thread. An installation that wants
+the fuller, noisier feed turns *Show answers to people I do not follow* on at
+`/admin/preferences`, and every member can set it for themselves on
+`/settings/preferences`.
+
 - **`/admin` → Preference defaults** (`/admin/preferences`): change the
   default for the whole installation at any time. It applies immediately to
   every member who has not set an own value — and to logged-out visitors.

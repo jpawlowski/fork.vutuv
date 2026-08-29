@@ -89,6 +89,17 @@ defmodule Vutuv.Prefs do
       values: ~w(original translate hide),
       group: :feed
     },
+    # Whether the newsfeed carries answers written to accounts this member does
+    # not follow (issue #1740). Off by default, which is the one preference here
+    # that deliberately changes what an existing member sees on the deploy: an
+    # answer read without the conversation above it is noise. Self-answers,
+    # answers to the reader, and answers to accounts they do follow are never
+    # touched by it, so a thread somebody is actually part of stays whole.
+    #
+    # Its own group rather than `:feed`: the reset link beside a group clears
+    # every pref in it, and this one lives on a different page than the language
+    # knob above.
+    %Pref{key: :feed_stranger_replies?, type: :boolean, default: false, group: :feed_replies},
     # The same idea one surface further out (issue #1681): while the vutuv tab
     # sits in the background, a new post pages its first line through the
     # browser tab's title instead of only putting a dot there. Off leaves the
@@ -174,6 +185,9 @@ defmodule Vutuv.Prefs do
   def label(:feed_foreign_posts),
     do: Gettext.gettext(VutuvWeb.Gettext, "Posts in other languages")
 
+  def label(:feed_stranger_replies?),
+    do: Gettext.gettext(VutuvWeb.Gettext, "Show answers to people I do not follow")
+
   def label(:browser_tab_teaser?),
     do: Gettext.gettext(VutuvWeb.Gettext, "Tease new posts in the browser tab")
 
@@ -191,6 +205,13 @@ defmodule Vutuv.Prefs do
       Gettext.gettext(
         VutuvWeb.Gettext,
         "What your feed does with posts outside your chosen languages: show them as they are, translate them for you, or hide them. Posts that declare no language always show."
+      )
+
+  def hint(:feed_stranger_replies?),
+    do:
+      Gettext.gettext(
+        VutuvWeb.Gettext,
+        "When somebody you follow answers an account you do not, their answer is left out of your feed. Answers to you, answers to people you follow, and their own follow-ups always stay."
       )
 
   def hint(:browser_tab_teaser?),
@@ -248,6 +269,7 @@ defmodule Vutuv.Prefs do
   @doc "The human label of a pref group."
   def group_label(:post_display), do: Gettext.gettext(VutuvWeb.Gettext, "Posts")
   def group_label(:feed), do: Gettext.gettext(VutuvWeb.Gettext, "Feed")
+  def group_label(:feed_replies), do: Gettext.gettext(VutuvWeb.Gettext, "Answers in your feed")
   def group_label(:browser_tab), do: Gettext.gettext(VutuvWeb.Gettext, "Browser tab")
   def group_label(:privacy), do: Gettext.gettext(VutuvWeb.Gettext, "Privacy")
   def group_label(:region), do: Gettext.gettext(VutuvWeb.Gettext, "Date & time")

@@ -3457,9 +3457,50 @@ defmodule Vutuv.Posts do
     )
     |> scope_visible(viewer)
     |> language_scope(feed_language_filter(viewer))
+    |> stranger_reply_scope(viewer)
     |> posts_at_or_before(cursor)
     |> Repo.all()
     |> Enum.map(&%{id: "post-#{&1.id}", post: &1, reposted_by: nil, at: &1.inserted_at})
+  end
+
+  # Answers written to accounts the reader does not follow stay out of the feed
+  # (issue #1740), which is what every network people arrive from already does —
+  # Mastodon's `filter_from_home` hides exactly these. Read without the post it
+  # answers, such an answer is half a sentence about a stranger.
+  #
+  # Five ways to survive it, and each is a conversation the reader is part of:
+  # the answer is **their own**, it is to them, it is the author continuing
+  # their own thread, they follow the answered member, or they follow the
+  # answered page. A reply whose parent has since been deleted
+  # (`parent_post_id` nilifies) is kept too — there is no longer anybody to be a
+  # stranger.
+  #
+  # The first of those is the one that is easy to forget and loudest when wrong:
+  # a member's own feed carries their own posts, and without this clause their
+  # own answers vanish from it. It is the first line of Mastodon's rule too
+  # (`return false if receiver_id == status.account_id`), ahead of every other
+  # test, and for the same reason.
+  #
+  # Every membership test is `IN`, never `NOT IN`: the nullable pair on
+  # `post_replies` (`parent_author_id` beside `parent_organization_id`) means one
+  # side is always NULL, and `x NOT IN (…)` is never true once a NULL is in the
+  # set — that would empty the feed rather than filter it.
+  defp stranger_reply_scope(query, %User{id: viewer_id} = viewer) do
+    if Prefs.get(viewer, :feed_stranger_replies?) do
+      query
+    else
+      query
+      |> join(:left, [post: p], r in assoc(p, :reply_ref), as: :reply_ref)
+      |> where(
+        [post: p, reply_ref: r],
+        is_nil(r.id) or is_nil(r.parent_post_id) or
+          p.user_id == ^viewer_id or
+          r.parent_author_id == ^viewer_id or
+          r.parent_author_id == p.user_id or
+          r.parent_author_id in subquery(followees_of(viewer_id)) or
+          r.parent_organization_id in subquery(followed_organizations_of(viewer_id))
+      )
+    end
   end
 
   # Posts by the organizations the viewer follows (issue #1336). Its own source

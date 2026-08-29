@@ -305,6 +305,10 @@ defmodule Vutuv.Accounts.User do
     # translate mode both do), never raw.
     field(:feed_foreign_posts, :string)
     field(:feed_languages, {:array, :string})
+    # Whether the newsfeed carries answers written to accounts this member does
+    # not follow (issue #1740). NULL = never chose, so the installation default
+    # still reaches them; see `Vutuv.Prefs`.
+    field(:feed_stranger_replies?, :boolean)
     # The feed's tab ticker: when a post lands on the source tab this member is
     # not looking at, the bar quotes its first words for a few seconds beside
     # that tab instead of only growing a dot. The switch turns the quote off
@@ -539,7 +543,7 @@ defmodule Vutuv.Accounts.User do
   # :email_confirmed? is NOT here either: it flips only via the login-PIN path
   # (Accounts.activate_user/1, its own narrow cast) — castable, it would let a
   # registration self-activate without ever proving control of an email.
-  @optional_fields ~w(noindex? noai? notification_emails? dm_email_each_message? dm_email_delay_minutes email_on_endorsement? email_on_follower? email_on_reference_check? newsletter_emails? saved_search_emails? cv_update_notifications? thread_notifications? browser_notifications? show_online_status? show_mastodon_feed? mastodon_clients? show_code_stats? fediverse_followers? fediverse_reactions? fediverse_replies? also_known_as_input map_google? map_openstreetmap? map_apple? default_map_service post_lines_desktop post_lines_mobile post_hyphenate_desktop post_hyphenate_mobile notification_post_lines like_attribution? headline employment_status employment_status_visibility desired_salary_min desired_salary_currency desired_salary_period desired_salary_visibility desired_workplace_types first_name last_name middle_name nickname honorific_prefix honorific_suffix name_pronunciation gender birthdate birthdate_visibility locale date_region time_zone tag_list auto_post_deletion? auto_post_deletion_after_days auto_post_deletion_keep_photos? auto_post_deletion_keep_answered? auto_post_deletion_keep_bookmarked? auto_post_deletion_delete_replies? auto_post_deletion_min_likes auto_post_deletion_min_bookmarks auto_post_deletion_min_reposts feed_foreign_posts feed_languages feed_tab_ticker? feed_tab_ticker_seconds browser_tab_teaser?)a
+  @optional_fields ~w(noindex? noai? notification_emails? dm_email_each_message? dm_email_delay_minutes email_on_endorsement? email_on_follower? email_on_reference_check? newsletter_emails? saved_search_emails? cv_update_notifications? thread_notifications? browser_notifications? show_online_status? show_mastodon_feed? mastodon_clients? show_code_stats? fediverse_followers? fediverse_reactions? fediverse_replies? also_known_as_input map_google? map_openstreetmap? map_apple? default_map_service post_lines_desktop post_lines_mobile post_hyphenate_desktop post_hyphenate_mobile notification_post_lines like_attribution? headline employment_status employment_status_visibility desired_salary_min desired_salary_currency desired_salary_period desired_salary_visibility desired_workplace_types first_name last_name middle_name nickname honorific_prefix honorific_suffix name_pronunciation gender birthdate birthdate_visibility locale date_region time_zone tag_list auto_post_deletion? auto_post_deletion_after_days auto_post_deletion_keep_photos? auto_post_deletion_keep_answered? auto_post_deletion_keep_bookmarked? auto_post_deletion_delete_replies? auto_post_deletion_min_likes auto_post_deletion_min_bookmarks auto_post_deletion_min_reposts feed_foreign_posts feed_languages feed_stranger_replies? feed_tab_ticker? feed_tab_ticker_seconds browser_tab_teaser?)a
 
   # The ages the automatic post deletion offers (issue #1255), in days. A fixed
   # list rather than a free number field on purpose: this setting deletes

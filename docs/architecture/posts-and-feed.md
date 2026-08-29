@@ -639,6 +639,27 @@ drag-and-drop outright while the synthetic-event tests stayed green, because a
 dispatched `DragEvent` has no browser drag session to cancel. The lesson is
 narrow and worth keeping: **`dragstart` may change appearance and nothing else.**
 
+**Answers to strangers stay out of the feed** (issue #1740). `feed_post_items/3`
+runs `stranger_reply_scope/2`. The rule is **am I in this exchange**, not *do I
+follow the author*: an answer is dropped unless the reader is part of the
+conversation — their own post, an answer to them, the author continuing their
+own thread, or an answer to a member or page they follow. A reply orphaned by a
+deleted parent is kept, since nobody is left to be a stranger. One member
+preference (`Vutuv.Prefs`, group `:feed_replies`): `feed_stranger_replies?`
+(off). Every membership test is `IN`, never `NOT IN` — `post_replies` carries
+the nullable `parent_author_id`/`parent_organization_id` pair, and a `NOT IN`
+holding a NULL is never true, which would empty the feed instead of filtering
+it. Only this source needs it, and the reasons differ per sibling: organizations
+cannot reply (`create_organization_post/3` takes no parent); the tag source
+cannot carry one either, but only by accident of the composer —
+`do_create_reply/4` passes no tag ids, so a reply never gets a `post_tags` row,
+which is the sole thing keeping the noisiest case out; and a **repost of** such
+an answer does still arrive, deliberately, because a boost is somebody the
+reader follows saying "read this", a different act with its own audience (pinned
+by a test). A page's own feed (`organization_feed_page/2`) is deliberately
+unfiltered: the knob is a `users` column and a page has no reader whose
+follows it could be measured against.
+
 The grip's own arming had the same shape of bug and a different cause. A card is
 made `draggable` only while the pointer hovers its grip — a card full of
 checkboxes, links and text inputs that could be dragged from anywhere is a card
