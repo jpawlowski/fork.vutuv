@@ -22,6 +22,7 @@ defmodule VutuvWeb.MessageLive.Index do
   alias Vutuv.Organizations
   alias Vutuv.Organizations.Organization
   alias Vutuv.Posts
+  alias VutuvWeb.Live.PullRefresh
   alias VutuvWeb.{Markdown, Presence}
 
   @typing_clear_ms 2500
@@ -55,6 +56,9 @@ defmodule VutuvWeb.MessageLive.Index do
      |> assign(:more?, false)
      |> assign(:cursor, nil)
      |> assign_sidebar()
+     # Can this browser run the pull-to-refresh gesture (issue #1730)? Connect
+     # params are readable in mount only — see `VutuvWeb.Live.PullRefresh`.
+     |> PullRefresh.assign_capability()
      |> stream(:messages, [], dom_id: &"message-#{&1.id}")
      |> assign(:editor_seed, 0)
      |> assign_form()}
@@ -295,6 +299,16 @@ defmodule VutuvWeb.MessageLive.Index do
       {:error, :not_recipient} ->
         {:noreply, socket}
     end
+  end
+
+  # Pull to refresh (issue #1730). Only the conversation LIST is reloaded, and
+  # only its own scroller carries the gesture: this page is a full-viewport
+  # chat, the document itself does not move, and the open thread is a separate
+  # scroll context that already streams its messages live and scrolls the wrong
+  # way for this gesture. A pull that engaged on the wrong element would be
+  # worse than none.
+  def handle_event("pwa:refresh", _params, socket) do
+    {:noreply, assign_lists(socket)}
   end
 
   def handle_event("load-older", _params, socket) do
@@ -635,7 +649,16 @@ defmodule VutuvWeb.MessageLive.Index do
       <%!-- Conversation list. Full-width on mobile while no thread is open;
             once one is, the thread takes over and the list moves behind the
             back link (md+ always shows both). --%>
+      <%!-- `data-pull-scroller="self"`: this card is its own scroll container
+      (the document does not move on this page), so the pull-to-refresh gesture
+      has to read ITS `scrollTop`, not the window's. Rendered only when the
+      browser's own bundle claims the hook — see `VutuvWeb.Live.PullRefresh`.
+      While a thread is open the card is `hidden`, which takes the gesture with
+      it, and that is the intent: refreshing here means the list. --%>
       <aside
+        id="conversations"
+        phx-hook={@pull_refresh? && "PullToRefresh"}
+        data-pull-scroller="self"
         aria-busy={!@loaded? && "true"}
         class={[
           "w-full shrink-0 overflow-y-auto rounded-2xl bg-white ring-1 ring-slate-200 md:block md:w-64 dark:bg-slate-900 dark:ring-slate-800",

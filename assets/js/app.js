@@ -42,6 +42,9 @@ import "./lightbox"
 // (self-contained; marks <html>, which is outside every LiveView root, so no
 // patch can drop the state. See scroll_top_tab.js).
 import "./scroll_top_tab"
+// Pull a list down to refresh it (issue #1730). Opt-in per page: the LiveView
+// that owns the list renders the hook and handles `pwa:refresh`.
+import PullToRefresh from "./pull_to_refresh"
 
 // LiveSocket drives the incremental LiveView shell (live unread badges, the
 // notifications/messages pages, presence). The CSRF token is rendered into the
@@ -698,6 +701,7 @@ const Hooks = {
   MarkdownEditor,
   TagInput,
   FeedUrl,
+  PullToRefresh,
   LocalTime: {
     mounted() {
       localizeTime(this.el)
@@ -1576,7 +1580,12 @@ const NAV_PRESSING = "data-nav-pressing"
 const KEEP_OPEN = "data-keep-open"
 
 const liveSocket = new LiveSocket("/live", Socket, {
-  params: { _csrf_token: csrfToken() },
+  // `pull_refresh` is a capability, not a setting (issue #1730): only a bundle
+  // carrying the PullToRefresh hook can send this key, so a page reconnecting
+  // into a document from before that deploy never renders a hook its
+  // JavaScript does not have. A deploy reloads no open tab — it only
+  // reconnects the socket into hours-old markup. Retire it with the hook.
+  params: { _csrf_token: csrfToken(), pull_refresh: true },
   hooks: Hooks,
   dom: {
     // Both navs live inside ShellLive, so a patch that has nothing to do with

@@ -103,6 +103,62 @@ silently on exactly the devices nobody is testing on. The same holds for the
 cache: `activate` deletes every key that is not its own, so two releases never
 share one, but the old cache lives as long as the old worker does.
 
+### Pull to refresh (issue #1730)
+
+Pulling a list down is the most over-learned interaction on a phone, and its
+absence reads as breakage even when nothing is broken. Worth writing down,
+because it will come up: yes, content already arrives by itself over PubSub.
+The gesture is not a transport, it is a **reassurance** — it answers "have I
+seen everything?", which no push channel can answer.
+
+The gesture is `assets/js/pull_to_refresh.js` (`PullToRefresh`), and its
+ending is the whole design. It **never calls `location.reload()`**: that would
+throw away the LiveView, rebuild the socket and re-fetch the document, so the
+refresh would cost more than the state it refreshes. It pushes
+**`pwa:refresh`** over the existing socket, and whichever LiveView owns the
+list re-queries it. The chrome, the scroll container and the socket all stay.
+
+That makes it a small contract rather than one component, and it is **opt-in
+per page** — a page that does not implement the event never renders the hook,
+so the gesture is never offered where it would do nothing:
+
+| page | LiveView | what a refresh means |
+|---|---|---|
+| `/feed` | `PostLive.Feed` | re-run the timeline query for the tab on screen |
+| `/messages` | `MessageLive.Index` | reload the conversation list |
+| `/notifications` | `NotificationLive.Index` | reload the page, mark what came in as read |
+
+Mechanics: the gesture engages only while the scroll container is at the top
+**and** the first movement is downward (otherwise the browser scrolls, and a
+sideways swipe is not ours); finger travel is halved and capped at 120px,
+because tracking 1:1 feels like the page came loose; the threshold is 70px of
+that resisted travel; `navigator.vibrate(10)` fires the moment it is crossed,
+not on release (Android taps, iOS ignores it without error); and the indicator
+appears **during** the pull, since its job is to tell you the gesture exists
+before you commit to it. The `touchmove` listener is non-passive so the native
+scroll can be prevented — the same reason the composer's photo-reorder drag
+registers one. The hook sets `overscroll-behavior-y: contain` on its own
+scroller while it lives, which stops Chrome's own pull-to-refresh firing
+underneath ours; doing it here rather than in the stylesheet scopes it to the
+pages that actually replace the native gesture.
+
+Two things to know before adding a fourth page. **Which element scrolls is
+stated, not guessed:** `data-pull-scroller="self"` says the hook's own element
+is the scroll container, which is how `/messages` works — that page is a
+full-viewport chat, the document does not move, and a gesture engaging on the
+wrong element is worse than none. Without the attribute the document is the
+scroller (`/feed`, `/notifications`). And **the browser has to be able to run
+it at all:** a deploy reloads no open tab, so `app.js` sends `pull_refresh:
+true` as a connect param and `VutuvWeb.Live.PullRefresh` gates the hook on it —
+only a bundle carrying the hook can make that claim. That is the seam the
+feed's tab ticker used before v7.483.0 retired it, and deliberately not
+`static_changed?/1`, which turns true after *every* asset deploy.
+
+The gesture is invisible to keyboard and screen-reader users and impossible
+without a touch screen, so it is an addition: whatever visible refresh path a
+page already has stays. `test/vutuv_web/live/pull_refresh_test.exs` covers the
+contract, including that the hook never reaches for a page reload.
+
 The **Messages** (`/messages`), **Notifications** (`/notifications`) and
 **Search** (`/search`) pages are LiveViews under a `live_session`. The search
 page itself is described in [search.md](search.md).

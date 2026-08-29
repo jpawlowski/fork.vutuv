@@ -50,6 +50,7 @@ defmodule VutuvWeb.PostLive.Feed do
   alias VutuvWeb.Live.InitAssigns
   alias VutuvWeb.Live.MountHandoff
   alias VutuvWeb.Live.PostTranslations
+  alias VutuvWeb.Live.PullRefresh
   alias VutuvWeb.Live.RemoteImages
   alias VutuvWeb.Live.RemotePostActions
   alias VutuvWeb.Live.RemoteReplyActions
@@ -167,6 +168,16 @@ defmodule VutuvWeb.PostLive.Feed do
   end
 
   defp mount_feed(socket, user, {day, open?}) do
+    # Can this browser run the pull-to-refresh gesture? A deploy does not
+    # reload an open feed — the socket reconnects to the new release and
+    # patches into a document downloaded hours ago — so the question is not
+    # which release that document came from but what it is able to render. The
+    # bundle answers it itself: `pull_refresh` is a LiveSocket param
+    # (assets/js/app.js), so only a bundle carrying the hook can claim the
+    # capability. Read here because connect params exist only during mount —
+    # see `VutuvWeb.Live.PullRefresh`.
+    socket = PullRefresh.assign_capability(socket)
+
     # The sources they left on (issue #1499). It opens the page *and* keys the
     # handoff below: the stash holds one entry per member, so two devices
     # opening /feed within its 15s TTL would otherwise let one take a page the
@@ -1362,6 +1373,21 @@ defmodule VutuvWeb.PostLive.Feed do
     {:noreply, assign(socket, :band_sheet?, false)}
   end
 
+  # Pull to refresh (issue #1730). The gesture is a reassurance rather than a
+  # transport: posts already arrive over PubSub, but nothing on a push channel
+  # can answer "have I seen everything?", and that is the question a thumb is
+  # asking. So it re-runs the timeline query for the tab on screen and replaces
+  # the list from the top — the same thing pressing the tab does, and the same
+  # reason the pending batch is dropped with it.
+  #
+  # This has to be a socket round trip. The obvious client-side ending,
+  # `location.reload()`, throws away this LiveView, rebuilds the socket and
+  # re-fetches the whole document, so the refresh would cost more than the
+  # state it refreshes — on a slow line, visibly worse than having no gesture.
+  def handle_event("pwa:refresh", _params, socket) do
+    {:noreply, load_source_filter(socket, socket.assigns.feed_filter)}
+  end
+
   def handle_event("show-new", _params, socket) do
     pending = socket.assigns.pending_posts
 
@@ -2351,11 +2377,22 @@ defmodule VutuvWeb.PostLive.Feed do
   @impl true
   def render(assigns) do
     ~H"""
-    <%!-- `FeedUrl` writes the calendar's day into the address bar (see
-    `sync_url/1`). It hangs off the page root rather than off the calendar
-    because there are two calendars, one per breakpoint, and the URL has one
-    owner. --%>
-    <div id="feed" phx-hook="FeedUrl" class="py-6">
+    <%!-- Pull the feed down to refresh it (issue #1730) — on its own wrapper,
+    because `#feed` already carries `FeedUrl` and LiveView reads `phx-hook` as
+    a single name. The wrapper works as well: touch events bubble up from the
+    list, the indicator is `position: fixed` on `document.body`, and the only
+    thing measured off this element is its top edge, which a wrapper with no
+    padding of its own shares with `#feed`. The hook is rendered only when the
+    browser's own bundle says it carries it — see `VutuvWeb.Live.PullRefresh`
+    — so a feed reconnecting into a document from before that deploy simply
+    keeps the behaviour it had. The document is this page's scroll container,
+    so the hook needs no `data-pull-scroller`. --%>
+    <div id="feed-pull" phx-hook={@pull_refresh? && "PullToRefresh"}>
+      <%!-- `FeedUrl` writes the calendar's day into the address bar (see
+      `sync_url/1`). It hangs off the page root rather than off the calendar
+      because there are two calendars, one per breakpoint, and the URL has one
+      owner. --%>
+      <div id="feed" phx-hook="FeedUrl" class="py-6">
       <%!-- Two columns on desktop: the feed, plus the rail that uses the
       otherwise-empty side space. The rail is desktop-only (the grid collapses
       to one column under md, and the rail is hidden anyway). --%>
@@ -3000,6 +3037,7 @@ defmodule VutuvWeb.PostLive.Feed do
             </.card>
           </div>
         </div>
+      </div>
       </div>
     </div>
     """

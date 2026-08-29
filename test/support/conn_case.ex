@@ -9,6 +9,7 @@ defmodule VutuvWeb.ConnCase do
     quote do
       import Plug.Conn
       import Phoenix.ConnTest
+      import VutuvWeb.LiveTestHelpers
 
       alias Vutuv.Repo
       import Ecto.Changeset

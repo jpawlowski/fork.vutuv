@@ -83,6 +83,7 @@ defmodule VutuvWeb.NotificationLive.Index do
   alias Vutuv.Social
   alias Vutuv.ViewerClock
   alias VutuvWeb.Live.MountHandoff
+  alias VutuvWeb.Live.PullRefresh
   alias VutuvWeb.Markdown
   alias VutuvWeb.NotificationLive.Groups
   alias VutuvWeb.PostTeaser
@@ -143,6 +144,9 @@ defmodule VutuvWeb.NotificationLive.Index do
      |> assign(:dismissed, dismissed)
      |> assign(:today, ViewerClock.today())
      |> assign(:quote_lines, User.notification_post_lines(user))
+     # Can this browser run the pull-to-refresh gesture (issue #1730)? Connect
+     # params are readable in mount only — see `VutuvWeb.Live.PullRefresh`.
+     |> PullRefresh.assign_capability()
      |> assign_rail(connected?(socket))}
   end
 
@@ -162,9 +166,37 @@ defmodule VutuvWeb.NotificationLive.Index do
      |> load_page()}
   end
 
+  # Pull to refresh (issue #1730): re-query this tab's page and recompute the
+  # rail. It deliberately goes past `load_page/1` to `page_payload/1` — the
+  # handoff stash exists to spare the connected mount a repeat of the dead
+  # render's queries, and a member who pulled the list down is asking for
+  # exactly the thing a cache must not answer.
+  #
+  # The rows it brings in are being looked at, so they stop counting in the
+  # shell's bell — the same write the live `:new_notification` path makes, for
+  # the same reason. `:read_marker` and `:new_count` are NOT recomputed: they
+  # say "since your last visit", and a pull is still this visit, so the
+  # divider stays where the member left it.
+  #
+  # The rail is recomputed even though the gesture is about the list, and that
+  # is deliberate: its "Follow back" pills are drawn from followers, so the
+  # very row a pull brings in is often a new candidate. It is also the
+  # expensive half (three more queries per pull), so if this handler ever has
+  # to get cheaper, the rail is the first thing to drop.
+  @impl true
+  def handle_event("pwa:refresh", _params, socket) do
+    user = socket.assigns.current_user
+    Activity.mark_notifications_read(user.id)
+
+    {:noreply,
+     socket
+     |> assign(:dismissed, Activity.dismissed_event_ids(user.id))
+     |> apply_page(page_payload(socket))
+     |> assign_rail(true)}
+  end
+
   # The rail's "Follow back" pill (user_row live?): follow with no reload,
   # then recompute the rail so the new followee drops out.
-  @impl true
   def handle_event("follow", %{"followee" => followee_id}, socket) do
     case Social.follow(socket.assigns.current_user, followee_id) do
       {:ok, _} -> {:noreply, assign_rail(socket, true)}
@@ -365,7 +397,10 @@ defmodule VutuvWeb.NotificationLive.Index do
   @impl true
   def render(assigns) do
     ~H"""
-    <div id="notifications" class="py-6 md:py-8">
+    <%!-- Pull the list down to refresh it (issue #1730). Rendered only when the
+    browser's own bundle claims the hook (`VutuvWeb.Live.PullRefresh`); the
+    document is this page's scroll container, so no `data-pull-scroller`. --%>
+    <div id="notifications" phx-hook={@pull_refresh? && "PullToRefresh"} class="py-6 md:py-8">
       <div class="grid gap-6 md:grid-cols-3">
         <%!-- `data-filter-scope` pairs the tabs with the list they replace: the
         in-flight paint in `app.css` dims every `[data-filter-list]` inside this
