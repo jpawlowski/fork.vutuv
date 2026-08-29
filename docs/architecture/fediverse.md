@@ -1687,6 +1687,89 @@ renders as a neutral waiting tile with the same hourglass a member's own held
 post wears, because a photo post with its picture silently absent is not a quiet
 card, it is a broken one.
 
+**The verdict is announced, and it has to be** (issue #1801). Every other image
+kind reports itself through `Vutuv.Activity.broadcast(scan.owner_user_id, …)`,
+and these two are the ownerless ones, so for a while nothing was sent at all:
+`ImageSubjects.apply_approved/1` flipped a column and stopped, and a card
+already on screen kept its waiting tile until the reader pressed reload. That is
+the *ordinary* path, not an edge: `record_remote_post/2` records the picture and
+nudges the open feeds in the same breath, a second before the download finishes,
+so the first draw of a boosted photo post is the wordless tile — and it was also
+the last. Measured on production, a picture was approved 88 seconds before the
+screenshot that reported the bug.
+
+So both verdicts broadcast `{:remote_images_settled, %{remote_post_id: id}}` on
+`Fediverse.remote_images_topic/0` — **one** topic, the arrangement
+`counts_topic/0` makes and for the same reason: a verdict is rare, and each
+listener keeps only the cards it is showing. The alternative, a topic per
+waiting picture, would make every listening page walk its own entries at mount
+and again on each append, which is a great deal of bookkeeping for an event this
+quiet. A verdict that lost its race announces nothing, having changed no row.
+
+Listening is `VutuvWeb.Live.RemoteImages`, an `on_mount` hook, because the
+waiting tile prints its promise from **one shared component on six pages** (the
+feed, the post's own page, the account page, the URL lookup, a tag timeline and
+an organization's feed) and a guarantee made in one place must not depend on six
+hosts each remembering a subscription. It has two modes, since the pictures are
+held in two shapes: `:assigns` owns a page whose pictures are one `@images`
+assign end to end (no handler at all), and the default mode only subscribes, for
+a timeline whose cards are in a stream and whose redraw only it can write.
+
+**A download that misses is asked again** (issue #1803). The first attempt is
+fire-and-forget on `Vutuv.TaskSupervisor`, off the inbox's request path, and
+nothing recorded that it had failed: a blue/green deploy stopping the slot
+mid-download, a crash, or ten bad seconds on the other server left the row at
+`file IS NULL` for ever, and `ImageScans.repair_drift/0` will not rescue it —
+that backstop skips a picture with no bytes to judge (`require_file: true`),
+which is correct and leaves exactly this gap. Thirteen pictures were stuck that
+way on production when this was written, the oldest since 2026-08-03, and every
+one of their source URLs answered `200` when asked again: twelve with a real
+image, the thirteenth with a video its own server declares as one. (Four more
+cards showed the same eternal tile for the opposite reason — the gate had
+*refused* those pictures — which is the state half of this change.)
+
+So the row *is* the unfinished job and `Vutuv.Fediverse.MediaRefetcher` is what
+finds it: every five minutes, `Media.refetch_due/1` takes a bounded batch of
+file-less pictures least recently tried first and asks once more. Two rules make
+it safe. **The clock moves on every outcome**, including the ones that did
+nothing — a row this cannot finish would otherwise hold the front of every batch
+for ever, which is the deadlock #1316 shipped. And a **strike is taken only
+where the remote side failed**: `Media.attempt/1` separates `:unreachable` (try
+again, up to five times) from `:unusable` (bytes that are not a picture we can
+store — a video its server declares as an image, one over the ceiling — which
+spends every try at once, because they will be the same bytes tomorrow). There
+is no per-host cap, unlike the counts refresher: a picture costs at most five
+requests *ever* and then leaves the queue, so the total is bounded without one,
+and a cap over an already-sorted, already-capped batch is the amplifier that
+starves the healthy rows behind one blocked host.
+
+**A picture that is not coming says so**, and it takes two columns to know,
+because the two answers come from different places. `moderation` is the
+**gate's**: a rejection now writes `"rejected"` where it used to write `nil`.
+`fetch_failures` is the **download's**, and the terminal fetch state is
+deliberately *not* folded into the verdict column — an installation running no
+vision model records every picture `"approved"` on the spot
+(`ImageScans.initial_state/0`), so a failed download there carries an approval
+and no file, and a terminal state kept in `moderation` would have missed that
+whole class of installation. `RemoteImage.unavailable?/1` reads both (the old
+nulls included) and the card renders a quiet "Bild nicht verfügbar" tile instead
+of the hourglass. `display_state/1` beside it owns the order the questions have
+to be asked in, which is what the call site kept getting wrong. That is the half of the bug a reader actually saw: a null
+`moderation` beside a null `file` was indistinguishable from a picture nobody
+had judged yet, so cards went on promising a check that had finished — or had
+never been possible — weeks earlier. The tile stays rather than vanishing, for
+the reason the waiting tile does: a post from another network can be a
+photograph and nothing else. It says nothing about *why*, because one reason is
+a moderation decision that is not the reader's argument to have and the other is
+somebody else's server having a bad week.
+
+**A remote account's avatar is deliberately left out**, though it is the other
+ownerless kind and just as silent: an unreleased avatar renders as the account's
+initials, a whole placeholder rather than a promise, so nobody is left waiting on
+it. `Fediverse.refresh_remote_account/1` does flip an approved avatar back to
+`pending` on an actor `Update`, so an open page can lose a face until the next
+load; if that is worth fixing, this is the topic it joins.
+
 Deletion is the part that is easy to get wrong: rows cascade, **files do not**.
 Every single-post delete therefore goes through one chokepoint
 (`delete_cached_post/1`) and every bulk sweep through `wipe_media/1` /

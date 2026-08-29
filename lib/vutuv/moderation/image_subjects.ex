@@ -16,6 +16,7 @@ defmodule Vutuv.Moderation.ImageSubjects do
   import Ecto.Query
 
   alias Vutuv.Accounts.User
+  alias Vutuv.Fediverse
   alias Vutuv.Fediverse.RemoteAccount
   alias Vutuv.Fediverse.RemoteImage
   alias Vutuv.JobReferenceDocument
@@ -451,7 +452,11 @@ defmodule Vutuv.Moderation.ImageSubjects do
     # Before the flip, for the reason the gallery clause above gives. The
     # rejection path needs no such line: it wipes the directory.
     RemoteMedia.delete_post_image_pixelated(scan.subject_id)
-    verdict_applied(flip_remote(RemoteImage, scan, :file, :moderation, "approved"))
+
+    RemoteImage
+    |> flip_remote(scan, :file, :moderation, "approved")
+    |> verdict_applied()
+    |> announce_when_applied(scan)
   end
 
   def apply_approved(%ImageScan{kind: "remote_avatar"} = scan) do
@@ -474,7 +479,7 @@ defmodule Vutuv.Moderation.ImageSubjects do
         # announced once it is released (no quarantine move — covers are
         # served through the authorizing proxy, which checks this state).
         Vutuv.Posts.broadcast_review_cover_ready(review.post_id)
-        Vutuv.Fediverse.images_settled(review.post_id)
+        Fediverse.images_settled(review.post_id)
         :ok
 
       _ ->
@@ -608,13 +613,19 @@ defmodule Vutuv.Moderation.ImageSubjects do
   # A rejected remote picture: the file goes at once, the row stays. Nobody is
   # notified — no member uploaded it, so there is no content of theirs that was
   # removed, and the post it hangs off simply renders without it.
+  #
+  # `"rejected"` and not the `nil` this wrote until issue #1803: a null here is
+  # also what a picture nobody has judged yet carries, so the card could not
+  # tell a refusal from a wait and went on claiming a check was running about a
+  # picture that had been refused weeks earlier. `RemoteImage.unavailable?/1`
+  # still reads the old nulls, which the migration has renamed anyway.
   def apply_rejected(%ImageScan{kind: "remote_post_image"} = scan) do
     with :ok <-
            verdict_applied(
-             flip_remote(RemoteImage, scan, :file, :moderation, nil, clear_file: true)
+             flip_remote(RemoteImage, scan, :file, :moderation, "rejected", clear_file: true)
            ) do
       RemoteMedia.delete_post_image(scan.subject_id)
-      :ok
+      announce_when_applied(:ok, scan)
     end
   end
 
@@ -638,7 +649,7 @@ defmodule Vutuv.Moderation.ImageSubjects do
         Vutuv.ReviewCover.delete_files(%PostReview{id: scan.subject_id})
         # The cover is settled (as gone), so a post held for it federates now.
         case Repo.get(PostReview, scan.subject_id) do
-          %PostReview{post_id: post_id} -> Vutuv.Fediverse.images_settled(post_id)
+          %PostReview{post_id: post_id} -> Fediverse.images_settled(post_id)
           nil -> :ok
         end
 
@@ -658,6 +669,25 @@ defmodule Vutuv.Moderation.ImageSubjects do
   # how a stale verdict would slip through.
   defp verdict_applied({1, _}), do: :ok
   defp verdict_applied(_other), do: :stale
+
+  # What every open card showing this cached post is waiting for (issue #1801).
+  # Takes the verdict's own answer and returns it unchanged, so a `:stale` one
+  # announces nothing: it changed no row, and sending every listener back to the
+  # database for an unchanged state is worse than silence.
+  #
+  # The post id is read after the flip because both verdicts leave the row
+  # standing (a rejection clears `file` and keeps it). A row the retention sweep
+  # has taken meanwhile reads as `nil`, which the broadcast takes as a no-op.
+  defp announce_when_applied(:ok, %ImageScan{subject_id: subject_id}) do
+    Fediverse.broadcast_remote_images_settled(remote_post_id_of(subject_id))
+    :ok
+  end
+
+  defp announce_when_applied(other, _scan), do: other
+
+  defp remote_post_id_of(image_id) do
+    Repo.one(from(i in RemoteImage, where: i.id == ^image_id, select: i.remote_post_id))
+  end
 
   defp flip_remote(schema, scan, file_field, state_field, state, opts \\ []) do
     sets =
@@ -695,7 +725,7 @@ defmodule Vutuv.Moderation.ImageSubjects do
   defp settled(nil), do: :ok
 
   defp settled(post_id) do
-    Vutuv.Fediverse.images_settled(post_id)
+    Fediverse.images_settled(post_id)
     Vutuv.Posts.broadcast_images_settled(post_id)
   end
 
