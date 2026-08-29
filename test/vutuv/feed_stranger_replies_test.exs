@@ -14,25 +14,19 @@ defmodule Vutuv.FeedStrangerRepliesTest do
   """
   use Vutuv.DataCase, async: true
 
+  import Vutuv.PostsHelpers
+
   alias Vutuv.Posts
 
-  defp reader!(attrs \\ %{}) do
-    :activated_user
-    |> insert()
-    |> Ecto.Changeset.change(attrs)
-    |> Repo.update!()
-  end
+  defp reader!(attrs \\ []), do: insert(:activated_user, attrs)
 
   defp followed_by!(reader) do
     author = insert(:activated_user)
-    insert(:follow, follower: reader, followee: author)
+    follow!(reader, author)
     author
   end
 
-  defp post!(author, body) do
-    {:ok, post} = Posts.create_post(author, %{body: body})
-    post
-  end
+  defp post!(author, body), do: create_post!(author, %{body: body})
 
   defp reply!(author, parent, body) do
     {:ok, reply} = Posts.create_reply(author, parent, %{body: body})
@@ -117,8 +111,23 @@ defmodule Vutuv.FeedStrangerRepliesTest do
     assert reply.id in feed_ids(reader)
   end
 
+  test "a boost of such an answer still arrives, and that is deliberate" do
+    reader = reader!()
+    booster = followed_by!(reader)
+    stranger = insert(:activated_user)
+    reply = reply!(insert(:activated_user), post!(stranger, "Frage?"), "Antwort.")
+
+    :ok = Posts.repost_post(booster, reply)
+
+    # The filter judges what somebody *wrote*, not what they passed on: a boost
+    # is somebody the reader follows saying "read this", which is a different
+    # act with its own audience. Pinned here so the boundary is a decision on
+    # record rather than something nobody got round to.
+    assert Enum.any?(Posts.feed_page(reader).entries, &(&1.post.id == reply.id))
+  end
+
   test "the member can switch them back on" do
-    reader = reader!(%{feed_stranger_replies?: true})
+    reader = reader!(feed_stranger_replies?: true)
     author = followed_by!(reader)
     stranger = insert(:activated_user)
 
