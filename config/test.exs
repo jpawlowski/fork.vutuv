@@ -85,6 +85,13 @@ config :vutuv, :fediverse_media_fetch, false
 # sandbox from outside; tests call Vutuv.Posts.Screenshots.deliver_due/1 directly
 # with a stubbed capture. ScreenshotWorker.nudge/0 casts into the void then.
 config :vutuv, :post_screenshot_worker, false
+# The link-preview teaser's serialising queue (issue #1742) is a long-lived
+# named process that would answer a `deliver_due/1` drain by calling the model
+# from outside the sandbox — and, worse for a test, at a moment of its own
+# choosing. Off here, so `SummaryQueue.enqueue/3` casts into the void and a
+# drain is deterministic; the tests that want it start their own with
+# `start_supervised!/1` and drive it with `flush/0`.
+config :vutuv, :link_summary_queue, false
 # AI image moderation is off in tests: images release immediately, so the
 # whole existing suite sees today's behavior. The moderation tests flip
 # :moderate_images on per-test and drain via ImageScans.deliver_due/1 with a

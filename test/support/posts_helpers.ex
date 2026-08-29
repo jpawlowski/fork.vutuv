@@ -7,6 +7,7 @@ defmodule Vutuv.PostsHelpers do
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostLike
   alias Vutuv.Posts.PostRepost
+  alias Vutuv.Posts.Screenshots
   alias Vutuv.Repo
 
   @doc """
@@ -52,5 +53,32 @@ defmodule Vutuv.PostsHelpers do
   """
   def page_like!(post, page) do
     Repo.insert!(%PostLike{post_id: post.id, organization_id: page.id})
+  end
+
+  @doc """
+  A post whose link preview is captured, stored and released by the AI image
+  scan: `{post, post_screenshot}`. The state a row is in by the time its teaser
+  is queued, and the state an author sees on the card.
+
+  Pass `moderation` as `"pending"` for a capture the scan is still holding —
+  `PostScreenshot.ready?/1` reads `status`, `screenshot` **and** `moderation`
+  together, so a fixture that sets only two of the three quietly stops
+  producing a ready row the day a fourth condition joins them. That is the
+  whole reason this lives here rather than being spelled out per test file.
+  """
+  def ready_preview!(author, moderation \\ "approved") do
+    post = create_post!(author, %{body: "Look at this: https://example.com/page"})
+    {:ok, job} = Screenshots.reconcile(post)
+
+    {:ok, ready} =
+      job
+      |> Ecto.Changeset.change(
+        status: "ready",
+        screenshot: "0123456789ab.avif",
+        moderation: moderation
+      )
+      |> Repo.update()
+
+    {post, ready}
   end
 end

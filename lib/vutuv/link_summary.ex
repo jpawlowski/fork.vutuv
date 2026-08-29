@@ -20,21 +20,22 @@ defmodule Vutuv.LinkSummary do
 
   ## Where it runs, and what it costs
 
-  In `Vutuv.Posts.Screenshots`, after the capture is stored **and the row is
-  already `ready`** — the picture is what a reader waits for, and that worker
-  drains one job at a time, so a model call in front of it would hold both the
-  finished preview and the queue behind it.
+  **Never on the capture worker** (issue #1742). `Vutuv.Posts.SummaryQueue`
+  owns every call this module makes, one at a time and behind the image scans;
+  its moduledoc carries that argument, because it is the thing being justified.
 
-  Strictly best-effort: one attempt, no queue of its own, and every failure —
-  the flag is off, no Ollama, a page that answers nothing readable, a model
-  that answered junk — leaves `summary` `nil` and the card showing its headline
-  and picture alone. Nothing retries it, because a missing teaser is not worth
-  a second round of machinery; a re-queued capture summarises again.
+  Strictly best-effort: one attempt, and every failure — the flag is off, no
+  Ollama, a page that answers nothing readable, a model that answered junk —
+  leaves `summary` `nil` and the card showing its headline and picture alone.
+  Nothing retries it, because a missing teaser is not worth a second round of
+  machinery; a re-queued capture summarises again.
 
   Usually it does **not** fetch at all: the capture path already downloaded the
-  page for its Open Graph metadata and hands the HTML over
-  (`summarize_html/2`). `summarize/1` fetching for itself is the fallback for a
-  caller holding no body. That path runs after `ensure_http_ok/1` has
+  page for its Open Graph metadata and reduces it to prose with `page_text/1`
+  before queueing, so what waits in the queue is a few kilobytes of text rather
+  than the half-megabyte document — and `summarize_text/2` then only has the
+  model call left to make. `summarize/1` fetching for itself is the fallback
+  for a caller holding no body. That path runs after `ensure_http_ok/1` has
   established that the URL answers a plain 200 without redirecting, which is why
   it needs no redirect handling of its own; the host is re-checked against
   `Vutuv.Ssrf` all the same, because the answer can have changed since the
@@ -98,13 +99,24 @@ defmodule Vutuv.LinkSummary do
   @num_ctx 8192
   # How long one sentence may take. Below `:ollama_timeout`'s patient 120 s on
   # purpose: this is the least valuable call this installation makes to a
-  # model, and it is made from a queue that drains one capture at a time.
+  # model, and `Vutuv.Posts.SummaryQueue` makes one at a time — so this number
+  # is also how long the *next* member's teaser waits behind this one.
   @timeout 30_000
 
   @max_chars 200
 
   @doc "The summary's hard length limit, in characters — a card teaser, not an essay."
   def max_chars, do: @max_chars
+
+  @doc """
+  Whether this installation summarises links at all (`:summarize_links`).
+
+  Asked *before* a job is queued rather than only inside the call: on an
+  installation that never turned this on there is nothing to serialise, and a
+  queue quietly filling with work that will answer `{:error, :disabled}` is a
+  queue whose depth means nothing.
+  """
+  def enabled?, do: Application.get_env(:vutuv, :summarize_links, false)
 
   @doc """
   Summarises the page at `url` in at most `max_chars/0` characters.
@@ -119,49 +131,66 @@ defmodule Vutuv.LinkSummary do
     * `{:service, reason}` — Ollama is unreachable or failed;
     * `{:content, reason}` — the model answered nothing usable.
 
-  Never raises: it runs inside a capture that must not be lost over a sentence.
+  Never raises: it runs inside a queue that must not be lost over a sentence.
   """
   def summarize(url) when is_binary(url) do
     with :ok <- enabled(),
-         {:ok, html} <- fetch(url) do
-      summarize_html(url, html)
+         {:ok, html} <- fetch(url),
+         {:ok, text} <- page_text(html) do
+      summarize_text(url, text)
     end
   rescue
     error -> crashed(url, error)
   end
 
   @doc """
-  `summarize/1` for a caller that already holds the page's HTML — same answers,
-  one fewer request.
+  The prose of `html`, reduced and bounded exactly as the model will be shown
+  it: `{:ok, text}`, `{:error, :no_text}` for a page that carries nothing worth
+  a sentence (an empty shell, a JS app that renders nothing server-side, an
+  error page that answered 200), or `{:error, :exception}` if somebody's markup
+  breaks the parse.
 
-  The capture path is exactly that caller: `Vutuv.Posts.Screenshots` fetches the
-  page once for its Open Graph metadata, and a summary is only ever wanted for a
-  page whose metadata carried no description, so re-fetching it here meant a
-  second full download of the same page per capture — on the operator's egress,
-  against the target's rate limit, and with a second chance for the target to
-  serve the summariser something the previewer never saw.
+  Public so the *capture* worker can do this while it still holds the page, and
+  hand `Vutuv.Posts.SummaryQueue` a few kilobytes of text instead of the
+  half-megabyte document the capture path carries — which its own comment there
+  says must not outlive that one job, and which waiting in a queue is precisely
+  outliving. It is also the cheap half, and measurably so: ~11 ms of local
+  parsing against a model call budgeted at 30 s. The queue's time belongs to
+  the model.
+
+  Not gated by `enabled?/0` — it asks nothing of Ollama, and the caller has
+  already decided whether a summary is wanted.
   """
-  def summarize_html(url, html) when is_binary(url) and is_binary(html) do
-    with :ok <- enabled(),
-         {:ok, text} <- readable(html) do
-      ask(url, text)
-    end
+  def page_text(html) when is_binary(html) do
+    readable(html)
+  rescue
+    error ->
+      Logger.warning("link summary could not read a page body: #{inspect(error)}")
+      {:error, :exception}
+  end
+
+  @doc """
+  The model call and nothing else, for a caller that already reduced the page
+  with `page_text/1`. This is the path every teaser actually takes:
+  `Vutuv.Posts.Screenshots.write_link_summary/3` calls it once the queue lets
+  the job run.
+  """
+  def summarize_text(url, text) when is_binary(url) and is_binary(text) do
+    if enabled?(), do: ask(url, text), else: {:error, :disabled}
   rescue
     error -> crashed(url, error)
   end
 
-  # Both entry points need their own `rescue` — `fetch/1` can raise on the
-  # `summarize/1` path, before the inner one is reached — but the handler is one
-  # thing, and this module's whole contract is that it never raises.
+  # Both entry points that reach the network or the model carry their own
+  # `rescue` — `fetch/1` raises on one, `ask/2` on the other — but the handler
+  # is one thing, and this module's whole contract is that it never raises.
   defp crashed(url, error) do
     Logger.warning("link summary crashed for #{url}: #{inspect(error)}")
     {:error, :exception}
   end
 
   defp enabled do
-    if Application.get_env(:vutuv, :summarize_links, false),
-      do: :ok,
-      else: {:error, :disabled}
+    if enabled?(), do: :ok, else: {:error, :disabled}
   end
 
   defp model, do: Application.get_env(:vutuv, :link_summary_model, "qwen3.5:9b")

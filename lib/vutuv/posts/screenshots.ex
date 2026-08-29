@@ -68,6 +68,7 @@ defmodule Vutuv.Posts.Screenshots do
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostDraft
   alias Vutuv.Posts.PostScreenshot
+  alias Vutuv.Posts.SummaryQueue
   alias Vutuv.Repo
   alias Vutuv.ScreenshotBlocklist
   alias Vutuv.SocialFeed.Http
@@ -616,7 +617,7 @@ defmodule Vutuv.Posts.Screenshots do
     with :fallback <- youtube_capture(job) do
       # Read once, use three times: which branch supplies the card's PICTURE,
       # the words that go on it either way, and the page body the summariser
-      # would otherwise download all over again (`LinkSummary.summarize_html/2`
+      # would otherwise download all over again (`LinkSummary.page_text/1`
       # explains that one). `nil` when the page said nothing readable; every
       # branch takes that.
       meta =
@@ -822,16 +823,15 @@ defmodule Vutuv.Posts.Screenshots do
   # (`Vutuv.LinkSummary`, issue #1709): what the linked page is about, read off
   # the whole page rather than off the part the picture shows.
   #
-  # It runs **after** the row is `ready`, never before it. The picture is what
-  # a reader is waiting for, and this is a model call — putting it in front of
-  # `mark_ready/2` would hold the finished preview, the temp file and (because
-  # `Vutuv.Posts.ScreenshotWorker` drains one job at a time) every capture
-  # behind it.
+  # Nothing here waits for it. The row is already `ready`, and the job is
+  # handed to `Vutuv.Posts.SummaryQueue`, which is the only thing that ever
+  # calls the model — because this worker drains one capture at a time, and a
+  # 30-second model call made here is 30 seconds that every member behind you
+  # waits for their *picture* (issue #1742). Running it after `mark_ready/2`
+  # protected this job's preview and nothing behind it.
   #
-  # Strictly best-effort and deliberately not a queue of its own: every way it
-  # can come to nothing leaves `summary` `nil` and the preview exactly as it
-  # was, and nothing retries it. `:disabled` is not logged — on an installation
-  # that never turned this on it would be a line per capture saying nothing.
+  # Strictly best-effort: every way it can come to nothing leaves `summary`
+  # `nil` and the preview exactly as it was, and nothing retries it.
   # A page that publishes its own `og:description` has already said what it is
   # about, in its author's words — the model has nothing to add and would be
   # spending half a minute to overwrite a better sentence with a worse one.
@@ -846,43 +846,89 @@ defmodule Vutuv.Posts.Screenshots do
       # A video's own artwork, not a photograph of a page: there is no page
       # here to read, and the watch page would answer a consent wall anyway.
       {:ok, _video_id} -> ready
-      :error -> store_summary(ready, html)
+      :error -> queue_summary(ready, html)
     end
   end
 
-  defp store_summary(%PostScreenshot{url: url} = ready, html) do
-    case summarize_page(url, html) do
-      {:ok, summary} ->
-        write_summary(ready, summary)
-
-      {:error, :disabled} ->
-        ready
-
-      {:error, reason} ->
-        Logger.info("no link summary for #{url}: #{inspect(reason)}")
-        ready
+  # Every reason not to queue anything is decided HERE rather than in the
+  # queue: the installation does not summarise links, or this page yielded no
+  # prose to summarise. A queue whose depth counts jobs that can only answer
+  # "disabled" is a queue whose depth means nothing.
+  defp queue_summary(%PostScreenshot{} = ready, html) do
+    if LinkSummary.enabled?() do
+      case queued_text(html) do
+        {:ok, text} -> SummaryQueue.enqueue(ready.id, ready.url, text)
+        {:error, _reason} -> :ok
+      end
     end
+
+    ready
   end
 
-  # The page is already in hand whenever the metadata fetch reached it, which
-  # is every case a summary is actually wanted for; fetching is the fallback,
-  # not the path.
-  defp summarize_page(url, html) when is_binary(html), do: LinkSummary.summarize_html(url, html)
-  defp summarize_page(url, _html), do: LinkSummary.summarize(url)
+  # The page as this capture already downloaded it, reduced to the prose the
+  # model is shown — a few kilobytes rather than the half-megabyte binary
+  # `carry_html/2` above says must not outlive this job, and waiting in a queue
+  # is exactly outliving it.
+  #
+  # No body in hand means no job. In production that happens exactly when
+  # `OpenGraph.fetch/1` already failed on this URL moments ago, so queueing
+  # would hand the summariser a fetch that just failed — and it would run it
+  # from inside the one process whose whole point is that only the model gets
+  # to hold it, for up to the 6s `Http.base_options/3` allows. Named apart from
+  # `LinkSummary.page_text/1` because the contracts differ: that one always has
+  # a page, this one answers whether there is a job at all.
+  defp queued_text(html) when is_binary(html), do: LinkSummary.page_text(html)
+  defp queued_text(_html), do: {:error, :no_page}
 
-  # Written by id rather than through the struct we have been holding: the
-  # model call is allowed to take half a minute, and in that time the author
-  # can delete the post (the row cascades with it) or the AI image scan can
-  # take the screenshot away. `Repo.update/1` answers a vanished row by RAISING
-  # `Ecto.StaleEntryError`, which would leave `deliver_due/1`'s loop and take
-  # the rest of the batch with it — for a tooltip. `update_all` on the id
-  # simply writes nothing.
-  defp write_summary(%PostScreenshot{} = ready, summary) do
-    {_count, _} =
-      from(ps in PostScreenshot, where: ps.id == ^ready.id)
+  @doc """
+  The whole teaser job for one finished preview: ask the model what the page is
+  about, store the answer, tell the card.
+
+  This is what `Vutuv.Posts.SummaryQueue` serialises — it owns *when* a job
+  runs and nothing else, so everything about *what* a job does lives here, with
+  the row. Tests drive this directly with the queue switched off, the same way
+  `ImageScans.deliver_due/1` and `Translations.deliver_due/1` are driven.
+
+  Always `:ok`: every way a summary can come to nothing (the flag is off, no
+  Ollama, the model answered junk) leaves `summary` `nil` and the preview
+  exactly as it was. `:disabled` is not logged — on an installation that never
+  turned this on it would be a line per capture saying nothing.
+  """
+  def write_link_summary(id, url, text)
+      when is_binary(id) and is_binary(url) and is_binary(text) do
+    case LinkSummary.summarize_text(url, text) do
+      {:ok, summary} -> write_summary(id, summary)
+      {:error, :disabled} -> :ok
+      {:error, reason} -> Logger.info("no link summary for #{url}: #{inspect(reason)}")
+    end
+
+    :ok
+  end
+
+  # Written **by id** rather than through a struct: the model call is allowed to
+  # take half a minute, and in that time the author can delete the post (the row
+  # cascades with it) or the AI image scan can take the screenshot away.
+  # `Repo.update/1` answers a vanished row by RAISING `Ecto.StaleEntryError` —
+  # for a teaser. `update_all` on the id simply writes nothing, and the `select`
+  # is what tells the two apart in the same round trip.
+  defp write_summary(id, summary) when is_binary(id) and is_binary(summary) do
+    {_count, rows} =
+      from(ps in PostScreenshot, where: ps.id == ^id, select: ps)
       |> Repo.update_all(set: [summary: summary, updated_at: NaiveDateTime.utc_now(:second)])
 
-    %{ready | summary: summary}
+    Enum.each(rows, &announce_summary/1)
+    :ok
+  end
+
+  # The card is already on the page with its picture and its headline; this is
+  # the second line arriving late, so it needs the same broadcast the capture
+  # got. Only for a row the AI image scan has already released — one still in
+  # moderation limbo shows to nobody, and announcing it here would be exactly
+  # the bypass `mark_ready/2` withholds the announcement to prevent. That row
+  # loses nothing: `ImageSubjects.apply_approved/1` announces it when the
+  # verdict lands, and the teaser is on it by then.
+  defp announce_summary(%PostScreenshot{} = row) do
+    if PostScreenshot.ready?(row), do: announce_ready(row), else: :ok
   end
 
   defp mark_capturing(%PostScreenshot{} = job) do

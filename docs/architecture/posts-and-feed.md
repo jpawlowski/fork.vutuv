@@ -1777,7 +1777,10 @@ sentence of at most 200 characters, in the page's own language. It is stored in
 between it and the publisher's own words.
 
 It normally makes **no request of its own**: the metadata fetch already
-downloaded the page and hands the HTML to `summarize_html/2`. `summarize/1`
+downloaded the page, and the capture reduces it to prose with `page_text/1`
+before queueing — ~11 ms of local parsing, against a model call budgeted at
+30 s — so the model call is all that is left to make, and what waits in the
+queue is ~12 KB of text rather than a half-megabyte document. `summarize/1`
 fetching for itself is the fallback for a caller holding no body — it used to
 be the only path, which meant a second full download of the same page per
 capture, on the operator's egress and against the target's rate limit.
@@ -1788,18 +1791,51 @@ publisher's blurb, written by somebody who knows the page, and it always wins.
 already there, so the model call is spent only where the card would otherwise
 have no second line.
 
-It runs **after** the row is `ready`, as a second small write. The picture is
-what a reader is waiting for, and `Vutuv.Posts.ScreenshotWorker` drains one job
-at a time — putting a model call in front of `mark_ready/2` would hold this
-member's finished preview, its temp file and every capture behind it.
+It runs **off the capture worker entirely** (issue #1742). `Vutuv.Posts.ScreenshotWorker`
+drains one job at a time, five per poll, and one answer gets 30 seconds — so a
+model call made inside the capture could spend two and a half minutes of a
+single drain on teasers, with every member who had just typed a link waiting on
+the composer's placeholder for their own *picture*. Running it after
+`mark_ready/2` protected that one job's preview and nothing behind it. The
+drain therefore hands the job to **`Vutuv.Posts.SummaryQueue`**, which owns
+*when* a teaser is written and nothing else — the work itself is
+`Screenshots.write_link_summary/3`, beside the row, so tests drive it with the
+queue switched off exactly as they drive `ImageScans.deliver_due/1`.
+
+Two mechanisms rank it last, and they do different jobs. **One at a time**,
+because there is one Ollama by default and five concurrent requests each take
+five times as long. **Behind the image scans**, because serialising your own
+calls only stops you being five callers instead of one — it never puts you
+behind anybody; so `ImageScans.busy?/0` stands the queue down entirely while
+any scan is open (fail-open), the same yield `Translations.Worker` already
+makes. Without it a member's avatar could sit invisible behind twenty
+30-second teasers.
+
+The queue is in memory and bounded at 20, and at the cap the **oldest** job is
+dropped rather than the newest: a busy installation sits at the cap
+permanently, so refusing new work would spend the one Ollama entirely on links
+nobody has looked at since lunch while the card somebody is watching right now
+never gets a teaser. Same spend, better aim. Losing the queue to a restart
+costs exactly what a failed model call already costs — a durable one would also
+have nothing to work from, since `carry_html/2` keeps the page body off the
+row. A capture that came back with no body queues nothing at all: in production
+that means `OpenGraph.fetch/1` already failed on that URL, so a job would only
+re-run a fetch that just failed, from inside the one process that must not
+block.
+
+When the sentence lands, the write goes **by id** — the post may have been
+deleted meanwhile — and announces the card again so open feeds fill the teaser
+in with no reload. A preview the AI image scan is still holding is written but
+**not** announced; `ImageSubjects.apply_approved/1` announces it with its
+verdict, teaser and all.
 
 Off by default (`:summarize_links`, `SUMMARIZE_LINKS=true`), best-effort, and
 **never retried**: flag off, Ollama down, nothing readable on the page, junk
 back from the model — each leaves `summary` `nil` and the card showing its
 headline and picture alone, because a capture is not worth losing over a
-sentence and a sentence is not worth a queue of its own. The YouTube branch has
-no page to read (its words come from oEmbed) and never gets
-one. One answer gets a fixed 30 s under the shared `:ollama_timeout`; it is the
+sentence and a sentence is not worth a durable queue of its own. The YouTube
+branch has no page to read (its words come from oEmbed) and never gets one.
+One answer gets a fixed 30 s under the shared `:ollama_timeout`; it is the
 least valuable model call this installation makes, so it is not given the
 fleet-wide patience and has no knob of its own. The answer is untrusted text throughout: a page can steer what is written
 about it (as it already does with its own `<title>`), so the sentence is plain

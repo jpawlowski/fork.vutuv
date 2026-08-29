@@ -13,6 +13,7 @@ defmodule Vutuv.Posts.ScreenshotsTest do
   alias Vutuv.Posts.PostImage
   alias Vutuv.Posts.PostScreenshot
   alias Vutuv.Posts.Screenshots
+  alias Vutuv.Posts.SummaryQueue
 
   defp user, do: insert(:activated_user)
 
@@ -26,6 +27,13 @@ defmodule Vutuv.Posts.ScreenshotsTest do
   # A capture stub that "succeeds" with a fixed stored filename + size.
   defp ok_capture,
     do: fn _job -> {:ok, %{screenshot: "0123456789ab.avif", width: 400, height: 264}} end
+
+  # The same, plus the page body a real capture carries back (`carry_html/2`),
+  # which is what makes a teaser job queueable.
+  defp html_capture do
+    body = "<html><body><p>#{String.duplicate("Seitentext. ", 30)}</p></body></html>"
+    fn job -> {:ok, Map.put(elem(ok_capture().(job), 1), :html, body)} end
+  end
 
   # Route the HTTP-200 probe's Req request at a stub: a bare status, or a full
   # `plug: fn conn -> conn end` responder. Paired with the describe's on_exit.
@@ -65,21 +73,9 @@ defmodule Vutuv.Posts.ScreenshotsTest do
 
   # A post whose auto-screenshot has already been captured, stored and released
   # by the AI scan — the state the author sees on the card and wants gone.
-  defp ready_post(author) do
-    post = url_post(author)
-    {:ok, job} = Screenshots.reconcile(post)
-
-    {:ok, ready} =
-      job
-      |> Ecto.Changeset.change(
-        status: "ready",
-        screenshot: "0123456789ab.avif",
-        moderation: "approved"
-      )
-      |> Repo.update()
-
-    {post, ready}
-  end
+  # `Vutuv.PostsHelpers` owns the recipe; the ready-row conditions are read in
+  # more than one place and must not drift apart.
+  defp ready_post(author), do: ready_preview!(author)
 
   describe "extract_urls/1 + chosen_url/2 (detection)" do
     test "one bare http(s) URL, surrounding text allowed" do
@@ -359,18 +355,60 @@ defmodule Vutuv.Posts.ScreenshotsTest do
       assert ready_id == post.id
     end
 
-    test "writes the tooltip summary onto the row that is already ready" do
-      # The row is marked `ready` first and summarised after (issue #1709), so
-      # the picture never waits behind a model call — the column is filled by a
-      # second write, not by the capture result.
+    test "the drain hands the teaser to the queue instead of writing it itself" do
+      # The point of issue #1742: the capture worker drains one job at a time,
+      # so the model call may not happen inside it. The row comes back `ready`
+      # — the picture, which is what anybody is actually waiting for, is done —
+      # and the model has not been spoken to at all.
+      #
+      # Calibrated against the un-fixed code, where `process/2` made the call
+      # itself: both assertions below were false, and a drain of five such jobs
+      # took five model calls before it returned. `:link_summary_queue` is off
+      # in tests, so the cast goes nowhere and this is a plain fact, not a race.
+      post = url_post(user())
+      {:ok, _job} = Screenshots.reconcile(post)
+      test_pid = self()
+
+      # Only the flag and the tripwire — `stub_summary/1`'s own model plug would
+      # be overwritten on the next line, and its sentence can never be produced.
+      Application.put_env(:vutuv, :summarize_links, true)
+
+      Application.put_env(:vutuv, :link_summary_ollama_req_options,
+        plug: fn conn ->
+          send(test_pid, :model_asked)
+          Plug.Conn.send_resp(conn, 500, "")
+        end
+      )
+
+      # `html_capture/0`, not `ok_capture/0`: a body-less capture queues no job
+      # at all, so this would assert "the model was not asked" about a path
+      # that never had a summary to write — green either way, measuring
+      # nothing. That is exactly what the calibration caught.
+      Screenshots.deliver_due(force: true, capture: html_capture())
+
+      job = Repo.get_by!(PostScreenshot, post_id: post.id)
+      assert job.status == "ready"
+      assert job.summary == nil
+      refute_received :model_asked
+    end
+
+    test "the queue it handed the job to is what finishes the card" do
+      # The other half of the same move: the drain must still *enqueue*, or the
+      # teaser is not late, it is gone. Started here rather than by the app so
+      # the flush below is the only thing that runs it.
+      start_supervised!(SummaryQueue)
+
       post = url_post(user())
       {:ok, _job} = Screenshots.reconcile(post)
       stub_summary("Was auf der verlinkten Seite steht.")
 
-      Screenshots.deliver_due(force: true, capture: ok_capture())
+      # A capture that carries the page it read, which is what production does
+      # (`carry_html/2`) — a body-less result queues no job at all, because the
+      # summariser would only be re-running a fetch that already failed.
+      Screenshots.deliver_due(force: true, capture: html_capture())
+      :ok = SummaryQueue.flush()
 
       job = Repo.get_by!(PostScreenshot, post_id: post.id)
-      assert job.status == "ready"
       assert job.summary == "Was auf der verlinkten Seite steht."
     end
 
