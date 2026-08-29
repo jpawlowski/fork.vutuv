@@ -170,6 +170,32 @@ defmodule VutuvWeb.MobileTabBarCssTest do
            """
   end
 
+  # Issue #1728. The press paint in `app.css` colours the tab under the finger
+  # in `--press-on-fg` and greys the one being left in `--press-off-fg`, and
+  # both of those are RESTING colours of the bar: the pressed tab is about to
+  # become the current one, the other is about to stop being it. So the two
+  # custom properties and the two class lists `tab/1` renders have to name the
+  # same pair, or a press paints one blue and the answer arrives in another.
+  test "the tab bar's press colours are the resting colours the shell renders" do
+    css = app_css()
+    shell = File.read!(@shell)
+
+    [_, tabs_block] =
+      Regex.run(~r/\[data-nav-bar="tabs"\]\s*\[data-nav-item\]\s*\{([^}]*)\}/, css)
+
+    assert tabs_block =~ "--press-on-fg: var(--color-brand-700)",
+           "the pressed tab must land on the same brand step `tab/1` gives the active tab"
+
+    assert tabs_block =~ "--press-off-fg: var(--color-slate-500)",
+           "the tab being left must land on the same slate step `tab/1` gives an inactive tab"
+
+    assert shell =~ "text-brand-700 dark:text-brand-200",
+           "the active tab's own colour moved; move the press colours with it"
+
+    assert shell =~ "text-slate-500 dark:text-slate-400",
+           "the inactive tab's own colour moved; move the press colours with it"
+  end
+
   test "the document element carries no global height, and body fills the viewport" do
     css = components_css()
 

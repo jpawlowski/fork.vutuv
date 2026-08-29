@@ -151,10 +151,14 @@ html {
   --press-on-bg: var(--color-brand-50);
 }
 
-/* The phone's bottom tab bar: no tint at all, the label itself goes brand. */
+/* The phone's bottom tab bar: no tint at all, the label itself goes brand.
+   These two are the RESTING colours of the tab being pressed and of the tab
+   being left, so they have to be the same pair `tab/1` renders (issue #1728) —
+   otherwise the press paints one blue and the answer arrives in another. */
 [data-nav-bar="tabs"] [data-nav-item] {
   --press-on-bg: transparent;
-  --press-on-fg: var(--color-brand-600);
+  --press-on-fg: var(--color-brand-700);
+  --press-off-fg: var(--color-slate-500);
 }
 
 [data-filter-tab].phx-click-loading,
@@ -275,7 +279,7 @@ html[data-nav-pressing] main {
 
   [data-nav-bar="tabs"] [data-nav-item] {
     --press-on-bg: transparent;
-    --press-on-fg: var(--color-brand-300);
+    --press-on-fg: var(--color-brand-200);
     --press-off-fg: var(--color-slate-400);
   }
 }

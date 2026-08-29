@@ -1318,23 +1318,23 @@ defmodule VutuvWeb.ShellLive do
           press). The arrow is the promise that it will: a control that behaves
           differently has to look different first, or the press reads as a
           reload. --%>
-          <.tab href={~p"/feed"} label={gettext("Feed")} active={on_route?(@path, "/feed")} scroll_top>
-            <.icon_feed data-tab-icon="feed" />
+          <.tab :let={active} href={~p"/feed"} label={gettext("Feed")} active={on_route?(@path, "/feed")} scroll_top>
+            <.icon_feed filled?={active} data-tab-icon="feed" />
             <.icon_scroll_top />
           </.tab>
         <% end %>
-        <.tab href={~p"/search"} label={gettext("Search")} active={on_route?(@path, "/search")}><.icon_search /></.tab>
+        <.tab :let={active} href={~p"/search"} label={gettext("Search")} active={on_route?(@path, "/search")}><.icon_search filled?={active} /></.tab>
         <%= if @user_id do %>
-          <.tab href={~p"/messages"} label={gettext("Messages")} count={@messages_count} active={on_route?(@path, "/messages")}><.icon_envelope /></.tab>
-          <.tab href={~p"/notifications"} label={gettext("Alerts")} count={@notifications_count} active={on_route?(@path, "/notifications")}><.icon_bell /></.tab>
+          <.tab :let={active} href={~p"/messages"} label={gettext("Messages")} count={@messages_count} active={on_route?(@path, "/messages")}><.icon_envelope filled?={active} /></.tab>
+          <.tab :let={active} href={~p"/notifications"} label={gettext("Alerts")} count={@notifications_count} active={on_route?(@path, "/notifications")}><.icon_bell filled?={active} /></.tab>
           <%!-- The member's own avatar is the Profile tab — the universal mobile
           convention for "you", so the profile is reachable on phones too, not
           just via the desktop nav or the logo's /feed deep-link. --%>
-          <.tab href={~p"/#{@user_param}"} label={gettext("Profile")} data-mobile-profile active={on_route?(@path, "/#{@user_param}")}>
+          <.tab :let={active} href={~p"/#{@user_param}"} label={gettext("Profile")} data-mobile-profile active={on_route?(@path, "/#{@user_param}")}>
             <%= if @user_avatar do %>
-              <img src={@user_avatar} alt="" class="h-6 w-6 rounded-full object-cover" />
+              <img src={@user_avatar} alt="" class={["h-6 w-6 rounded-full object-cover", active && tab_avatar_ring()]} />
             <% else %>
-              <span class="flex h-6 w-6 items-center justify-center rounded-full bg-brand-700 text-[10px] font-bold text-white">
+              <span class={["flex h-6 w-6 items-center justify-center rounded-full bg-brand-700 text-[10px] font-bold text-white", active && tab_avatar_ring()]}>
                 {@user_initials}
               </span>
             <% end %>
@@ -1362,22 +1362,41 @@ defmodule VutuvWeb.ShellLive do
     <%!-- The weight lives on the link, not on the label span: the press paint
     in `app.css` has one element to work on, and the label inherits it. Two
     owners of the same property is what leaves a half-repainted control. --%>
+    <%!-- Issue #1728: colour alone was not carrying the current tab. Active
+    `brand-600` against inactive `slate-600` is 1.13:1 — not a weak signal, no
+    signal — and the active tab had LESS contrast against the white bar (6.70)
+    than its inactive neighbours (7.58), so the page you were on was drawn the
+    palest of the five. Two things changed. The split widened (`brand-700` vs
+    `slate-500`: 1.83:1, and now 8.72 vs 4.76 against the bar, pointing the
+    right way), and — the part that actually does the work — the active tab
+    swaps its glyph for a FILLED one, which is what iOS and Android both do.
+    Peripheral vision resolves shape and lightness well and hue badly, so a hue
+    swap on an identical silhouette stays invisible until you look straight at
+    it; changing the glyph's fill changes its area, and area reads without
+    foveating. The active flag reaches the icons through the slot argument, so
+    `on_route?/2` is asked once per tab rather than once per thing that depends
+    on it.
+
+    Note this swap is SERVER-rendered, so it does not inherit the deploy trap
+    the `icon_scroll_top` comment below describes: only one glyph is ever in
+    the markup, and a phone still holding the previous release's stylesheet
+    across a deploy has nothing to hide. --%>
     <.link
       href={@href}
       data-nav-item
       data-scroll-top={(@active && @scroll_top) || nil}
       aria-current={@active && "page"}
       class={[
-        "flex flex-col items-center justify-center gap-0.5",
+        "flex select-none flex-col items-center justify-center gap-0.5",
         if(@active,
-          do: "font-semibold text-brand-600 dark:text-brand-300",
-          else: "text-slate-600 dark:text-slate-400"
+          do: "font-semibold text-brand-700 dark:text-brand-200",
+          else: "text-slate-500 dark:text-slate-400"
         )
       ]}
       {@rest}
     >
       <span class="relative">
-        {render_slot(@inner_block)}
+        {render_slot(@inner_block, @active)}
         <.count_badge
           count={@count}
           class="absolute -right-0.5 -top-0.5 ring-2 ring-white dark:ring-slate-900"
@@ -1388,6 +1407,15 @@ defmodule VutuvWeb.ShellLive do
     """
   end
 
+  # The Profile tab's icon is the member's own face, so unlike the other four it
+  # has no filled twin to swap in. A ring around the avatar is the equivalent
+  # move and the same one the phone apps make. The offset is what makes it work
+  # on both faces: without it, a brand-coloured ring drawn straight onto the
+  # brand-coloured initials circle is invisible.
+  defp tab_avatar_ring do
+    "ring-2 ring-brand-700 ring-offset-1 ring-offset-white dark:ring-brand-200 dark:ring-offset-slate-900"
+  end
+
   # Shared classes for an avatar account-menu item — mirrors the card_menu
   # item styling so both dropdowns read the same. The display utility
   # (block / flex) is added per call site.
@@ -1395,26 +1423,68 @@ defmodule VutuvWeb.ShellLive do
     "px-4 py-2 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
   end
 
+  # A magnifier has no interior to fill, and neither platform pretends
+  # otherwise: SF Symbols ships no `magnifyingglass.fill` and Apple's own
+  # Search tab reuses the outline. So this one answers `filled?` with weight
+  # instead — the stroke thickens, which changes the glyph's inked area the
+  # same way a fill does.
+  attr(:filled?, :boolean, default: false)
+
   defp icon_search(assigns) do
     ~H"""
-    <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+    <svg
+      class="h-6 w-6"
+      fill="none"
+      stroke="currentColor"
+      stroke-width={if(@filled?, do: "2.6", else: "1.8")}
+      viewBox="0 0 24 24"
+    >
       <path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
     </svg>
     """
   end
 
+  # A glyph's two faces, as the pair of SVG attributes that carry them. Filling
+  # a shape means handing the paint from `stroke` to `fill`, so the two always
+  # move together — one owner rather than a ternary each, in each icon.
+  defp glyph_paint(true), do: %{fill: "currentColor", stroke: "none"}
+  defp glyph_paint(false), do: %{fill: "none", stroke: "currentColor"}
+
+  attr(:filled?, :boolean, default: false)
+
   defp icon_envelope(assigns) do
     ~H"""
-    <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" />
+    <svg
+      class="h-6 w-6"
+      {glyph_paint(@filled?)}
+      stroke-width="1.8"
+      viewBox="0 0 24 24"
+    >
+      <%= if @filled? do %>
+        <path d="M1.5 8.67v8.58a3 3 0 0 0 3 3h15a3 3 0 0 0 3-3V8.67l-8.928 5.493a3 3 0 0 1-3.144 0L1.5 8.67Z" />
+        <path d="M22.5 6.908V6.75a3 3 0 0 0-3-3h-15a3 3 0 0 0-3 3v.158l9.714 5.978a1.5 1.5 0 0 0 1.572 0L22.5 6.908Z" />
+      <% else %>
+        <path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" />
+      <% end %>
     </svg>
     """
   end
 
+  attr(:filled?, :boolean, default: false)
+
   defp icon_bell(assigns) do
     ~H"""
-    <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
+    <svg
+      class="h-6 w-6"
+      {glyph_paint(@filled?)}
+      stroke-width="1.8"
+      viewBox="0 0 24 24"
+    >
+      <%= if @filled? do %>
+        <path fill-rule="evenodd" clip-rule="evenodd" d="M5.25 9a6.75 6.75 0 0 1 13.5 0v.75c0 2.123.8 4.057 2.118 5.52a.75.75 0 0 1-.297 1.206c-1.544.57-3.16.99-4.831 1.243a3.75 3.75 0 1 1-7.48 0 24.585 24.585 0 0 1-4.831-1.244.75.75 0 0 1-.298-1.205A8.217 8.217 0 0 0 5.25 9.75V9Zm4.502 8.9a2.25 2.25 0 1 0 4.496 0 25.057 25.057 0 0 1-4.496 0Z" />
+      <% else %>
+        <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
+      <% end %>
     </svg>
     """
   end
@@ -1437,23 +1507,28 @@ defmodule VutuvWeb.ShellLive do
     """
   end
 
+  attr(:filled?, :boolean, default: false)
   attr(:rest, :global)
 
   defp icon_feed(assigns) do
     ~H"""
     <svg
       class="h-6 w-6"
-      fill="none"
-      stroke="currentColor"
+      {glyph_paint(@filled?)}
       stroke-width="1.8"
       viewBox="0 0 24 24"
       {@rest}
     >
-      <path
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        d="M12 7.5h1.5m-1.5 3h1.5m-7.5 3h7.5m-7.5 3h7.5m3-9h3.375c.621 0 1.125.504 1.125 1.125V18a2.25 2.25 0 0 1-2.25 2.25M16.5 7.5V18a2.25 2.25 0 0 0 2.25 2.25M16.5 7.5V4.875c0-.621-.504-1.125-1.125-1.125H4.125C3.504 3.75 3 4.254 3 4.875V18a2.25 2.25 0 0 0 2.25 2.25h13.5M6 7.5h3v3H6v-3Z"
-      />
+      <%= if @filled? do %>
+        <path fill-rule="evenodd" clip-rule="evenodd" d="M4.125 3C3.089 3 2.25 3.84 2.25 4.875V18a3 3 0 0 0 3 3h15a3 3 0 0 1-3-3V4.875C17.25 3.839 16.41 3 15.375 3H4.125ZM12 9.75a.75.75 0 0 0 0 1.5h1.5a.75.75 0 0 0 0-1.5H12Zm-.75-2.25a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5H12a.75.75 0 0 1-.75-.75ZM6 12.75a.75.75 0 0 0 0 1.5h7.5a.75.75 0 0 0 0-1.5H6Zm-.75 3.75a.75.75 0 0 1 .75-.75h7.5a.75.75 0 0 1 0 1.5H6a.75.75 0 0 1-.75-.75ZM6 6.75a.75.75 0 0 0-.75.75v3c0 .414.336.75.75.75h3a.75.75 0 0 0 .75-.75v-3A.75.75 0 0 0 9 6.75H6Z" />
+        <path d="M18.75 6.75h1.875c.621 0 1.125.504 1.125 1.125V18a1.5 1.5 0 0 1-3 0V6.75Z" />
+      <% else %>
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          d="M12 7.5h1.5m-1.5 3h1.5m-7.5 3h7.5m-7.5 3h7.5m3-9h3.375c.621 0 1.125.504 1.125 1.125V18a2.25 2.25 0 0 1-2.25 2.25M16.5 7.5V18a2.25 2.25 0 0 0 2.25 2.25M16.5 7.5V4.875c0-.621-.504-1.125-1.125-1.125H4.125C3.504 3.75 3 4.254 3 4.875V18a2.25 2.25 0 0 0 2.25 2.25h13.5M6 7.5h3v3H6v-3Z"
+        />
+      <% end %>
     </svg>
     """
   end
