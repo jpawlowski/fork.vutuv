@@ -132,23 +132,11 @@ defmodule VutuvWeb.NewsfeedControllerTest do
       assert link =~ ~s(</feed.md>; rel="alternate"; type="text/markdown")
     end
 
-    # `VutuvWeb.Plug.AgentRoute` dispatches on `ap_request?/1` as well as on the
-    # agent formats; remove that test and this case 500s (`Plug.Conn.resp/3`
-    # raises on a body no template produced). This pins /feed only. The same
-    # crash is reachable on every other `live_render` page — `/organizations`
-    # raises identically and is untouched by this change — so read it as one
-    # page covered, not as the class fixed. The class is issue #1776.
-    test "an ActivityPub Accept gets a refusal, not a crash", %{conn: conn} do
-      {conn, _user} = create_and_login_user(conn)
-
-      doc =
-        conn
-        |> recycle()
-        |> put_req_header("accept", "application/activity+json")
-        |> get("/feed")
-
-      assert doc.status == 404
-    end
+    # The ActivityPub header is NOT dispatched here — `/feed` is a routed
+    # LiveView now, so `:html_only` refuses the format with the same 406 every
+    # other page of that shape gives (`VutuvWeb.Plug.HtmlOnly`, issue #1776).
+    # Asserted for the whole class in `http_status_contract_test.exs`, which
+    # sweeps every routed LiveView rather than naming this one.
 
     test "the HTML page is the LiveView, not this controller", %{conn: conn} do
       {conn, _user} = create_and_login_user(conn)

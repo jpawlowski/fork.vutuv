@@ -22,9 +22,9 @@ defmodule VutuvWeb.Plug.AgentRoute do
   in two:
 
     * a **non-HTML** representation — an agent format by URL extension or
-      `Accept` (`VutuvWeb.Plug.AgentFormat`), or an ActivityPub request — is
-      dispatched straight to the named controller action and halts, exactly as
-      if the route had never changed;
+      `Accept` (`VutuvWeb.Plug.AgentFormat`) — is dispatched straight to the
+      named controller action and halts, exactly as if the route had never
+      changed;
     * an **HTML** request falls through to `Phoenix.LiveView.Plug`, with the
       `<link rel="alternate">` head tags and `Vary: accept` this plug puts there
       in the controller's place (`AgentDocs.put_html_alternates/1` — the one
@@ -39,7 +39,6 @@ defmodule VutuvWeb.Plug.AgentRoute do
   import Plug.Conn, only: [halt: 1]
 
   alias VutuvWeb.AgentDocs
-  alias VutuvWeb.FediverseController
   alias VutuvWeb.Plug.AgentFormat
 
   @impl Plug
@@ -57,27 +56,20 @@ defmodule VutuvWeb.Plug.AgentRoute do
   def call(conn, _opts), do: conn
 
   # Everything the LiveView cannot answer: the agent documents (.md/.txt/.json/
-  # .xml/.vcf, or the matching Accept header) and the ActivityPub representation
-  # a remote server asks for at the same URL.
+  # .xml/.vcf, or the matching Accept header). By the time this runs
+  # `AgentFormat` has normalized the header, so the URL extension has already
+  # had the last word over whatever the client sent with it (issue #1823).
   #
-  # **The ActivityPub half fixes one page of a bug that is not this page's.**
-  # The `:browser` pipeline accepts `activity+json`, so the format survives
-  # negotiation and reaches the router on the conn; no LiveView has a template
-  # for it, so `Plug.Conn.resp/3` is handed a `{:safe, iodata}` body and raises
-  # with no matching clause. That is a 500 on **every** `live_render` page, not
-  # a consequence of routing `/feed` as `live` — measured on `/organizations`,
-  # which this change never touches and which raises identically. (`ld+json`
-  # answers a clean 406, because it is not in that `accepts` list.)
-  #
-  # It is answered here rather than left alone because the answer is already
-  # wired up: this route names a controller that negotiates formats, so one
-  # predicate turns the raise into the 404 a private timeline deserves. It is
-  # not the class-wide fix, and nothing here should be read as one — that is
-  # issue #1776, and it belongs in `:accepts` or in the render, above every
-  # page that has this shape.
-  defp machine_request?(conn) do
-    AgentFormat.agent_format?(conn) or FediverseController.ap_request?(conn)
-  end
+  # **Not an ActivityPub request, deliberately.** An earlier draft handed
+  # `activity+json` to the controller too: the `:browser` pipeline admits that
+  # format, no LiveView has a template for it, and `Plug.Conn.resp/3` raised on
+  # the `{:safe, iodata}` it got instead — a 500. That was never this page's
+  # bug (`/organizations` raised identically and is untouched here) and it is
+  # now answered where it belongs, one page shape at a time: this route pipes
+  # through `:html_only`, so `VutuvWeb.Plug.HtmlOnly` refuses the format with
+  # the 406 `plug :accepts` would have given (issue #1776). Catching it here
+  # instead would single `/feed` out with a 404 no sibling page gives.
+  defp machine_request?(conn), do: AgentFormat.agent_format?(conn)
 
   # The route's `:private` also carries `:phoenix_live_view`, which is how
   # `Phoenix.LiveView.Static` recognises a request as belonging to a
