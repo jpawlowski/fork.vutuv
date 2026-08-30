@@ -66,6 +66,19 @@ const wire = () => {
     markActive()
   })
 
+  // Clicking anywhere else closes the list. Nothing else would: the panel is
+  // shut by the editor's own transactions, and leaving the prose dispatches
+  // none — ProseMirror's blur handler changes no state — so without this the
+  // list outlives the caret it hangs off and sits over the page.
+  document.addEventListener("mousedown", (event) => {
+    if (!mentionsOpen()) return
+    if (panel.el.contains(event.target)) return
+    // Inside the editor the caret decides, not the click: moving it dispatches
+    // a transaction, and that is what re-asks whether a mention is being typed.
+    if (session.anchorEl?.contains(event.target)) return
+    closeMentions()
+  })
+
   window.addEventListener("resize", () => place())
   window.addEventListener("scroll", () => place(), { passive: true, capture: true })
 }
@@ -125,16 +138,30 @@ const renderRow = (item, index) => {
 
 // Pin the panel to the caret: under it when there is room, above it when the
 // bottom of the window (or the on-screen keyboard, which `visualViewport`
-// reports and `innerHeight` does not) is closer than the panel is tall.
+// reports and `innerHeight` does not) is closer than the panel is tall. Can
+// also CLOSE the list — see the out-of-window branch below; all three callers
+// (open, resize, scroll) are asking the same question, so it is answered here
+// once rather than at each of them.
 const place = () => {
-  if (!panel || panel.el.hidden || !session?.rect) return
+  if (!mentionsOpen()) return
   const { el } = panel
-  const rect = session.rect
+  // Asked again on every call, never remembered: this fires on scroll and on
+  // resize, and both move the caret under a panel that would otherwise stay
+  // where it was opened. Null once the run is gone (the editor is closing the
+  // list on the same turn) — leave the panel where it is rather than guess.
+  const rect = session.caretRect()
+  if (!rect) return
   const box = el.getBoundingClientRect()
   const margin = 8
   const viewport = window.visualViewport
   const height = viewport ? viewport.height : window.innerHeight
   const width = viewport ? viewport.width : window.innerWidth
+
+  // Scrolled the mention out of the window: the list has nothing left to point
+  // at, and the clamp below would otherwise park it at the top edge, over
+  // whatever the reader scrolled to. Somebody who scrolls away from the word
+  // they were typing is done with the list.
+  if (rect.bottom < 0 || rect.top > height) return closeMentions()
 
   const below = rect.bottom + margin
   const above = rect.top - box.height - margin
@@ -153,19 +180,20 @@ const place = () => {
  * Show the picker: one call per answer, because an empty panel is never a state
  * anybody wants to see. Re-targeting an open one is the same call.
  *
- * @param anchorEl the contenteditable the caret is in — it carries the list's
- *                 ARIA state, since focus stays there
- * @param labels   the editor root's dataset (data-mention-label / -empty)
- * @param onPick   called with the chosen item
- * @param items    the rows to draw
- * @param rect     the caret box to hang off
- * @param budget   optional line under the list ("2 of 5 mentions"), shown only
- *                 where a cap exists — a post has one, a message does not
+ * @param anchorEl  the contenteditable the caret is in — it carries the list's
+ *                  ARIA state, since focus stays there
+ * @param labels    the editor root's dataset (data-mention-label / -empty)
+ * @param onPick    called with the chosen item
+ * @param items     the rows to draw
+ * @param caretRect called for the caret box to hang off — a function, not a
+ *                  box, because the panel is re-placed on scroll and resize
+ * @param budget    optional line under the list ("2 of 5 mentions"), shown only
+ *                  where a cap exists — a post has one, a message does not
  */
-export const showMentions = ({ anchorEl, labels, onPick, items, rect, budget }) => {
+export const showMentions = ({ anchorEl, labels, onPick, items, caretRect, budget }) => {
   const p = panel || build()
 
-  session = { anchorEl, labels, onPick, items, rect, active: 0 }
+  session = { anchorEl, labels, onPick, items, caretRect, active: 0 }
   p.list.setAttribute("aria-label", labels.mentionLabel || "")
   p.empty.textContent = labels.mentionEmpty || ""
 

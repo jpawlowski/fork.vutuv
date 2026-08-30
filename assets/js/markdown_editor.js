@@ -668,6 +668,13 @@ export const MarkdownEditor = {
     // dead view. The messages page tears an editor down per closed conversation.
     clearTimeout(this._mentionTimer)
     clearTimeout(this._checkTimer)
+    // A request already in flight is neither, so it survives both clears and
+    // would act on a view that is gone: the suggest answer re-opens the list we
+    // just closed (and the next scroll then asks that view for coordinates),
+    // the check answer dispatches a redraw onto it. Both are dropped on arrival
+    // instead, by the `this.destroyed_` guards in `requestMentions` and
+    // `checkHandles` — the loader proxy in app.js sets that flag on this hook
+    // before it calls us, and guards its own in-flight boot with it.
     // Drop the fullscreen Escape listener if we were destroyed mid-fullscreen
     // (e.g. navigated away with the editor open) — otherwise it survives on
     // `document` and its closure retains the whole editor.
@@ -1092,7 +1099,7 @@ export const MarkdownEditor = {
     // row somebody had arrowed down to.
     const seq = ++this.mentionSeq
     const items = await this.fetchJson(this.root.dataset.mentionUrl, { q: term })
-    if (seq !== this.mentionSeq) return
+    if (this.destroyed_ || seq !== this.mentionSeq) return
     if (!items || !this.mentionRun || this.mentionRun.term !== term) return
 
     showMentions({
@@ -1102,15 +1109,19 @@ export const MarkdownEditor = {
       labels: this.root.dataset,
       onPick: (item) => this.insertMention(item),
       items: items.results || [],
-      rect: this.caretRect(view),
+      caretRect: () => this.caretRect(view),
       budget: this.mentionBudget(view),
     })
   },
 
   // Where the panel hangs: the `@` that started the mention, not the caret, so
-  // the list stays put while the rest of the handle is typed. Only ever called
-  // with a run in hand (`requestMentions` returns without one).
+  // the list stays put while the rest of the handle is typed. Handed over as a
+  // function rather than a box, because the panel re-places itself on scroll
+  // and resize and a box measured at open time would have the page slide out
+  // from under it. Null when there is no run left to hang off — the panel is
+  // being closed on the same turn.
   caretRect(view) {
+    if (!this.mentionRun) return null
     const at = Math.min(this.mentionRun.from, view.state.doc.content.size)
     const coords = view.coordsAtPos(at)
     return { top: coords.top, bottom: coords.bottom, left: coords.left }
@@ -1245,7 +1256,7 @@ export const MarkdownEditor = {
     const answer = await this.fetchJson(this.root.dataset.mentionCheckUrl, {
       handles: [...pending].join(","),
     })
-    if (!answer) return
+    if (!answer || this.destroyed_) return
 
     // Cache what the server actually answered about — it caps how many handles
     // one request may carry, and marking the ones past that cap "unknown" would
