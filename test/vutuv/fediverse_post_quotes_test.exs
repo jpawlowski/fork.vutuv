@@ -126,6 +126,20 @@ defmodule Vutuv.FediversePostQuotesTest do
     end)
   end
 
+  # What a task that died mid-flight leaves behind: the quote the post says it
+  # has, nothing resolved from it, no stamp on the clock — and old enough that
+  # the resolver stops reading it as an attempt still walking two servers.
+  defp abandoned(%RemotePost{} = post) do
+    refute post.quote_checked_at
+
+    stale = DateTime.add(DateTime.utc_now(:second), -3600, :second)
+    Repo.update_all(from(p in RemotePost, where: p.id == ^post.id), set: [received_at: stale])
+
+    Repo.reload!(post)
+  end
+
+  defp due_ids, do: Enum.map(Fediverse.due_quote_resolutions(), & &1.id)
+
   # One document per path, or a 404. The `content-type` is not decoration: Req's
   # decode step branches on it, so a stub without it hands the client a binary
   # where the real server's answer arrives decoded.
@@ -513,6 +527,153 @@ defmodule Vutuv.FediversePostQuotesTest do
       assert cleared.quote_uri == nil
       assert cleared.quoted_post_id == nil
       refute cleared.quote_verified
+    end
+
+    test "that moves the quote drops the old card before the new one is resolved" do
+      serve_third()
+
+      %{post: post} =
+        quoting_post(%{"quote" => @quoted_object, "quoteAuthorization" => @stamp})
+
+      assert :ok = Fediverse.resolve_quote(post)
+      assert Repo.reload!(post).quote_verified
+
+      update = %{
+        "type" => "Update",
+        "actor" => @quoter,
+        "object" => %{
+          "id" => @quoting_object,
+          "type" => "Note",
+          "attributedTo" => @quoter,
+          "content" => "<p>Doch lieber der hier.</p>",
+          "published" => "2026-08-20T09:00:00Z",
+          "to" => [@public],
+          "quote" => "https://third.example/notes/2"
+        }
+      }
+
+      Fediverse.update_remote_post(update, @quoter)
+
+      moved = Repo.reload!(post)
+      # The card is gone in the same write that moved the quote, rather than
+      # standing over a post it no longer belongs to until a task says so.
+      refute moved.quoted_post_id
+      refute moved.quote_verified
+      # …and the cleared clock is what hands the row to the resolver if the task
+      # that should finish this dies too. Ageing it is only how the due query is
+      # asked at all: it deliberately leaves an edit made a moment ago alone.
+      abandoned(moved)
+      assert moved.id in due_ids()
+    end
+  end
+
+  describe "a resolution that never finished" do
+    test "one pass finishes what the killed task did not" do
+      serve_third()
+
+      %{post: post} =
+        quoting_post(%{"quote" => @quoted_object, "quoteAuthorization" => @stamp})
+
+      post = abandoned(post)
+
+      assert post.id in due_ids()
+      assert 1 == Fediverse.resume_quote_resolutions()
+
+      resumed = Repo.reload!(post)
+      assert resumed.quoted_post_id
+      assert resumed.quote_verified
+      assert RemotePost.quote_card?(resumed)
+    end
+
+    test "a quote nobody can resolve is tried once and then leaves the queue" do
+      # The calibration #1316 asks for: an unworkable row must stop being
+      # returned by the due query after one pass, or it holds the front of
+      # every batch for ever and the sweep silently does nothing. The quoted
+      # server answers 404 here, so no pass can ever finish this row.
+      stub(fn _path -> nil end)
+
+      %{post: post} = quoting_post(%{"quote" => @quoted_object})
+      post = abandoned(post)
+
+      assert 1 == Fediverse.resume_quote_resolutions()
+
+      tried = Repo.reload!(post)
+      refute tried.quoted_post_id
+      # Stamped all the same: the clock says the attempt ran, not that a card
+      # came of it.
+      assert tried.quote_checked_at
+
+      assert [] == due_ids()
+      assert 0 == Fediverse.resume_quote_resolutions()
+    end
+
+    test "a resolution that ran is not due again, however it came out" do
+      serve_third()
+
+      # No stamp, so this resolves to a link and never a card — a finished
+      # resolution all the same, and the resolver has no business in it.
+      %{post: post} = quoting_post(%{"quote" => @quoted_object})
+      assert :ok = Fediverse.resolve_quote(post)
+
+      refute Repo.reload!(post).quote_verified
+      assert [] == due_ids()
+    end
+
+    test "an attempt that may still be running is left alone" do
+      serve_third()
+
+      %{post: post} =
+        quoting_post(%{"quote" => @quoted_object, "quoteAuthorization" => @stamp})
+
+      # Seconds old: its task may be halfway through the two servers it asks,
+      # and sweeping it now would spend those requests a second time.
+      refute post.quote_checked_at
+      assert [] == due_ids()
+    end
+
+    test "the quoted copy's own quote is not walked back one hop per tick" do
+      # The one-level rule lives in `finish_stored_post(_, _, false)`, and the
+      # resolver is a second way in: a copy stored with its own quote left
+      # unresolved looks exactly like an attempt that died. It is stamped for
+      # that reason, so it never enters this queue and the chain of strangers'
+      # servers is not walked two minutes at a time.
+      serve_third(%{note: %{"quote" => "https://third.example/notes/99"}})
+
+      %{post: post} = quoting_post(%{"quote" => @quoted_object})
+      assert :ok = Fediverse.resolve_quote(post)
+
+      quoted = Repo.get_by!(RemotePost, object_uri: @quoted_object)
+      assert quoted.quote_uri == "https://third.example/notes/99"
+      refute quoted.quoted_post_id
+      assert quoted.quote_checked_at
+
+      abandoned(post)
+      refute quoted.id in due_ids()
+    end
+
+    test "a row whose attempt raises is still stamped, and the batch goes on" do
+      # The one way a row could keep a null clock after being tried. It is the
+      # newest row in the queue, so without a stamp it would take the front of
+      # every batch from here on — the starvation this design claims immunity
+      # from, arriving by the back door.
+      stub_remote(fn _conn -> raise "the server did something unspeakable" end)
+
+      %{post: post} = quoting_post(%{"quote" => @quoted_object})
+      post = abandoned(post)
+
+      assert 1 == Fediverse.resume_quote_resolutions()
+
+      tried = Repo.reload!(post)
+      assert tried.quote_checked_at
+      refute tried.quoted_post_id
+      assert [] == due_ids()
+    end
+
+    test "a post that quotes nothing is never in the queue" do
+      %{post: post} = quoting_post(%{})
+
+      abandoned(post)
+      assert [] == due_ids()
     end
   end
 

@@ -2366,13 +2366,33 @@ unapproved and sends an `Update` the moment the stamp is granted; the same
 `Update` is how a **withdrawn** stamp reaches us. So `update_remote_post/2`
 re-resolves whenever either URI moved, and an edit that takes the quote back
 clears the card immediately, with no request at all — a withdrawal is the one
-thing that must not wait for a queue.
+thing that must not wait for a queue. An edit that moves the quote somewhere
+else puts the row back to unresolved *before* the new resolution starts
+(`requeue_quote/1`), so the window in between shows a link rather than a card
+still naming the post that was quoted a minute ago.
+
+**An interrupted resolution is started again.** The resolution is fire and
+forget on `Vutuv.TaskSupervisor`, so a blue/green deploy stops it mid-fetch and
+nothing is logged, because nothing failed as far as the inbox is concerned. The
+unfinished work is therefore a row: every resolution that *does* run to its end
+stamps `quote_checked_at` — refusals included, since that column is the
+scheduler's clock and not a claim that a card came of it — so a post that quotes
+something, resolved to nothing and carries no stamp is one whose task died.
+`Vutuv.Fediverse.QuoteResolver` sweeps for exactly that every two minutes
+(`due_quote_resolutions/1`, a partial index that matches nothing in a healthy
+minute) and gives each row **one** more attempt. One, not a ladder: the retry
+stamps the clock whatever it decides, so a quote of a post that is gone leaves
+the queue by being tried, and cannot hold the front of every batch the way
+#1316's starved objects did. A consent stamp granted later needs none of this —
+it arrives as an `Update`.
 
 Deliberately **not** here: issuing our own stamps so a vutuv post can be quoted
 from outside (#1608), a quote button of our own (#1610, #1611), and a sweeper
-that re-checks a stamp still resolves. The last one is a real gap — a revoked
-stamp reaches us as an `Update` in practice, and a server that revokes silently
-keeps its card until the post expires.
+that re-checks a stamp *that already verified* (#1796). The last one is a real
+gap — a revoked stamp reaches us as an `Update` in practice, and a server that
+revokes silently keeps its card until the post expires. It reuses the clock
+above: `quote_checked_at` is where a recheck records that it looked, and its due
+query is the same query widened to the rows that did resolve.
 
 ## Saying this installation exists: NodeInfo (issue #1448)
 

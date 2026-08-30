@@ -123,9 +123,18 @@ defmodule Vutuv.Fediverse.RemotePost do
     # fetched and matched; false for everything else, including a quote we
     # simply have not resolved yet — so an unchecked row renders as the link it
     # would otherwise have been, never as a card somebody did not agree to.
+    #
+    # `quote_checked_at` is the resume clock, and it answers one question only:
+    # did the resolution ever finish? Every outcome stamps it, the refusals
+    # included — it is the scheduler's clock, not a claim that a card came of
+    # it — so a row with a `quote_uri` and no stamp is one whose background task
+    # died before it wrote anything, and `Vutuv.Fediverse.QuoteResolver` is what
+    # goes back for it. Nothing casts it; an edit that moves the quote clears it
+    # (`Vutuv.Fediverse.resolve_quote/1`).
     field(:quote_uri, :string)
     field(:quote_authorization_uri, :string)
     field(:quote_verified, :boolean, default: false)
+    field(:quote_checked_at, :utc_datetime)
 
     belongs_to(:remote_account, Vutuv.Fediverse.RemoteAccount)
 

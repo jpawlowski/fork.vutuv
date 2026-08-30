@@ -214,7 +214,8 @@ server-side from YouTube under this same flag),
 **quotes** — see [fediverse.md](architecture/fediverse.md); on, it fetches the
 quoted post and its consent stamp so the quote renders as a card, off it stays
 the plain link it arrived as, and either way nothing happens while
-`FEDIVERSE_ENABLED` is false), and
+`FEDIVERSE_ENABLED` is false; the flag also runs the two-minute sweeper that
+picks up the resolutions a deploy or a crash interrupted), and
 `:serve_uploads_locally` (see nginx below).
 
 ## systemd

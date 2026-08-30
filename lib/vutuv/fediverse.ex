@@ -2689,7 +2689,10 @@ defmodule Vutuv.Fediverse do
 
     Screenshots.reconcile(post)
 
-    if quotes?, do: resolve_quote_async(post)
+    # The `false` side stamps the clock rather than leaving it null, which is
+    # the difference between "we decided not to resolve this one" and "an
+    # attempt died here" — see `decline_quote/1`.
+    if quotes?, do: resolve_quote_async(post), else: decline_quote(post)
 
     post
   end
@@ -4246,7 +4249,7 @@ defmodule Vutuv.Fediverse do
     # stamp is granted, and the same `Update` is how a withdrawn stamp reaches
     # us — so a quote is far likelier to change here than to arrive complete
     # with the `Create`.
-    if quote_moved?(before, updated), do: resolve_quote_async(updated)
+    if quote_moved?(before, updated), do: requeue_quote(updated)
 
     :ok
   end
@@ -4261,6 +4264,24 @@ defmodule Vutuv.Fediverse do
   @no_quote %{quoted_post_id: nil, quoted_local_post_id: nil, quote_verified: false}
 
   defp resolve_quotes?, do: Application.get_env(:vutuv, :fediverse_quote_resolve, true)
+
+  # How long after a post arrives a row with no stamp on its clock is left
+  # alone before the resolver treats the attempt as dead. Comfortably longer
+  # than a resolution takes (up to three requests, each under the HTTP client's
+  # own timeout), so the sweeper does not race a task that is merely slow.
+  @quote_resume_grace_seconds 300
+
+  # One tick's worth. Half `Vutuv.Fediverse.Media`'s batch on the same two-minute
+  # interval, because a row here costs up to **three** requests to two servers
+  # where a picture costs one, and only the first of the three passes the
+  # per-host fetch budget — `stamp_valid?/3` reads the stamp through
+  # `fetch_remote_note/2`, which no limiter meters.
+  #
+  # No per-host cap on top of that, for the reason `Media.refetch_due/1` writes
+  # down: a cap over an already-sorted, already-capped batch is what starves the
+  # healthy rows behind one blocked host, and it buys nothing here because every
+  # row leaves this queue after a single attempt whatever the outcome.
+  @quote_resume_batch 10
 
   @doc """
   Resolves what a cached post quotes and decides whether it may be drawn as a
@@ -4313,6 +4334,101 @@ defmodule Vutuv.Fediverse do
     end
 
     :ok
+  end
+
+  @doc """
+  The quotes whose resolution never finished, newest first (issue #1609).
+
+  A row qualifies on the clock alone: it says it quotes something, nothing was
+  resolved from it, and `quote_checked_at` is null. Since **every** finished
+  resolution stamps that column, refusals included, a null one cannot mean "we
+  looked and there was nothing there" — it means the background task died
+  before it wrote, which is what a blue/green deploy does to whatever is running
+  in the slot it stops, without an error anywhere to say so.
+
+  Newest first, because the reader who might still be looking at that post is
+  looking at a recent one; and not until `@quote_resume_grace_seconds` after the
+  post arrived, so the first attempt — which may be waiting on two other servers
+  — is not run a second time beside itself. `received_at` is the anchor because
+  this table keeps no `updated_at`: an **edited** post therefore has no grace of
+  its own and can be picked up on the next tick after `requeue_quote/1` cleared
+  its clock. That is the right way round. The edit path is where a stamp usually
+  arrives, so finishing it promptly matters more than the rare duplicate fetch
+  of a task that is somehow still running two minutes on, which resolves to the
+  same row and writes the same thing.
+  """
+  def due_quote_resolutions(limit \\ @quote_resume_batch) do
+    cutoff = DateTime.add(DateTime.utc_now(:second), -@quote_resume_grace_seconds, :second)
+
+    from(p in RemotePost,
+      where: not is_nil(p.quote_uri),
+      where: is_nil(p.quoted_post_id) and is_nil(p.quoted_local_post_id),
+      where: is_nil(p.quote_checked_at),
+      where: p.received_at < ^cutoff,
+      # Ids are UUID v7, so id order is creation order.
+      order_by: [desc: p.id],
+      limit: ^limit
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Finishes every quote resolution that was left unfinished and returns how many
+  were tried (issue #1609). The standing job behind `due_quote_resolutions/1`,
+  run by `Vutuv.Fediverse.QuoteResolver`.
+
+  Each row is tried **once**: the attempt stamps the clock whatever it decides,
+  so a quote that cannot be resolved at all — a server that is gone, a post
+  taken down, an instance we block — leaves the queue by being tried rather
+  than by succeeding, and can never hold the front of the next batch. A quote
+  whose consent arrives later does not need this path at all: a granted or
+  withdrawn stamp reaches us as an `Update`, which resolves it again by itself.
+
+  The one thing that would break that promise is a **raise**: an attempt that
+  dies inside `resolve_quote/1` never reaches its write, and the row it left
+  behind is the newest one in the queue, so it would take the front of every
+  batch from then on. Each row therefore carries its own `try`, which stamps the
+  clock and lets the rest of the batch run — the invariant `Media.refetch_due/1`
+  spells out as "no row can sit in the queue with no clock on it".
+
+  Bounded by the batch and by one attempt each, so a host that is merely
+  rate-capped this hour loses its quote to a plain link. That is the same answer
+  the first attempt gives today; a second look at a capped host belongs to the
+  recheck sweeper in #1796, which needs a strike ladder for it either way.
+  """
+  def resume_quote_resolutions(limit \\ @quote_resume_batch) do
+    due = due_quote_resolutions(limit)
+
+    Enum.each(due, &try_resolving/1)
+    length(due)
+  end
+
+  defp try_resolving(%RemotePost{} = post) do
+    resolve_quote(post)
+  rescue
+    error ->
+      Logger.warning("quote resolve for #{post.object_uri} raised: #{inspect(error)}")
+      write_quote(post, @no_quote)
+  end
+
+  # The quoted copy's own quote, declined rather than left open. Stamping the
+  # clock is what makes the one-level rule hold: an unstamped row is what the
+  # resolver goes looking for, so the copy would be picked up two minutes later
+  # and the chain of strangers' servers walked one hop per tick.
+  defp decline_quote(%RemotePost{} = post), do: write_quote(post, @no_quote)
+
+  # An edit that moved the quote or its stamp invalidates whatever the old one
+  # resolved to, so the row is put back to unresolved **before** the new
+  # resolution starts rather than after it finishes. Both in-between states are
+  # the reason: a card is never left standing over a quote it no longer belongs
+  # to, and a task that dies in this window leaves the null clock that hands the
+  # row to `Vutuv.Fediverse.QuoteResolver`. The struct is put back with it, so
+  # the no-quote branch below sees the row as it now is.
+  defp requeue_quote(%RemotePost{} = post) do
+    pending = Map.put(@no_quote, :quote_checked_at, nil)
+    write_quote(post, pending)
+
+    post |> struct(pending) |> resolve_quote_async()
   end
 
   # Whether an edit touched the quote at all. Both URIs, because the second one
@@ -4490,7 +4606,17 @@ defmodule Vutuv.Fediverse do
   # long as two strangers' servers take, and the post can be gone by the time
   # they answer — expiry, an upstream `Delete`, a member's report. A statement
   # that matches no row is a no-op; a changeset would raise `StaleEntryError`.
+  #
+  # **The clock rides along with every write**, refusals included: it says the
+  # resolution ran to its end, never that a card came of it. That is what makes
+  # the null clock mean exactly one thing to `due_quote_resolutions/1`, and it
+  # is what keeps a quote nobody can resolve from being retried for ever — the
+  # starvation #1316 paid for. `put_new`, so the one caller that means the
+  # opposite (`requeue_quote/1`, putting a row *back* in the queue) can say nil
+  # and still write through here.
   defp write_quote(%RemotePost{id: id}, attrs) do
+    attrs = Map.put_new(attrs, :quote_checked_at, DateTime.utc_now(:second))
+
     Repo.update_all(from(p in RemotePost, where: p.id == ^id), set: Map.to_list(attrs))
     :ok
   end
