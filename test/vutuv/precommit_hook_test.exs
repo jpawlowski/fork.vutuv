@@ -16,6 +16,22 @@ defmodule Vutuv.PrecommitHookTest do
   degraded path (missing dependency, unresolvable directory) that must fail
   closed rather than wave the push through.
 
+  A third defect is the opposite failure — the gate charging a push for an
+  answer it cannot give. Its whole cost is the ~9,100-test suite, and none of
+  precommit's five steps reads a `docs/` page or a top-level Markdown file, so
+  #1774 paid ~300-900 s nine times over for one Markdown file. The exemption
+  that fixes it is calibrated here from both sides: without it the `SKIP` cases
+  go red, and widening it to "anything ending in `.md`" reds the two that pin a
+  build-input Markdown file to the full gate. The `mix.exs` case is the one no
+  widening of the Markdown rule can red, because `mix.exs` is not Markdown; it
+  guards a different edit, somebody exempting `mix.*` or `*.exs` outright.
+
+  Which base that diff is read from is the whole of the exemption's worth, and
+  the hook says why. The cases that pin it are the three that give the branch a
+  tracking ref at all: two under "a branch that has caught up with main", and
+  the `tracking: true` degraded path, which is the one shape where the tracking
+  ref would answer and must still not be asked.
+
   The hook's `--explain` mode prints its decision without running precommit;
   that mode exists for this test, and the settings.json invocation passes no
   arguments so it can never be reached in normal use.
@@ -142,6 +158,125 @@ defmodule Vutuv.PrecommitHookTest do
     end
   end
 
+  describe "the documentation exemption" do
+    # `mix precommit`'s cost is its ~9,100-test suite, and none of its five
+    # steps can read a `docs/` page, a `.github/` workflow or a top-level
+    # Markdown file. A push carrying only those buys an answer about code it
+    # never touched — #1774 paid that run nine times for one Markdown file.
+    test "a push carrying only documentation skips the run", ctx do
+      repo =
+        tmp_project(["CONTRIBUTING.md", "docs/architecture/feed.md", ".github/workflows/ci.yml"])
+
+      decision = decide(ctx, "git -C #{repo} push")
+
+      assert decision =~ "SKIP", "expected a skip, got: #{decision}"
+      assert decision =~ "CI still checks everything"
+    end
+
+    test "one file precommit can read pays the whole gate", ctx do
+      # The mixed push is the case worth pinning: the docs do not dilute the
+      # source file beside them.
+      repo = tmp_project(["CONTRIBUTING.md", "lib/vutuv/thing.ex"])
+
+      assert decide(ctx, "git -C #{repo} push") == "PUSH #{repo}"
+    end
+
+    test "a change to mix.exs is not documentation", ctx do
+      # `mix.exs` is compiled and format-checked, and it decides what the suite
+      # builds at all, so any push touching it still pays the full gate.
+      repo = tmp_project(["mix.exs"])
+
+      assert decide(ctx, "git -C #{repo} push") == "PUSH #{repo}"
+    end
+
+    test "Markdown the build reads is not documentation", ctx do
+      # The reason the rule is deny-first rather than extension-first:
+      # `priv/help/*.md` compiles into `HelpController`, `priv/dev_docs/*.md`
+      # into `DevDocController`, `.claude/rules/design.md` is read and asserted
+      # on by the dark-mode tests, and `rel/` holds the release templates the
+      # deploy builds from.
+      for path <- [".claude/rules/design.md", "priv/help/imprint_en.md", "rel/overlays/notes.md"] do
+        repo = tmp_project([path])
+
+        assert decide(ctx, "git -C #{repo} push") == "PUSH #{repo}",
+               "#{path} is a build input, not documentation"
+      end
+    end
+
+    test "only top-level Markdown is documentation", ctx do
+      # In a `case` pattern `*` matches `/` too, so a bare `*.md` arm exempts
+      # Markdown at any depth — a directory nobody has denied yet would have
+      # skipped the gate the day it was added. Only the named directories are
+      # exempt at depth; anything else has to sit at the top.
+      nested = tmp_project(["content/posts/hello.md"])
+      top = tmp_project(["CONTRIBUTING.md"])
+
+      assert decide(ctx, "git -C #{nested} push") == "PUSH #{nested}"
+      assert decide(ctx, "git -C #{top} push") =~ "SKIP"
+      # A named directory still is exempt at any depth.
+      deep = tmp_project(["docs/architecture/a/b/c.md"])
+      assert decide(ctx, "git -C #{deep} push") =~ "SKIP"
+    end
+  end
+
+  describe "a branch that has caught up with main" do
+    # A documentation PR lives long enough that main moves under it, so from
+    # its second push onwards the branch has merged main in or been rebased
+    # onto it. Both shapes carry `lib/vutuv/thing.ex` when the diff is read
+    # from the tracking ref and only the Markdown file when it is read from the
+    # trunk, which is the difference the hook's base comment is about.
+    test "a branch that merged main in still skips", ctx do
+      repo = tmp_project(["CONTRIBUTING.md"], integrate: :merge)
+
+      assert decide(ctx, "git -C #{repo} push") =~ "SKIP"
+    end
+
+    # The same assertion through a rewritten history rather than a merge
+    # commit, which is what would catch a base read off the top commit alone.
+    test "a branch rebased onto main still skips", ctx do
+      repo = tmp_project(["CONTRIBUTING.md"], integrate: :rebase)
+
+      assert decide(ctx, "git -C #{repo} push --force-with-lease") =~ "SKIP"
+    end
+  end
+
+  describe "the exemption's degraded paths" do
+    # Rule 1 of the hook: an unanswered question is not an exemption. Each of
+    # these carries documentation only, and each must still run the gate
+    # because the hook cannot prove what the push would put on the remote.
+    test "a push naming another ref pays the gate", ctx do
+      repo = tmp_project(["CONTRIBUTING.md"])
+
+      assert decide(ctx, "git -C #{repo} push origin main") == "PUSH #{repo}"
+      assert decide(ctx, "git -C #{repo} push --all") == "PUSH #{repo}"
+      # Spelled as this branch, it is the same push and still skips.
+      assert decide(ctx, "git -C #{repo} push origin HEAD") =~ "SKIP"
+    end
+
+    test "a detached HEAD pays the gate", ctx do
+      repo = tmp_project(["CONTRIBUTING.md"])
+      {_, 0} = System.cmd("git", ["-C", repo, "checkout", "--quiet", "--detach"])
+
+      assert decide(ctx, "git -C #{repo} push") == "PUSH #{repo}"
+    end
+
+    test "no merge base to compare against pays the gate", ctx do
+      repo = tmp_project(["CONTRIBUTING.md"], trunk: false)
+
+      assert decide(ctx, "git -C #{repo} push") == "PUSH #{repo}"
+    end
+
+    test "a tracking ref is no substitute for the trunk", ctx do
+      # The one shape where a second base would answer: no trunk ref, but a
+      # tracking ref whose merge base yields the documentation file on its own.
+      # The hook does not ask it. That reading is the permissive one, and an
+      # unanswered question is not an exemption.
+      repo = tmp_project(["CONTRIBUTING.md"], trunk: false, tracking: true)
+
+      assert decide(ctx, "git -C #{repo} push") == "PUSH #{repo}"
+    end
+  end
+
   # Runs the hook in `--explain` mode against a payload and returns its verdict.
   # `System.cmd/3` cannot feed stdin, so the payload goes in through a file
   # redirect run by `sh`.
@@ -191,6 +326,85 @@ defmodule Vutuv.PrecommitHookTest do
     end
 
     tmp
+  end
+
+  # A throwaway repository shaped like the vutuv checkout: a `mix.exs` on a base
+  # commit registered as `upstream/main`, then one commit on branch `work`
+  # touching `paths`. That second commit is what a push from it would carry.
+  # `trunk: false` leaves the trunk ref out, so nothing can be compared.
+  # `tracking: true` gives the branch a tracking ref at the base commit, and
+  # `integrate: :merge | :rebase` ages it instead: it is pushed once, main
+  # gains a source file, and the branch takes that in the two ways a long-lived
+  # PR does.
+  defp tmp_project(paths, opts \\ []) do
+    repo = tmp_repo()
+    git = fn args -> {_, 0} = System.cmd("git", ["-C", repo | args]) end
+
+    git.(["config", "user.email", "hook-test@example.com"])
+    git.(["config", "user.name", "Hook Test"])
+    git.(["config", "commit.gpgsign", "false"])
+
+    File.write!(Path.join(repo, "mix.exs"), "# base\n")
+    git.(["add", "-A"])
+    git.(["commit", "--quiet", "-m", "base"])
+    git.(["branch", "-M", "work"])
+
+    if Keyword.get(opts, :trunk, true),
+      do: git.(["update-ref", "refs/remotes/upstream/main", "HEAD"])
+
+    if Keyword.get(opts, :tracking, false), do: track(repo, git)
+
+    for path <- paths do
+      full = Path.join(repo, path)
+      File.mkdir_p!(Path.dirname(full))
+      File.write!(full, "changed by #{inspect(self())}\n")
+    end
+
+    git.(["add", "-A"])
+    git.(["commit", "--quiet", "-m", "work"])
+
+    case Keyword.fetch(opts, :integrate) do
+      {:ok, how} -> integrate(repo, git, how)
+      :error -> :ok
+    end
+
+    # The hook reports the resolved toplevel, and on macOS the temp directory
+    # reaches it through the `/var` → `/private/var` symlink.
+    {toplevel, 0} = System.cmd("git", ["-C", repo, "rev-parse", "--show-toplevel"])
+    String.trim(toplevel)
+  end
+
+  # The branch gets a tracking ref at the current HEAD. The remote entry is not
+  # decoration: `@{upstream}` resolves through its fetch refspec and NOT through
+  # `branch.work.merge` alone, so without it git answers nothing, and a fixture
+  # built to tell two bases apart quietly stops telling them apart. Nothing ever
+  # contacts the address.
+  defp track(repo, git) do
+    git.(["remote", "add", "origin", Path.join(repo, "origin.git")])
+    git.(["update-ref", "refs/remotes/origin/work", "HEAD"])
+    git.(["branch", "--quiet", "--set-upstream-to=origin/work", "work"])
+  end
+
+  # The branch has been pushed once, and main has moved since. The tracking ref
+  # stays at the tip that was pushed, which is the whole point: once the branch
+  # takes main's commit in, that ref sits *behind* the integration and its merge
+  # base drags main's source file into the branch's diff. The trunk ref moves
+  # with main, so the merge base with it does not.
+  defp integrate(repo, git, how) do
+    track(repo, git)
+
+    git.(["checkout", "--quiet", "--detach", "refs/remotes/upstream/main"])
+    File.mkdir_p!(Path.join(repo, "lib/vutuv"))
+    File.write!(Path.join(repo, "lib/vutuv/thing.ex"), "# moved on\n")
+    git.(["add", "-A"])
+    git.(["commit", "--quiet", "-m", "main moved on"])
+    git.(["update-ref", "refs/remotes/upstream/main", "HEAD"])
+    git.(["checkout", "--quiet", "work"])
+
+    case how do
+      :merge -> git.(["merge", "--quiet", "--no-edit", "refs/remotes/upstream/main"])
+      :rebase -> git.(["rebase", "--quiet", "refs/remotes/upstream/main"])
+    end
   end
 
   defp shell_quote(value), do: "'" <> String.replace(value, "'", ~S('\'')) <> "'"
