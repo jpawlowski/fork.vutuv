@@ -56,13 +56,18 @@ defmodule Vutuv.Mentions do
   """
 
   import Ecto.Query
+  import Vutuv.Moderation.Query, only: [account_confirmed_row: 1, account_hidden_row: 1]
+  import Vutuv.Organizations.Query, only: [organization_public_row: 1]
+  import Vutuv.SearchText, only: [contains: 1, name_ilike: 3]
 
   alias Ecto.Changeset
+  alias Vutuv.Accounts
   alias Vutuv.Accounts.User
   alias Vutuv.Ads.Ad
   alias Vutuv.Chat.Message
   alias Vutuv.Fediverse
   alias Vutuv.Handles
+  alias Vutuv.Identity
   alias Vutuv.Jobs.JobPosting
   alias Vutuv.Organizations
   alias Vutuv.Organizations.Organization
@@ -71,6 +76,8 @@ defmodule Vutuv.Mentions do
   alias Vutuv.Profiles.WorkExperience
   alias Vutuv.Repo
   alias Vutuv.SearchText
+  alias Vutuv.Social
+  alias Vutuv.Social.Follow
 
   # The canonical `@`/`#` entity grammar. It lives here (not in the renderer) so
   # rendering, validation and rewriting share ONE definition; `VutuvWeb.Markdown`
@@ -137,6 +144,21 @@ defmodule Vutuv.Mentions do
   # actually talking to a group and small enough that the list is worthless as
   # a mailing tool.
   @max_post_mentions 5
+
+  # How many accounts the composer's picker offers at once. Eight is the most a
+  # dropdown shows without turning into a list to scroll: past that, typing one
+  # more letter is faster than reading.
+  @suggest_limit 8
+
+  # The shortest term the picker answers for, matching `Posts.search_users/3`.
+  @suggest_min_chars 2
+
+  # How many handles one `check_handles/1` call answers about. The composer asks
+  # about the handles in one body, and a body may hold at most
+  # `@max_post_mentions` of them — the rest of the room is for the other
+  # surfaces (a long description) and for a member who typed more than they may
+  # keep, who still deserves to see which of them are real.
+  @max_check_handles 50
 
   @doc "The canonical entity regex, so the renderer shares this module's grammar."
   def entity_regex, do: @entity
@@ -355,6 +377,195 @@ defmodule Vutuv.Mentions do
   end
 
   def rewrite(text, _old, _new), do: {text, 0}
+
+  ## The composer's picker -------------------------------------------------
+
+  @doc """
+  Accounts to offer while `@term` is being typed in the composer (issue #1748):
+  members and organization pages whose handle starts with it, or whose name
+  contains it, ready to be inserted as a bare `@handle`.
+
+  Ranked **followed-first**, and inside each group handle-prefix matches before
+  name matches, then alphabetically. Somebody you follow is who you almost
+  always mean, and a mention is a notification: offering the stranger first is
+  how the wrong person gets one.
+
+  What it refuses to offer, so the picker cannot be a way around a decision the
+  viewer or the site already made: an account blocked in either direction, a
+  member moderation hides or who never confirmed their address, a page that is
+  not publicly visible, and the viewer themselves (their own mention notifies
+  nobody — `mentioned_users/2` excludes the author).
+
+  Answers nothing below `#{@suggest_min_chars}` characters, the floor its
+  sibling typeahead `Vutuv.Posts.search_users/3` already uses: a bare `@` starts
+  a word far more often than a mention, and one letter names half the site — so
+  the rows would be noise, and each of them costs a scan on every keystroke.
+  """
+  def suggest(%User{} = viewer, term, limit \\ @suggest_limit) when is_binary(term) do
+    normalized = Handles.normalize(term)
+
+    # Characters, not bytes: one letter is one letter whether or not it is ASCII,
+    # and the floor is about how much the member has actually said.
+    if String.length(normalized) < @suggest_min_chars do
+      []
+    else
+      blocked = Social.blocked_user_ids(viewer.id)
+
+      case suggest_users(viewer, normalized, blocked) ++ suggest_organizations(normalized) do
+        # No candidates, no ranking — and above all no follows query, which is
+        # the expensive half and would otherwise run for every half-typed handle
+        # that names nobody.
+        [] -> []
+        candidates -> candidates |> rank_suggestions(viewer) |> Enum.take(limit)
+      end
+    end
+  end
+
+  @doc """
+  Which of `handles` name an account that a reader would actually be sent to:
+  `{checked, resolved}`, both lowercased.
+
+  The picker's other half — what lets the composer draw a confirmed mention as a
+  chip and leave an invented one as plain text. It asks `resolvable_handles/1`,
+  the same resolution `VutuvWeb.Markdown` performs when it turns a handle into a
+  link, so a chip means exactly "this will be a link" and nothing else. That is
+  a **narrower** question than the save-time `unknown_handles/1`, which only
+  asks whether somebody holds the handle: a page nobody may see is a handle the
+  save accepts and the renderer leaves as text, so it gets no chip. The two
+  directions are not equally bad — a missing chip on a savable handle is quiet,
+  a chip promising a link that never appears is the lie this feature exists to
+  prevent.
+
+  `checked` is returned beside the answer because the list is capped at
+  `#{@max_check_handles}` handles, and silence is not an answer: a client that
+  read a missing handle as "no such account" would strip the mark off a real one
+  the moment somebody pasted a long list.
+  """
+  def check_handles(handles) when is_list(handles) do
+    checked =
+      handles
+      |> Enum.map(&normalize/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+      |> Enum.take(@max_check_handles)
+
+    resolved =
+      case checked do
+        [] -> MapSet.new()
+        names -> names |> resolvable_handles() |> Map.keys() |> MapSet.new()
+      end
+
+    {checked, resolved}
+  end
+
+  @doc """
+  The accounts `handles` name, as a `%{handle => %User{} | %Organization{}}` map
+  — the one resolution behind every rendered mention link.
+
+  It lives here rather than in the renderer because two surfaces now ask it and
+  a visibility answer must not depend on which call site asked:
+  `VutuvWeb.Markdown` decides whether to write an `<a>`, and the composer's
+  `@`-picker decides whether to draw a chip. Members are looked up unfiltered
+  (a mention of a member links to their profile, which decides for itself what
+  it shows) and pages only when publicly visible, so a page nobody may see
+  keeps its text readable without a link that leads where the reader would be
+  turned away.
+
+  Members and pages share one handle namespace (the `handles` registry, issue
+  #941), so a handle belongs to at most one of them and the two maps cannot
+  disagree. Members win the merge anyway, as the safe direction if that
+  invariant were ever broken: a person's profile is the more sensitive
+  destination to get right.
+  """
+  def resolvable_handles(handles) when is_list(handles) do
+    handles
+    |> Organizations.get_organizations_by_usernames()
+    |> Map.merge(Accounts.get_users_by_usernames(handles))
+  end
+
+  @doc "How many handles one `check_handles/1` call answers about."
+  def max_check_handles, do: @max_check_handles
+
+  # The candidate pool the ranking sorts, per kind. Deliberately wider than the
+  # eight rows the picker shows: the follow status that decides the order lives
+  # in another table, so the pool has to be big enough that a followee found by
+  # name is still in it. It IS a cap — a term matching more than 24 accounts can
+  # lose one to it — and the answer to that is the next letter, which is what
+  # somebody typing a handle is about to press anyway.
+  @suggest_pool 24
+
+  defp suggest_users(%User{id: viewer_id}, term, blocked) do
+    pattern = prefix(term)
+
+    from(u in User,
+      select: struct(u, ^User.listing_fields()),
+      where: u.id != ^viewer_id,
+      where: account_confirmed_row(u) and not account_hidden_row(u),
+      where:
+        ilike(u.username, ^pattern) or name_ilike(u.first_name, u.last_name, ^contains(term)),
+      # "The handle itself starts with what was typed" sorts ahead of "the name
+      # happens to contain it": somebody typing `@ad` is spelling a handle.
+      order_by: [
+        asc: fragment("CASE WHEN ? ILIKE ? THEN 0 ELSE 1 END", u.username, ^pattern),
+        asc: u.first_name,
+        asc: u.last_name
+      ],
+      limit: @suggest_pool
+    )
+    |> Repo.all()
+    |> Enum.reject(&MapSet.member?(blocked, to_string(&1.id)))
+  end
+
+  defp suggest_organizations(term) do
+    pattern = prefix(term)
+
+    from(o in Organization,
+      # Exactly what a picker row draws (`VutuvWeb.MentionController.payload/1`):
+      # the handle, the name, the monogram behind it, the logo and the page path.
+      select: struct(o, [:id, :name, :slug, :username, :logo]),
+      where: not is_nil(o.username),
+      where: organization_public_row(o),
+      where: ilike(o.username, ^pattern) or ilike(o.name, ^contains(term)),
+      order_by: [
+        asc: fragment("CASE WHEN ? ILIKE ? THEN 0 ELSE 1 END", o.username, ^pattern),
+        asc: o.name
+      ],
+      limit: @suggest_pool
+    )
+    |> Repo.all()
+  end
+
+  defp prefix(term), do: SearchText.escape_like(term) <> "%"
+
+  # A stable partition, so each group keeps the order the queries gave it.
+  defp rank_suggestions(candidates, viewer) do
+    followed = followed_among(viewer, candidates)
+    {known, rest} = Enum.split_with(candidates, &MapSet.member?(followed, Identity.id(&1)))
+    known ++ rest
+  end
+
+  # Which of these candidates the viewer follows — asked ABOUT the candidates,
+  # not by loading the follow graph and looking them up in it. The answer is at
+  # most one row per candidate however many thousand accounts the viewer
+  # follows, and both `follows_follower_id_followee_*_index` serve it directly.
+  # Muted follows count: muting drops somebody's posts out of a feed, it does
+  # not make them a stranger to talk to.
+  defp followed_among(%User{id: viewer_id}, candidates) do
+    ids = Enum.map(candidates, &Identity.id/1)
+
+    # The two id columns are selected separately rather than COALESCEd in a
+    # fragment: a fragment has no type, so the ids would come back as raw
+    # 16-byte binaries and match nothing against `Identity.id/1`'s string form.
+    from(f in Follow,
+      where: f.follower_id == ^viewer_id,
+      where: f.followee_id in ^ids or f.followee_organization_id in ^ids,
+      select: {f.followee_id, f.followee_organization_id}
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn {user_id, organization_id} -> [user_id, organization_id] end)
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+  end
 
   ## Existence validation ---------------------------------------------------
 

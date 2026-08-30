@@ -28,7 +28,6 @@ defmodule VutuvWeb.Markdown do
 
   use Gettext, backend: VutuvWeb.Gettext
 
-  alias Vutuv.Accounts
   alias Vutuv.Fediverse
   alias Vutuv.Mentions
   alias Vutuv.Organizations
@@ -1213,18 +1212,14 @@ defmodule VutuvWeb.Markdown do
   defp mention_label(handle, :local), do: handle
   defp mention_label(handle, :address), do: handle <> "@" <> VutuvWeb.Endpoint.host()
 
-  # Members and organizations share one handle namespace (the `handles`
-  # registry, issue #941), so a handle belongs to at most one of them and the
-  # two maps cannot disagree. Merging members **over** organizations anyway is
-  # the safe direction if that invariant were ever broken: a person's profile
-  # is the more sensitive destination to get right.
-  #
-  # Two batched queries per rendered body, never one per mention.
-  defp mention_targets(handles) do
-    handles
-    |> Organizations.get_organizations_by_usernames()
-    |> Map.merge(Accounts.get_users_by_usernames(handles))
-  end
+  # Who a handle names, in two batched queries per rendered body — never one per
+  # mention. The resolution itself lives in `Vutuv.Mentions` (which is also
+  # where the namespace merge and the page-visibility gate are explained): it
+  # moved there when the composer's `@`-picker became a second caller (issue
+  # #1748), because a visibility answer that lives at its call site is a
+  # visibility answer that drifts, and this drift would have been a chip
+  # promising a link this renderer refuses to write.
+  defp mention_targets(handles), do: Mentions.resolvable_handles(handles)
 
   # The written hashtag keeps its casing in the text; the href is the slug
   # `Tags.linkable_slugs/1` hands back, which is the canonical one when the
