@@ -90,6 +90,7 @@ defmodule VutuvWeb.FediverseAccountLive do
   defp load_posts(socket) do
     viewer = socket.assigns.current_user
     {posts, more?} = Fediverse.account_posts(socket.assigns.account, viewer)
+    posts = Fediverse.with_quotes(posts)
     ids = Enum.map(posts, & &1.id)
 
     socket

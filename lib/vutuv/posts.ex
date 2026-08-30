@@ -383,10 +383,9 @@ defmodule Vutuv.Posts do
   renders the parent card from an id in the URL — so without this a guessed id
   would confirm and quote the post of a pending or frozen page.
 
-  Public because the reply **page** must ask it too. That page cannot run the
-  whole of `check_reply_allowed/2` (a quiet block has to let the blocked member
-  reach the composer and be refused on submit, or the block leaks), so a named
-  predicate is what keeps the two gates from drifting apart.
+  Public because it is the first arm of `answerable_by?/2`, which the reply
+  **page** asks — and it is a fair question on its own, about the post rather
+  than about anybody wanting to answer it.
   """
   def answerable?(%Post{organization_id: nil}), do: true
 
@@ -401,6 +400,24 @@ defmodule Vutuv.Posts do
       nil -> false
       page -> Organizations.public_visible?(page)
     end
+  end
+
+  @doc """
+  Whether `user` may open a composer answering `post` — the compose page's half
+  of `check_reply_allowed/2` below, which is the same rule minus the block.
+
+  The block is deliberately left out: quiet blocking has to let the blocked
+  member reach the composer and be refused on submit, or the block leaks. That
+  one difference is the whole reason the page cannot simply call the gate, and
+  it is why the rule was written out a second time in
+  `VutuvWeb.PostLive.Reply.mount/3` — where nothing tied it to the gate, so a
+  fifth arm added here would have silently missed the page (issue #1797).
+
+  `restricted?/1` here rather than the gate's fresh re-read: the page is a cheap
+  "may I show you this at all", and the submit path re-asks anyway.
+  """
+  def answerable_by?(%Post{} = post, user) do
+    answerable?(post) and visible_to?(post, user) and not restricted?(post)
   end
 
   defp check_reply_allowed(%User{} = author, %Post{} = parent) do
@@ -3216,6 +3233,7 @@ defmodule Vutuv.Posts do
         by_post =
           unique
           |> attach_remote_images()
+          |> attach_remote_quotes()
           |> attach_remote_follows(viewer)
           |> attach_remote_likes(viewer)
           |> Map.new(&{&1.post_id, &1})
@@ -3348,6 +3366,7 @@ defmodule Vutuv.Posts do
       posts
       |> dedupe_remote()
       |> attach_remote_images()
+      |> attach_remote_quotes()
       |> attach_remote_follows(viewer)
 
     attach_remote_likes(posts ++ replies, viewer)
@@ -3414,6 +3433,19 @@ defmodule Vutuv.Posts do
     by_post = remote |> Enum.map(& &1.remote_post.id) |> Vutuv.Fediverse.list_remote_images()
 
     Enum.map(remote, &Map.put(&1, :images, Map.get(by_post, &1.remote_post.id, [])))
+  end
+
+  # What each cached post quotes (issue #1609), read for the whole page at once
+  # — and **here**, after `dedupe_remote/1`, rather than in the four remote feed
+  # sources that fill it. Every source over-fetches (`Vutuv.FeedPage.paginate/3`
+  # asks each for more rows than the page can hold, then takes the best ones),
+  # so preloading at the source pays four times over for roughly four times the
+  # rows that survive. Ecto skips an association nothing needs, so a page where
+  # nobody quotes anything costs no query at all.
+  defp attach_remote_quotes(remote) do
+    quoted = remote |> Enum.map(& &1.remote_post) |> Vutuv.Fediverse.with_quotes()
+
+    Enum.zip_with(remote, quoted, &Map.put(&1, :remote_post, &2))
   end
 
   @doc """
@@ -4914,6 +4946,7 @@ defmodule Vutuv.Posts do
 
     from(p in RemotePost, where: p.id in ^ids, preload: [:remote_account, :screenshot])
     |> Repo.all()
+    |> Vutuv.Fediverse.with_quotes()
     |> Map.new(&{&1.id, {&1, Map.get(images, &1.id, [])}})
   end
 

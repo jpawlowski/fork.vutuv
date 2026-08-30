@@ -2273,6 +2273,127 @@ Deliberately **not** built: backfilling an account's outbox history. The lookup
 is one post the member named; walking somebody's archive because a member
 followed them is a different bargain.
 
+### What a post quotes (issue #1609)
+
+Mastodon 4.5 (October 2025) writes quote posts, and a growing share of what
+reaches the feed is one. Until this existed we ignored the property entirely, so
+a reader saw the commentary and a bare link — or, when the author wrote no link
+beside the quote, the commentary and nothing at all.
+
+**Three property names, one thing.** `quote` is FEP-044f's canonical spelling,
+`quoteUri` is Fedibird's and `_misskey_quote` is Misskey's, and a server
+commonly writes all three. Read tolerantly in that order, each either an
+embedded object or a bare id. Beside it rides `quoteAuthorization`: the URL of a
+`QuoteAuthorization` document — the "stamp" — that the **quoted** author's
+server issued for this exact quote.
+
+**The delivery only writes down what it was told.** `record_remote_post/2`
+stores `quote_uri` and `quote_authorization_uri` and resolves nothing: the
+resolution makes up to three requests to two other servers, and the inbox owes
+its 202 long before those answer. `Vutuv.Fediverse.resolve_quote/1` runs in a
+background task off `finish_stored_post/3` (the chokepoint every path that mints
+a cached post goes through), gated by `FEDIVERSE_QUOTE_RESOLVE` so an air-gapped
+installation simply keeps the link.
+
+**A card needs consent; everything else is a link.** Two ways to establish it:
+
+* a **self-quote** — the quoted post is by the same account. Nobody's consent is
+  needed and no request is made. It is also the commonest quote there is.
+* a **stamp that checks out**. It must live on the quoted object's own host (a
+  stamp served by the quoting server is that server marking its own homework, so
+  the host is checked *before* the request), and the document must name both
+  sides: `type` `QuoteAuthorization`, `interactionTarget` the quoted object,
+  `interactingObject` the quoting post, `attributedTo` the quoted object's
+  author. A genuine authorization for some *other* quote authorizes nothing
+  here, which is why both sides are in it.
+
+Anything else keeps the URI and renders as a plain link. That is not a failure
+mode to be minimised — it is what a quote without demonstrable consent is
+allowed to look like, and it is strictly better than the nothing a reader had
+before. A quote of one of **our** posts is in that bucket today for a reason
+worth stating: the stamp would have to be ours, and this installation issues
+none until #1608. We store the local post's id anyway, because it turns the
+fallback into a working vutuv permalink instead of a foreign spelling of one of
+our own URLs.
+
+**Resolving what was quoted.** Ours first (matched on host plus path, resolved
+by the **id** in the path and never by the handle beside it — `local_post_id/1`,
+which the URL lookup reads too) — without that branch this would sign a request
+to *this installation* for a URL that is plainly ours, the failure v7.197.0
+already produced once through the `www.` alias. Then a copy we already hold.
+Only then a fetch, through `fetch_and_store_object/3` — literally the announce
+path's fence, shared rather than copied, because it is a security boundary and a
+boost and a quote must not be able to drift apart on what they check: signed,
+SSRF-checked, size-capped, metered per host
+(`FEDIVERSE_ANNOUNCE_FETCH_LIMIT`), `own_object?/3` so a server may speak only
+for itself, public and unlisted only. The key is `counts_signer/1`'s, resolved
+once for both requests; a copy nobody follows and nobody boosted has no signer,
+and its quote stays a link.
+
+**Where the card's data comes from.** `RemotePost.quoted/1` is the single answer
+to "what does this quote" — `{:remote, post}`, `{:local, post}`, `{:uri, uri}`
+or nil, dispatched on the id **columns** so a caller that forgot the preload
+gets the honest `{:uri, _}` rather than a clause that silently does not match.
+The card, the link fallback and the agent-format doc builders all read it.
+`RemotePost.quote_preload/0` says what to load; the feed batches it once per
+**page** in `Vutuv.Posts.decorate_remote/2`, after the sources are merged and
+trimmed, and `Fediverse.with_quotes/1` is what a non-feed surface calls.
+
+**One level, and only one.** The quoted copy is stored with
+`finish_stored_post(_, _, false)`, so its own quote stays unresolved and its
+card shows no nested card. A chain of quotes is a chain of strangers' servers,
+and no reader asked to descend it.
+
+**Every format, not only the card.** The profile, the post archive and
+`/tags/:slug` render this card and all three have `.md`/`.txt`/`.json`/`.xml`
+siblings, so `PostDoc.quoted_entry/1` puts the quote in each of them as
+`%{url:, author:, network:}`. Consent decides how a **person** is shown a quote,
+not whether a machine is told about one — a link-only quote is the same fact to
+an agent as a card. Without it an entry whose whole content is a reaction
+("genau das") reads as a post with nothing in it, which is the gap `pictures:`
+was added to close.
+
+**Retention.** `fediverse_posts.quoted_post_id` is the holder: the quoted author
+is usually somebody nobody here follows, so without it
+`purge_unfollowed_remote_posts/0` would sweep the copy within the hour and turn
+a card in somebody's feed into a bare link while they were looking at it. It is
+the fourth exemption in `spare_held/1` beside a reshare (#1166), a boost (#1167)
+and a lookup (#1211), under the same rule — the right to live out the ordinary
+clock, never extra time.
+
+**An edit is where the quote usually arrives.** Mastodon publishes a quote
+unapproved and sends an `Update` the moment the stamp is granted; the same
+`Update` is how a **withdrawn** stamp reaches us. So `update_remote_post/2`
+re-resolves whenever either URI moved, and an edit that takes the quote back
+clears the card immediately, with no request at all — a withdrawal is the one
+thing that must not wait for a queue. An edit that moves the quote somewhere
+else puts the row back to unresolved *before* the new resolution starts
+(`requeue_quote/1`), so the window in between shows a link rather than a card
+still naming the post that was quoted a minute ago.
+
+**An interrupted resolution is started again.** The resolution is fire and
+forget on `Vutuv.TaskSupervisor`, so a blue/green deploy stops it mid-fetch and
+nothing is logged, because nothing failed as far as the inbox is concerned. The
+unfinished work is therefore a row: every resolution that *does* run to its end
+stamps `quote_checked_at` — refusals included, since that column is the
+scheduler's clock and not a claim that a card came of it — so a post that quotes
+something, resolved to nothing and carries no stamp is one whose task died.
+`Vutuv.Fediverse.QuoteResolver` sweeps for exactly that every two minutes
+(`due_quote_resolutions/1`, a partial index that matches nothing in a healthy
+minute) and gives each row **one** more attempt. One, not a ladder: the retry
+stamps the clock whatever it decides, so a quote of a post that is gone leaves
+the queue by being tried, and cannot hold the front of every batch the way
+#1316's starved objects did. A consent stamp granted later needs none of this —
+it arrives as an `Update`.
+
+Deliberately **not** here: issuing our own stamps so a vutuv post can be quoted
+from outside (#1608), a quote button of our own (#1610, #1611), and a sweeper
+that re-checks a stamp *that already verified* (#1796). The last one is a real
+gap — a revoked stamp reaches us as an `Update` in practice, and a server that
+revokes silently keeps its card until the post expires. It reuses the clock
+above: `quote_checked_at` is where a recheck records that it looked, and its due
+query is the same query widened to the rows that did resolve.
+
 ## Saying this installation exists: NodeInfo (issue #1448)
 
 Everything above is federation between servers that already know about each

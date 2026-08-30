@@ -40,7 +40,7 @@ defmodule VutuvWeb.PostLive.RemotePostReply do
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     viewer = socket.assigns.current_user
-    post = Fediverse.get_remote_post(id)
+    post = id |> Fediverse.get_remote_post() |> Fediverse.with_quotes()
 
     # Readable, not merely present: this page shows the post it is about, so the
     # same rule that decides whether a member may see it at all decides whether

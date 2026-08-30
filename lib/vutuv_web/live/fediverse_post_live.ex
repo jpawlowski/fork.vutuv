@@ -60,7 +60,7 @@ defmodule VutuvWeb.FediversePostLive do
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     viewer = socket.assigns.current_user
-    post = Fediverse.get_remote_post(id)
+    post = id |> Fediverse.get_remote_post() |> Fediverse.with_quotes()
 
     if post && Fediverse.remote_post_readable?(post, viewer) do
       {:ok, assign_post(socket, post, viewer)}

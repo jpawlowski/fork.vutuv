@@ -8,9 +8,12 @@ defmodule VutuvWeb.OpenGraphTest do
   """
   use VutuvWeb.ConnCase
 
+  import Vutuv.OrganizationsHelpers
   import Vutuv.PostsHelpers
 
+  alias Vutuv.Organizations
   alias Vutuv.Posts
+  alias VutuvWeb.OpenGraph
 
   @base "http://localhost:4001"
 
@@ -316,6 +319,208 @@ defmodule VutuvWeb.OpenGraphTest do
       refute html =~ ~s(content="followers only)
       assert og(html, "og:type") == "profile"
     end
+  end
+
+  # Issue #1581: a shared organization link previewed with the *directory's*
+  # copy and the brand card — the same card under every page, and under every
+  # post they published, which told a reader in Teams or WhatsApp nothing about
+  # what was behind the link. `async: false` for these is impossible inside an
+  # async case, so the organization helpers' global flag is set per test.
+  describe "organization pages" do
+    setup :verify_organization_domains
+
+    test "a page previews with its name, its own description and its logo", %{conn: conn} do
+      {organization, _owner} = active_organization(%{"name" => "Acme GmbH"})
+
+      {:ok, organization} =
+        Organizations.update_organization(organization, %{
+          "description" => "We build **great** widgets.\n\nSince 1994.",
+          "logo" => "logo-token"
+        })
+
+      html = conn |> get(~p"/organizations/#{organization.slug}") |> html_response(200)
+
+      assert og(html, "og:title") == "Acme GmbH"
+      assert title(html) == "Acme GmbH - vutuv"
+      # The page's own words, flattened out of their Markdown — not the
+      # directory's "Verified organization pages on vutuv…".
+      assert og(html, "og:description") == "We build great widgets. Since 1994."
+      refute og(html, "og:description") =~ "Verified organization pages"
+      # An account page, like a member's, not a generic website.
+      assert og(html, "og:type") == "profile"
+
+      assert og(html, "og:image") ==
+               @base <> "/organizations/#{organization.slug}/avatar.jpg"
+
+      assert og(html, "og:image:width") == "512"
+      assert og(html, "og:image:type") == "image/jpeg"
+      assert og(html, "og:image:alt") == "Acme GmbH"
+      assert html =~ ~s(<meta name="twitter:card" content="summary")
+    end
+
+    test "a page with a root handle names it, one without carries no profile tag",
+         %{conn: conn} do
+      {organization, _owner} = active_organization()
+      {:ok, handled} = Organizations.claim_handle(organization, %{"username" => "acmehandle"})
+
+      html = conn |> get(~p"/organizations/#{handled.slug}") |> html_response(200)
+      assert og(html, "profile:username") == "acmehandle"
+
+      {plain, _owner} = active_organization(%{"website_url" => "https://plain.example"})
+      html = conn |> get(~p"/organizations/#{plain.slug}") |> html_response(200)
+      assert og(html, "profile:username") == nil
+      # A page invents no name for itself either.
+      assert og(html, "profile:first_name") == nil
+    end
+
+    test "a page without a logo falls back to the brand card", %{conn: conn} do
+      {organization, _owner} = active_organization()
+
+      html = conn |> get(~p"/organizations/#{organization.slug}") |> html_response(200)
+
+      assert og(html, "og:image") == @base <> "/og-card.png"
+    end
+
+    test "a page that has written no description gets the site pitch, not the directory copy",
+         %{conn: conn} do
+      {organization, _owner} = active_organization()
+
+      description =
+        conn
+        |> get(~p"/organizations/#{organization.slug}")
+        |> html_response(200)
+        |> og("og:description")
+
+      assert description =~ "business network"
+      refute description =~ "Verified organization pages"
+    end
+
+    test "the directory itself keeps its own copy", %{conn: conn} do
+      description = conn |> get(~p"/organizations") |> html_response(200) |> og("og:description")
+
+      assert description =~ "Verified organization pages"
+    end
+
+    # The bug the feature uncovered, pinned on its own: `page_copy/1` matched
+    # `["organizations" | _]`, so the directory's one sentence described every
+    # page below the prefix and every post they published.
+    #
+    # Asserted against `description/1` rather than against the three routes that
+    # exist today, because the failure mode is the *next* route somebody adds
+    # under `/organizations/` — a jobs tab, a members list — silently inheriting
+    # the copy again. A path is all the chain needs (`path_description/1` reads
+    # `conn.request_path`), so an unrouted path stands in for that future page.
+    test "only the bare directory path carries the directory copy", %{conn: conn} do
+      directory = "Verified organization pages on vutuv, each with a proven web domain."
+
+      describe_path = fn path ->
+        OpenGraph.description(%{conn: %{conn | request_path: path}})
+      end
+
+      assert describe_path.("/organizations") == directory
+
+      for path <- [
+            "/organizations/acme",
+            "/organizations/acme/posts/01a04298-dd43-7897-a2fc-5ed7c44028c6",
+            "/organizations/acme/following",
+            # The route nobody has written yet — the case this test exists for.
+            "/organizations/acme/jobs"
+          ] do
+        refute describe_path.(path) == directory,
+               "#{path} inherited the directory copy"
+      end
+
+      # The wizard sits under the prefix too and says what it is, rather than
+      # falling through to the site pitch with everything else.
+      assert describe_path.("/organizations/new") ==
+               "Claim a page for your organization on vutuv."
+    end
+
+    # The claim wizard sits under /organizations too and used to borrow the
+    # directory's copy; asserted in German as well, because that is what a
+    # vutuv reader actually gets and an unwritten (or fuzzy-filled) .po entry
+    # passes every English check.
+    test "the claim wizard describes itself, in the reader's own language", %{conn: conn} do
+      {conn, user} = create_and_login_user(conn)
+
+      description =
+        conn |> get(~p"/organizations/new") |> html_response(200) |> og("og:description")
+
+      assert description == "Claim a page for your organization on vutuv."
+
+      user |> Ecto.Changeset.change(locale: "de") |> Vutuv.Repo.update!()
+
+      german = conn |> get(~p"/organizations/new") |> html_response(200) |> og("og:description")
+
+      assert german == "Reservieren Sie eine Seite für Ihre Organisation auf vutuv."
+    end
+  end
+
+  describe "organization post pages" do
+    setup :verify_organization_domains
+
+    test "a page's post previews like a member's: teaser, date and the page's logo",
+         %{conn: conn} do
+      {organization, owner} = active_organization(%{"name" => "Acme GmbH"})
+      {:ok, organization} = Organizations.update_organization(organization, %{"logo" => "tok"})
+      {:ok, _role} = Organizations.add_role(organization, owner, "publisher", owner)
+
+      {:ok, post} =
+        Posts.create_organization_post(organization, owner, %{
+          body: "We are hiring three developers."
+        })
+
+      html = conn |> get(Posts.path(post)) |> html_response(200)
+
+      assert og(html, "og:type") == "article"
+      assert og(html, "og:description") =~ "hiring three developers"
+      refute og(html, "og:description") =~ "Verified organization pages"
+      assert og(html, "article:published_time") == Date.to_iso8601(post.published_on)
+      # The title distinguishes the post from the page it was published on.
+      assert og(html, "og:title") == "Acme GmbH · #{Date.to_iso8601(post.published_on)}"
+      # No picture of its own, so the page behind it gives the card a face.
+      assert og(html, "og:image") ==
+               @base <> "/organizations/#{organization.slug}/avatar.jpg"
+
+      assert og(html, "og:image:alt") == "Acme GmbH"
+    end
+
+    test "an attached image beats the page logo", %{conn: conn} do
+      {organization, owner} = active_organization()
+      {:ok, organization} = Organizations.update_organization(organization, %{"logo" => "tok"})
+      {:ok, _role} = Organizations.add_role(organization, owner, "publisher", owner)
+      {:ok, post} = Posts.create_organization_post(organization, owner, %{body: "look"})
+
+      image =
+        insert(:post_image,
+          post: post,
+          user: owner,
+          position: 0,
+          width: 2000,
+          height: 1000,
+          alt: "Our new office"
+        )
+
+      html = conn |> get(Posts.path(post)) |> html_response(200)
+
+      assert og(html, "og:image") == @base <> "/post_images/#{image.token}/og.jpg"
+      assert og(html, "og:image:alt") == "Our new office"
+      assert html =~ ~s(<meta name="twitter:card" content="summary_large_image")
+    end
+  end
+
+  # The organization helpers claim a page by proving a domain, which reads the
+  # global `:verify_organization_domains` flag — hence one setup shared by both
+  # organization describes rather than a copy in each.
+  defp verify_organization_domains(_context) do
+    Application.put_env(:vutuv, :verify_organization_domains, true)
+
+    on_exit(fn ->
+      Application.put_env(:vutuv, :verify_organization_domains, false)
+      Application.delete_env(:vutuv, :organizations_dns_resolver)
+    end)
+
+    :ok
   end
 
   describe "GET /og-card.png" do

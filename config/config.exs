@@ -500,6 +500,15 @@ config :vutuv, :fediverse_media_max_bytes, 8_000_000
 # this switch is about the download, not about the display.
 config :vutuv, :fediverse_media_fetch, true
 
+# Whether the background task that resolves what an incoming post QUOTES runs
+# (issue #1609), and with it the Vutuv.Fediverse.QuoteResolver that goes back
+# for the attempts a deploy or a crash cut short. Off in tests, where it would
+# touch the SQL sandbox from outside; tests call Vutuv.Fediverse.resolve_quote/1
+# and resume_quote_resolutions/1 directly. Off also makes every quote render as
+# the plain link it was before this existed, which is the right thing for an
+# installation that must not make outbound requests at all.
+config :vutuv, :fediverse_quote_resolve, true
+
 config :vutuv, :fediverse_remote_follow_limit, 30
 config :vutuv, :fediverse_max_remote_follows, 1_000
 

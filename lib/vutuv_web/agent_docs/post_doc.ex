@@ -76,7 +76,7 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
     AgentDocs.doc_meta("post", Posts.path(post), noindex: noindex?, noai: noai?)
     |> Map.merge(%{
       id: post.id,
-      title: "#{UserHelpers.full_name(author)} · #{Date.to_iso8601(post.published_on)}",
+      title: PostTeaser.permalink_title(post),
       description: PostTeaser.line(post),
       author: Vutuv.Identity.ref(author),
       published_on: post.published_on,
@@ -187,7 +187,7 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
     )
     |> Map.merge(%{
       id: post.id,
-      title: "#{organization.name} · #{Date.to_iso8601(post.published_on)}",
+      title: PostTeaser.permalink_title(post),
       description: PostTeaser.line(post),
       author: Vutuv.Identity.ref(organization),
       published_on: post.published_on,
@@ -299,6 +299,7 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
       # photo post as an entry with no content at all. The renderers turn the
       # count into a phrase in the reader's own language.
       pictures: Enum.count(entry[:images] || [], &RemoteImage.released?/1),
+      quote: quoted_entry(remote),
       reposted_by: nil,
       reposters: [],
       # What the HTML card says in its footer, as a fact rather than a skin: an
@@ -339,6 +340,46 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
     do: Enum.count(images, &ImageScans.released?(&1.moderation))
 
   defp picture_count(_post), do: 0
+
+  @doc """
+  What a cached post **quotes** (issue #1609) as a doc fact — `%{url:, author:,
+  network:}` or nil.
+
+  The HTML card shows it, so every agent format must too, or a `.md`/`.json`
+  sibling reads as a bare reaction ("this is exactly right") with the thing it
+  reacts to invisible. The same argument `pictures:` above is here for.
+
+  `RemotePost.quoted/1` owns which of the three things is quoted; this only
+  spells each one as a URL and a name. A quote the reader would see as a plain
+  link and a quote drawn as a card are the same fact to an agent — the consent
+  question decides how a **person** is shown it, not whether a machine is told.
+  """
+  def quoted_entry(%RemotePost{} = remote) do
+    case RemotePost.quoted(remote) do
+      {:local, post} ->
+        %{
+          url: AgentDocs.abs_url(Posts.path(post)),
+          author: UserHelpers.author_name(post),
+          network: "vutuv"
+        }
+
+      {:remote, quoted} ->
+        %{
+          url: RemotePost.origin(quoted),
+          author: RemoteAccount.label(quoted.remote_account),
+          network: "fediverse"
+        }
+
+      # Held as an address and nothing else: the URL is still the useful half,
+      # and an absent author is honest rather than a gap — we do not know who
+      # wrote it.
+      {:uri, uri} ->
+        %{url: uri, author: nil, network: "fediverse"}
+
+      nil ->
+        nil
+    end
+  end
 
   # The conversation entries, in `Posts.list_thread/3` reading order.
   # `in_reply_to_author` resolves only inside the thread (a deleted or

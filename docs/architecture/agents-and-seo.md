@@ -326,10 +326,23 @@ scraper-friendly square JPEG at `/:slug/avatar.jpg`
 (`VutuvWeb.AvatarController`; preview scrapers don't decode the site's AVIF),
 derived on the fly from the kept original, metadata-stripped.
 
+Pages about an **organization** preview the same way (issue #1581): the page's
+name as title, its own description flattened out of its Markdown as
+description, its logo as image — served as a square JPEG at
+`/organizations/:slug/avatar.jpg` (`VutuvWeb.OrganizationAvatarController`),
+the twin of the member endpoint, and named only while the page is publicly
+visible because that endpoint refuses it otherwise. `og:type` is `profile` for
+both kinds of account page; a page that has claimed a root handle carries it as
+`profile:username`, and no page ever gets the `profile:first_name` /
+`profile:last_name` properties that only describe a person.
+
 Public posts preview as articles with their teaser line, date and first image
 (`/post_images/<token>/og.jpg`, derived on the fly by the authorizing proxy, so
 audience changes keep guarding it); restricted posts and teasers never leak the
-body or an image.
+body or an image. That holds for a post published in an organization's name
+(`/organizations/:slug/posts/:id`) exactly as for a member's — whose post it is
+decides only the *fallback* picture: the post's own first image, else the
+author's avatar or the page's logo, else the brand card.
 
 **One module decides which line that is.** `VutuvWeb.PostTeaser.line/2` — and
 its flattened twin `plain_line/2` — is the single owner of the app's one-line
@@ -349,11 +362,15 @@ column a post keeps its text in is `Vutuv.Posts.text/1`, beside `author/1` and
 The **description** falls through a chain (`OpenGraph.description/1`): a page's
 own `:meta_description` assign (a controller render assign or a LiveView socket
 assign — the CV builder and the tag page set one), else a public post's teaser
-line, else a member's work info, else a **per-page description** keyed on the
-request path (`page_copy/1`: the settings sections, the `/system` directory, and
-the public info pages — login, community, legal, developers, the tags and
-most-followed listings), else the generic site pitch (a business network, free
-to join). The path lookup reads `conn.request_path`, which is present in both a
+line, else a member's work info, else an organization's own description, else a
+**per-page description** keyed on the request path (`page_copy/1`: the settings
+sections, the `/system` directory, and the public info pages — login, community,
+legal, developers, the tags and most-followed listings), else the generic site
+pitch (a business network, free to join). That path lookup keys the
+organization **directory**'s copy on `/organizations` alone: matching every path
+below it put "Verified organization pages on vutuv…" under each individual page
+and under every post they published, which is the card issue #1581 was filed
+about. The path lookup reads `conn.request_path`, which is present in both a
 dead controller render and the disconnected LiveView render, so it works
 everywhere the tags render. The `/settings/*` pages redirect a logged-out
 link-preview bot to the landing page (`RequireLogin`), so their copy is really

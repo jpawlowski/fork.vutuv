@@ -155,6 +155,9 @@ defmodule Vutuv.OrganizationImageStore do
 
   def og_jpeg(_), do: :error
 
+  @doc "The pixel size (square) of the link-preview JPEG from `og_jpeg/1`."
+  def og_size, do: @og_size
+
   @doc "Absolute path of the kept private original, or `nil` when there is none."
   def original_path(token) when is_binary(token), do: Originals.path(storage_dir(token))
   def original_path(_), do: nil
