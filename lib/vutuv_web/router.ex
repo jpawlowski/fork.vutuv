@@ -53,6 +53,16 @@ defmodule VutuvWeb.Router do
     plug(Plugs.NoIndex)
   end
 
+  # Routed LiveViews (the two `live_session` blocks below). A LiveView has one
+  # representation, so the `activity+json` the pipeline above admits for the
+  # ActivityPub URLs is refused here rather than 500ing on a page that never
+  # served it — see `VutuvWeb.Plug.HtmlOnly` for why the accept list cannot
+  # simply drop it, and `VutuvWeb.ControllerHelpers.render_live/3` for the
+  # controller-embedded half.
+  pipeline :html_only do
+    plug(Plugs.HtmlOnly)
+  end
+
   # The machine-facing documents (robots.txt, llms.txt, the sitemaps, the RSS
   # feeds, the .well-known files, the ActivityPub endpoints) run without the
   # :browser pipeline on purpose, so `accepts ["html"]` cannot turn away a
@@ -352,6 +362,15 @@ defmodule VutuvWeb.Router do
       assigns: %{mastodon_scope: "read:lists"}
     )
 
+    # Permanently empty, and that is the whole answer: a follow here needs no
+    # approval (`Vutuv.Social.Follow`) and an inbound remote one is accepted on
+    # arrival, so nothing is ever pending — which is what every account already
+    # tells a client with `locked: false`. Tokodon asks for this immediately
+    # after the authorisation step and read the 404 as a failed login (#1692).
+    get("/api/v1/follow_requests", CompatibilityController, :empty,
+      assigns: %{mastodon_scope: "read:follows"}
+    )
+
     # vutuv has followed tags (issue #872); this used to answer a hardcoded
     # empty list, so a client showed none of them and offered "Follow" on every
     # topic the member already follows.
@@ -597,6 +616,14 @@ defmodule VutuvWeb.Router do
     # unlike the NodeInfo documents under /system/, because a handle is
     # `^[a-z0-9_]+$` and can therefore never claim a word with a dot in it.
     get("/site.webmanifest", PageController, :webmanifest)
+    # The service worker (issue #1729). At the ROOT because a worker controls
+    # only the directory it is served from, and the installed app needs the
+    # whole site: `push`, `notificationclick` and the asset cache all hang off
+    # that scope. It may sit here for the same reason the manifest may — a
+    # handle is `^[a-z0-9_]+$` and can never carry a dot — and it rides
+    # :machine_docs because it is a document for a browser's worker thread,
+    # with no session, no CSRF and no locale of its own.
+    get("/sw.js", ServiceWorkerController, :script)
     # Sitemap index + chunked children (see Vutuv.Sitemap for the queries).
     get("/sitemap.xml", SitemapController, :index)
     get("/sitemaps/:name", SitemapController, :show)
@@ -713,6 +740,12 @@ defmodule VutuvWeb.Router do
     # like the directory, so it burns no root path word.
     get("/system/markdown", HelpController, :markdown)
     get("/system/mastodon", HelpController, :mastodon)
+
+    # The offline page the service worker keeps (issue #1729), shown instead of
+    # the browser's own error when there is no network. It is the ONE document
+    # this app stores, which is why it renders without a layout: no CSRF token,
+    # no session, nothing that goes stale in a cache that outlives a deploy.
+    get("/system/offline", ServiceWorkerController, :offline)
 
     # Username-independent profile permalink (issue #904): keyed on the member's
     # never-changing UUID v7 id, it 302-redirects to their current /:username, so
@@ -1022,7 +1055,7 @@ defmodule VutuvWeb.Router do
     on_mount: [{VutuvWeb.Live.InitAssigns, :default}],
     root_layout: {VutuvWeb.LayoutHTML, :root} do
     scope "/", VutuvWeb do
-      pipe_through(:browser)
+      pipe_through([:browser, :html_only])
 
       live("/notifications", NotificationLive.Index, :index)
 
@@ -1099,7 +1132,7 @@ defmodule VutuvWeb.Router do
     # dead UserTagController keeps only manage + delete (and the public
     # index/show/endorsers).
     scope "/settings", VutuvWeb do
-      pipe_through([:browser, :settings_pipe])
+      pipe_through([:browser, :settings_pipe, :html_only])
 
       live("/tags/new", TagNewLive, :new)
 
@@ -1274,7 +1307,7 @@ defmodule VutuvWeb.Router do
     ],
     root_layout: {VutuvWeb.LayoutHTML, :root} do
     scope "/admin", VutuvWeb.Admin, as: :admin do
-      pipe_through([:browser, :admin])
+      pipe_through([:browser, :admin, :html_only])
 
       # The member browser: a live, filterable, searchable, sortable list of
       # every account (default: PIN-registered, newest first).
@@ -1552,6 +1585,14 @@ defmodule VutuvWeb.Router do
     get("/notifications", SettingsController, :notifications)
     put("/notifications", SettingsController, :update_notifications)
     patch("/notifications", SettingsController, :update_notifications)
+
+    # The browsers that asked to be woken while vutuv is closed (issue #1729).
+    # The first two are the page's own fetch — a browser registers and forgets
+    # itself, because only it knows its push endpoint; the third is the row
+    # button on the list, which answers with a redirect like every other one.
+    post("/push_devices", PushDeviceController, :create)
+    delete("/push_devices", PushDeviceController, :delete)
+    delete("/push_devices/:id", PushDeviceController, :forget)
 
     # Saved searches with e-mail alerts (issue #935): the management list. New
     # searches are saved from the /jobs board and /search page themselves.

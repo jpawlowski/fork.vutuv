@@ -16,7 +16,17 @@ import "./image_crop"
 import { openPhotoCropper } from "./photo_crop"
 // Shared plumbing (CSRF token, page lifecycle, "wire once" guard, CSRF fetch,
 // reduced-motion) reused by every classic-page enhancement below.
-import { csrfToken, onReady, once, request, reducedMotion } from "./util"
+import {
+  b64urlToBuf,
+  csrfToken,
+  localGet,
+  localSet,
+  onReady,
+  once,
+  postJSON,
+  request,
+  reducedMotion,
+} from "./util"
 // The Milkdown WYSIWYG Markdown editor shared by the post + message composers
 // (VutuvWeb.UI.markdown_editor/1) is deliberately NOT imported here: it is a
 // separate esbuild entry point, fetched on demand by the MarkdownEditor hook
@@ -378,22 +388,15 @@ function notifyPermission() {
   return "Notification" in window ? Notification.permission : "unsupported"
 }
 
-// Both sides wrap the store: a private window, or a browser set to block site
-// data, throws on access. Forgetting a dismissal simply offers the prompt
-// again, which is the right way to fail.
+// Through util.js's guarded store: a private window, or a browser set to block
+// site data, throws on plain access. Forgetting a dismissal simply offers the
+// prompt again, which is the right way to fail.
 function notifyPromptDismissed() {
-  try {
-    return window.localStorage.getItem(NOTIFY_PROMPT_KEY) === "1"
-  } catch (_e) {
-    return false
-  }
+  return localGet(NOTIFY_PROMPT_KEY) === "1"
 }
 
 function setNotifyPromptDismissed(dismissed) {
-  try {
-    if (dismissed) window.localStorage.setItem(NOTIFY_PROMPT_KEY, "1")
-    else window.localStorage.removeItem(NOTIFY_PROMPT_KEY)
-  } catch (_e) {}
+  localSet(NOTIFY_PROMPT_KEY, dismissed ? "1" : null)
 }
 
 // Must run inside a real click: Firefox and Safari refuse the request without
@@ -402,17 +405,28 @@ function setNotifyPromptDismissed(dismissed) {
 // - it ends in one `vutuv:notify-permission` event, which is how both the
 // prompt and the settings card re-read the state without knowing about each
 // other. Both the promise and the legacy callback form are handled.
+// It also RESOLVES on that one event, so a caller that has to wait for the
+// answer (the per-device push switch) awaits this rather than listening for the
+// event itself - a rendezvous any other dispatcher of the event could satisfy.
 function requestNotifyPermission() {
-  const finish = () => window.dispatchEvent(new CustomEvent("vutuv:notify-permission"))
+  return new Promise((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      window.dispatchEvent(new CustomEvent("vutuv:notify-permission"))
+      resolve()
+    }
 
-  if (!("Notification" in window)) return finish()
+    if (!("Notification" in window)) return finish()
 
-  try {
-    const result = Notification.requestPermission(finish)
-    if (result && typeof result.then === "function") result.then(finish, finish)
-  } catch (_e) {
-    finish()
-  }
+    try {
+      const result = Notification.requestPermission(finish)
+      if (result && typeof result.then === "function") result.then(finish, finish)
+    } catch (_e) {
+      finish()
+    }
+  })
 }
 
 // One delegated listener for both surfaces: the shell's prompt bar and the
@@ -420,6 +434,220 @@ function requestNotifyPermission() {
 document.addEventListener("click", (event) => {
   if (event.target.closest("[data-notify-allow]")) requestNotifyPermission()
 })
+
+// -- Service worker and Web Push (issue #1729) -----------------------------
+//
+// What the section above does works only while a vutuv page is open: a
+// `Notification` raised by a tab dies with the tab. Waking a phone whose app is
+// closed needs a service worker, and this is where it is registered, kept up to
+// date, and asked for a push subscription.
+//
+// The worker itself is /sw.js (served by VutuvWeb.ServiceWorkerController from
+// assets/js/sw.js) and it is not part of this bundle: a worker controls only
+// the directory it is served from, so it has to sit at the root.
+//
+// The shell's #web-notify element carries the two things this needs from the
+// server - who is signed in here, and this installation's VAPID public key -
+// because it is on every page for every logged-in member and is where the
+// permission prompt already lives.
+const PUSH_OWNER_KEY = "vutuv:push-owner"
+
+function shellNotifyEl() {
+  return document.getElementById("web-notify")
+}
+
+function pushMember() {
+  return shellNotifyEl()?.dataset.member || null
+}
+
+function vapidKey() {
+  return shellNotifyEl()?.dataset.vapidKey || null
+}
+
+// One registration per page, shared by everything below. It is deliberately
+// unconditional: the asset cache and the offline page are worth having for a
+// logged-out visitor too, and a failure (an unsupported browser, an insecure
+// origin, a member who blocked site data) resolves to null rather than
+// throwing into an unrelated feature.
+let swRegistration = null
+
+function serviceWorker() {
+  if (!("serviceWorker" in navigator)) return Promise.resolve(null)
+  if (swRegistration) return swRegistration
+
+  swRegistration = navigator.serviceWorker.register("/sw.js").catch(() => null)
+
+  return swRegistration
+}
+
+// "Reload" on the shell's update bar (issue #1729). WHETHER to offer it is the
+// server's answer - it is the only side that knows which release this document
+// came from - so all that is left here is carrying it out. Delegated at the
+// document, so it survives the patches that re-render the bar.
+//
+// **The control is an `<a href>` to the current page, and that is load-bearing
+// rather than tidiness.** The bar renders ONLY into a document running the
+// PREVIOUS release, so the handler that answers its click is the previous
+// release's, never this one. That handler posts `skip-waiting` to a waiting
+// worker and does nothing whatsoever when none is waiting - which is the common
+// case for exactly this reader, because a tab open across a deploy never
+// navigates and so never triggers the browser's own worker check. It does not
+// call `preventDefault` either, so the link's own navigation still carries them
+// to the new release. Without the href, the bar's primary control is dead for
+// most of the cohort it is shown to on the deploy that ships it. It also makes
+// the control work with no JavaScript at all.
+document.addEventListener("click", async (event) => {
+  if (!event.target.closest("[data-sw-reload]")) return
+
+  // Synchronously, before any await: one await later the browser has already
+  // followed the link and this handler is addressing a page that is leaving.
+  event.preventDefault()
+
+  // `reload()` rather than the href, which is the path without its query: once
+  // we are in JS the current URL is the better target.
+  const reload = () => window.location.reload()
+  const waiting = (await serviceWorker())?.waiting
+
+  // No worker waiting is the ordinary case, not a failure: the document is
+  // stale while the worker is not (it updates on its own schedule, which is not
+  // the deploy's), and then a plain reload is the whole errand.
+  if (!waiting) return reload()
+
+  // The waiting worker takes over only when it is asked to, and the page
+  // reloads only once it has - promoting it unasked would swap the assets
+  // under a half-written post. If it never answers, go anyway after a moment:
+  // a control that visibly did nothing is worse than one that reloads twice.
+  const timer = setTimeout(reload, 2000)
+  navigator.serviceWorker.addEventListener(
+    "controllerchange",
+    () => {
+      clearTimeout(timer)
+      reload()
+    },
+    { once: true }
+  )
+  waiting.postMessage({ type: "skip-waiting" })
+})
+
+async function currentPushSubscription() {
+  const registration = await serviceWorker()
+  if (!registration || !("PushManager" in window)) return null
+  return registration.pushManager.getSubscription()
+}
+
+// Registers this browser. Everything it needs can be missing for an ordinary
+// reason - an unsupported browser, a member who said no, an installation with
+// push switched off - so each of them answers false rather than throwing.
+async function subscribeToPush() {
+  const registration = await serviceWorker()
+  const key = vapidKey()
+  if (!registration || !key || !("PushManager" in window)) return false
+  if (notifyPermission() !== "granted") return false
+
+  try {
+    const subscription =
+      (await registration.pushManager.getSubscription()) ||
+      (await registration.pushManager.subscribe({
+        // Required by Chrome, and true of us: every push we send draws
+        // something the member can see.
+        userVisibleOnly: true,
+        // base64url text on the wire, bytes in the API - `b64urlToBuf`
+        // from util.js, the same decoder the passkey ceremony uses.
+        applicationServerKey: b64urlToBuf(key),
+      }))
+
+    // The browser's own `PushSubscription` JSON, posted verbatim: one shape,
+    // defined by the web platform, with nothing to keep in step on two sides.
+    const answer = await postJSON("/settings/push_devices", subscription.toJSON())
+    if (!answer.ok) return false
+
+    localSet(PUSH_OWNER_KEY, pushMember())
+    return true
+  } catch (_e) {
+    return false
+  }
+}
+
+// Forgets this browser, at the push service AND here. The local
+// `unsubscribe()` is the half that matters: it invalidates the endpoint, so
+// even a server call that never lands leaves a subscription the next push
+// answers 410 for, which deletes the row.
+async function unsubscribeFromPush() {
+  const subscription = await currentPushSubscription()
+  localSet(PUSH_OWNER_KEY, null)
+  if (!subscription) return
+
+  try {
+    await request("/settings/push_devices", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ endpoint: subscription.endpoint }),
+    })
+  } catch (_e) {
+    // Offline, or signed out already; the unsubscribe below still stands.
+  }
+
+  try {
+    await subscription.unsubscribe()
+  } catch (_e) {}
+}
+
+// A subscription belongs to a browser, not to an account, so signing out - or
+// signing in as somebody else on the same phone - has to end the old one.
+// Without this, a device somebody handed back keeps being woken for the member
+// who used it last.
+//
+// **A missing #web-notify means "signed out" only where the shell is on the
+// page at all.** It is equally missing on every page rendered with the app
+// layout dropped - the outbound hand-off page is one (`chrome_for/2` in
+// ControllerHelpers), and the root layout still loads this bundle there - so
+// reading its absence as a sign-out would revoke a member's subscription for
+// the crime of clicking a link that leaves the site. `#app-shell` is what
+// ShellLive renders for everybody, logged in or out, so it tells the two
+// cases apart; with no shell we simply do not know, and do nothing.
+async function reconcilePushOwner() {
+  if (!document.getElementById("app-shell")) return
+
+  const owner = localGet(PUSH_OWNER_KEY)
+  if (!owner || owner === pushMember()) return
+  await unsubscribeFromPush()
+}
+
+onReady(() => {
+  serviceWorker().then(() => reconcilePushOwner())
+})
+
+// The per-device switch on /settings/notifications: "also when vutuv is
+// closed". Per device because the subscription is, which is why it is not one
+// of the account's checkboxes and never reaches a changeset - the answer IS
+// the row, written from here.
+function wirePushDeviceToggle(box) {
+  if (!once(box, "pushDevice")) return
+
+  currentPushSubscription().then((subscription) => {
+    box.checked = !!subscription
+    box.disabled = false
+  })
+
+  box.addEventListener("change", async () => {
+    box.disabled = true
+
+    if (box.checked) {
+      // Inside the change event, which is a real user gesture - Safari and
+      // Firefox refuse `requestPermission()` without one, and on an iPhone
+      // this is the only path to a notification at all.
+      if (notifyPermission() === "default") await requestNotifyPermission()
+      box.checked = await subscribeToPush()
+    } else {
+      await unsubscribeFromPush()
+    }
+
+    box.disabled = false
+    window.dispatchEvent(new CustomEvent("vutuv:notify-permission"))
+  })
+}
+
+onReady(() => document.querySelectorAll("[data-push-device]").forEach(wirePushDeviceToggle))
 
 // The browser tab's teaser (issue #1681) has a twist the other examples do
 // not: its stage is the tab this settings page is sitting in,
@@ -446,9 +674,30 @@ document.addEventListener("click", (event) => {
   window.dispatchEvent(new CustomEvent("vutuv:tab-teaser", { detail: { frames: frames } }))
 })
 
+// Keeps /feed's address bar in step with the calendar, so the day on screen is
+// the day a copied link reopens.
+//
+// The feed LiveView is `live_render`ed by the controller that owns the
+// agent-format siblings rather than routed, so it has no `push_patch/2` and
+// this is the only way it can touch the URL. `replaceState`, never `pushState`:
+// a reader stepping through a fortnight of days would otherwise have to press
+// Back fourteen times to leave the feed.
+const FeedUrl = {
+  mounted() {
+    this.handleEvent("feed:url", ({ query }) => {
+      const url = query ? `${location.pathname}?${query}` : location.pathname
+
+      if (url !== location.pathname + location.search) {
+        history.replaceState(history.state, "", url)
+      }
+    })
+  },
+}
+
 const Hooks = {
   MarkdownEditor,
   TagInput,
+  FeedUrl,
   LocalTime: {
     mounted() {
       localizeTime(this.el)

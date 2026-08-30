@@ -19,6 +19,9 @@ Related documents: [README](../README.md) (overview) ·
   machine so far); very large installations can spread across multiple nodes,
   which Elixir/BEAM supports natively.
 - **PostgreSQL 17** (older 14+ versions likely work, 17 is what is tested).
+- **git** — the build reads the commit it is made from: the application version
+  is that commit's date and the footer links the commit. A source archive
+  without `.git` still builds, but reports version `0.0.0` and names no commit.
 - **Erlang and Elixir** to build the release — install via
   [mise](https://mise.jdx.dev/) (`mise install` reads the pinned versions from
   `.tool-versions`).
@@ -112,7 +115,7 @@ Everything else has a default (the vutuv.de production value):
 | `OPERATOR_EMAIL` | `sw@wintermeyer-consulting.de` | **Set this.** Receives the daily report, ad bookings and account-deletion records; also the `security.txt` contact |
 | `OPERATOR_URL` | `https://wintermeyer-consulting.de` | **Set this.** Linked from the site/email footer |
 | `OPERATOR_ADDRESS` | (vutuv.de's) | **Set this.** One-line postal address in every email footer |
-| `SOURCE_URL` | `https://github.com/wintermeyer/vutuv` | Where the source of the software you run can be read — the footer's "Source" link, the bug-report links on the error pages and in the developer docs, and the `source_url` / `repository` fields both API discovery documents publish. **Change this if you run a modified vutuv:** the link claims to be the source of what your users are running, so once you have patched anything, ours is no longer an honest answer. vutuv is MIT, so this is about accuracy rather than a licence obligation |
+| `SOURCE_URL` | `https://github.com/wintermeyer/vutuv` | Where the source of the software you run can be read — the footer's "Source" link and the commit link beside it, the bug-report links on the error pages and in the developer docs, and the `source_url` / `repository` fields both API discovery documents publish. **Change this if you run a modified vutuv:** the link claims to be the source of what your users are running, so once you have patched anything, ours is no longer an honest answer. vutuv is MIT, so this is about accuracy rather than a licence obligation |
 | `OPERATOR_HANDLE` | `wintermeyer` | The @handle of the person your media kit (`/system/media-kit`) names as the press contact; their profile is linked there for the remaining contact details. The link appears only when the handle really belongs to a member of *your* installation, so leaving the default set costs you nothing but a missing link. `""` renders none at all |
 | `APPEAL_REPLY_TO` | (vutuv.de's) | Reply-To on the account-deactivation (strike 3) email |
 | `BOUNCE_WEBHOOK_TOKEN` | – | Bearer token for `POST /webhooks/bounces`; unset = the endpoint 404s and webhook bounce handling is off. **Prefer the log watcher (`MAIL_LOG_PATH`) to this webhook:** the webhook acts on the DSN it receives without verifying the installation ever mailed the address, so feeding it a raw local bounce mailbox lets a forged bounce freeze a member ([#1063](https://github.com/wintermeyer/vutuv/issues/1063)). On a watcher-only setup leave this unset |
@@ -124,8 +127,8 @@ Everything else has a default (the vutuv.de production value):
 | `LANDING_EXAMPLE_PROFILE_URL` | `https://vutuv.de/wintermeyer` | The one profile the start page offers as "try it out" beside the screenshots, and the profile its machine-readable format chips (Markdown, text, JSON, XML, vCard, RSS) point at. A full URL, because the default has to keep working on an installation that has no filled-in profile yet — pointing at the reference installation is more useful there than a dead local link. Point it at one of your own members once you have one, or set it empty to drop the line and the chips (the installation-wide `/llms.txt` chip stays) |
 | `FEDIVERSE_ENABLED` | `true` | `false` turns follow-only ActivityPub federation off entirely (endpoints 404, nothing is delivered, and the sign-up form drops the Fediverse question) — set it on intranet installations |
 | `MASTODON_API_ENABLED` | `true` | `false` turns the Mastodon-compatible phone-client adapter off on **both** hosts it is served from. It answers on `PHX_HOST` — which is the address members actually type into an app — and on `mastodon.<PHX_HOST>`, the origin this app prefers. The subdomain is optional and nothing advertises it: it needs a DNS record, a TLS certificate and an nginx `server_name`, and without all three the adapter still works on the main host with nothing anywhere pointing at the name you did not set up. Give it a record only together with the certificate and the `server_name` — a name that resolves but is not served lands on whatever default virtual host answers on that address, which is somebody else's site with somebody else's certificate. A redirect between the two would not do, because HTTP libraries drop the `Authorization` header across a host change. Handles and ActivityPub actors are on `PHX_HOST` either way. Access is **off per identity by default**: each member turns it on under `/settings/apps`, each organization owner under `/organizations/<slug>/apps`, and either can turn it off again, which takes effect on the next request. `/system/mastodon` is the member-facing help page |
-| `WEB_PUSH_ENABLED` | `true` | Web Push for Mastodon-compatible phone clients, so a member's phone is woken by a notification instead of the app polling for one — which is the cheaper side for your server too. It needs **no configuration**: a VAPID key pair is self-signed, so an installation that was given none derives its own from `SECRET_KEY_BASE`. Set this to `false` on an installation that must reach no push service at all (an intranet with no route to Google's or Apple's): the push endpoints then answer 403, `/api/v2/instance` names no key, and nothing is sent. A push carries **no content** — it names the notification's kind and id, never a word of what was written; the client fetches the rest over the authenticated API |
-| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | *(derived)* | Pin the Web Push key pair instead of deriving it. Both or neither — half a pair is a signature no push service accepts. Worth setting if you rotate `SECRET_KEY_BASE` (the derived pair changes with it, and every phone has to re-subscribe) or if you move the installation to another machine's secret. Generate one with `mix run -e 'IO.inspect Vutuv.MastodonApi.WebPush.generate_keys()'` and keep the private key secret |
+| `WEB_PUSH_ENABLED` | `true` | Web Push, so a member's phone is woken by a notification instead of an app polling for one — which is the cheaper side for your server too. It serves **two** kinds of client: Mastodon-compatible phone apps, and your site itself once somebody installs it on a Home Screen (it registers a service worker at `/sw.js`; on an iPhone that is the only way a notification is possible at all, and only for an installed app, never an open Safari tab). It needs **no configuration**: a VAPID key pair is self-signed, so an installation that was given none derives its own from `SECRET_KEY_BASE`. Set this to `false` on an installation that must reach no push service at all (an intranet with no route to Google's or Apple's): the push endpoints then answer 403, `/api/v2/instance` names no key, the per-device switch on `/settings/notifications` is not offered, and nothing is sent. A push carries **no content** — it names the notification's kind and id, never a word of what was written; a phone client fetches the rest over the authenticated API, and the service worker draws a generic line per kind ("New message on vutuv"). Members opt in twice, deliberately: once for the account under `/settings/notifications`, then again per browser, because a subscription belongs to one browser and not to the account |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | *(derived)* | Pin the Web Push key pair instead of deriving it. Both or neither — half a pair is a signature no push service accepts. Worth setting if you rotate `SECRET_KEY_BASE` (the derived pair changes with it, and every phone has to re-subscribe) or if you move the installation to another machine's secret. Generate one with `mix run -e 'IO.inspect Vutuv.WebPush.generate_keys()'` and keep the private key secret |
 | `VAPID_SUBJECT` | `mailto:<OPERATOR_EMAIL>` | The contact a push service sees in our signed requests, a `mailto:` or `https:` URL. Defaults to the operator address you already configured |
 | `FEDIVERSE_TAG_HOST` | `tags.<PHX_HOST>` | The host a **topic's** fediverse address lives on, so `#elixir` here is `@elixir@tags.your-host` out there and anybody can follow the topic from their own server without an account with you. It needs its own WebFinger authority, which is the whole reason for a separate host: members and pages share one handle namespace here, and a tag `elixir` would otherwise want the same address as a member called `elixir`. **What you owe it: a DNS record, a certificate covering it, and the host in your nginx `server_name`** — an installation that federates already has all three for its main host. Nothing there is for reading: a browser that lands on it is sent to the same page on your main host, and a topic's address opens that topic's page, so the subdomain never shows up as a second copy of your site. Leave it unset unless you want a different subdomain; an air-gapped installation runs `FEDIVERSE_ENABLED=false` and needs none of it |
 | `FEDIVERSE_INBOUND_CAPS` | `600,60` | `host,actor`: how many rows one remote server, and one remote account, may store here per hour. Anything past the budget is dropped for that hour. The floor under the operator blocklist at `/admin/fediverse`, since it also bounds servers nobody has blocked yet |
@@ -137,7 +140,7 @@ Everything else has a default (the vutuv.de production value):
 | `FEDIVERSE_ANNOUNCE_FETCH_LIMIT` | `60` | How many posts announced by a followed account may be fetched from one remote host per hour. This is the only inbound activity that makes your installation fetch from a **third** server it has never spoken to, at an address that server did not choose, so it is metered per host: a busy account boosting relentlessly must not be able to walk you through a stranger's whole archive. A fetch that is refused, fails or is capped drops that boost silently — there is no retry, because a boost is not worth a queue |
 | `FEDIVERSE_LOOKUP_LIMIT` | `30` | How many posts one member may **look up by pasting a URL** per hour (issue #1211), from the search box or from `/system/fediverse/lookup`. ActivityPub delivers only what an account posts after a follow is accepted, so this is how anything older reaches your installation at all: the member pastes the address of a post they are reading, vutuv fetches it once with a signed, SSRF-fenced, size-capped GET and caches it like any other. It works for **any** account, not only followed ones, which is why it is metered per member rather than per host — the address is the member's own choice, and what has to be bounded is one account turning your installation into a crawler. A post already cached here costs nothing from the budget, so re-opening the same one is free however often it happens. Everything else is the ordinary path: the operator blocklist, public and unlisted posts only, and the same six-month retention clock, counted from the lookup |
 | `FEDIVERSE_POST_RETENTION_DAYS` | `183` | How long a post by an account one of your members follows may be cached here, in days. Since issue #1161 those posts appear in the follower's home feed, which means storing them. An upstream edit or deletion is honoured at once, and the cache is dropped the moment nobody here follows the author any more — this is the backstop under both. **One exception, since issue #1166:** a post one of your members has *reshared* is spared by both sweeps, because a reshare is a standing claim that this is worth showing and pulling it out from under readers on a calendar rule would be the wrong call. That copy is instead re-verified against its origin every few days: still published extends the clock, gone or narrowed upstream deletes it (and withdraws the reshare). If verification falls behind for a month the exemption lapses and the copy expires normally, so a backlog can never turn into indefinite unverified retention. **A second, narrower exception since issue #1211:** a post one of your members *looked up by its URL* usually has no follower at all — that is the point of the lookup — so it is spared by the "nobody follows the author" sweep. It is **not** spared by the clock: this exemption buys the copy the right to live out these six months, never a day more |
-| `FEDIVERSE_MEDIA_MAX_BYTES` | `8000000` | The per-file ceiling on a **picture downloaded from another network** (issue #1163): a followed account's avatar and its posts' image attachments. A picture is the one thing here whose size is the attack, so the download is halted at this limit rather than buffered and measured afterwards; anything over it is not stored and the post renders without it. **These pictures pass the same AI image gate member uploads do** and are invisible until it clears them, so an installation running `IMAGE_MODERATION_ENABLED=true` needs the vision model available (`ollama pull qwen3-vl:8b`) or nothing from another network will ever be shown |
+| `FEDIVERSE_MEDIA_MAX_BYTES` | `8000000` | The per-file ceiling on a **picture downloaded from another network** (issue #1163): a followed account's avatar and its posts' image attachments. A picture is the one thing here whose size is the attack, so the download is halted at this limit rather than buffered and measured afterwards; anything over it is not stored and the card says the picture is unavailable rather than promising a check that will never run (issue #1803). **These pictures pass the same AI image gate member uploads do** and are invisible until it clears them, so an installation running `IMAGE_MODERATION_ENABLED=true` needs the vision model available (`ollama pull qwen3-vl:8b`) or nothing from another network will ever be shown |
 | `FEDIVERSE_REMOTE_FOLLOW_LIMIT` | `30` | How many **follow requests to accounts on other networks** one member may send per hour. Members can follow outward since issue #1160: they paste an address, vutuv resolves it over WebFinger and sends a signed `Follow`. The budget is the abuse backstop, so a compromised account cannot walk a whole server's member list; sized for somebody adding the people they read, so it only ever bites automation |
 | `FEDIVERSE_MAX_REMOTE_FOLLOWS` | `1000` | How many accounts on other networks one member may follow in total. Every accepted follow is a standing invitation for that server to deliver here, so this is the ceiling on how much inbound traffic one member can subscribe your installation to. Raise it for a small, trusted installation; lower it if inbound volume is the concern |
 | `FEDIVERSE_COUNTS` | `true` | Whether your installation asks other servers how many people liked or reshared the posts it has cached (issue #1283). Nothing about a third party's post is ever delivered here, so the only way to show a real figure is to fetch the object and read its `likes` / `shares` collections; this is that background job. `FEDIVERSE_COUNTS=false` stops asking — figures already stored keep rendering, they simply stop moving. Set it on an installation that wants to talk to other servers as little as possible |
@@ -165,7 +168,7 @@ Everything else has a default (the vutuv.de production value):
 | `COLD_OUTREACH_WINDOW_HOURS` | `24` | The window, in hours, over which `COLD_OUTREACH_LIMIT` is measured |
 | `SAVED_SEARCHES_MAX_PER_MEMBER` | `10` | Most saved searches (with e-mail alerts) one member may store (anti-abuse). A member at the cap is asked to delete one first |
 | `GEO_COUNTRIES` | `DE,AT,CH` | Comma-separated ISO 3166-1 alpha-2 codes whose bundled GeoNames postal data is loaded for offline zip → coordinate resolution on job postings. To add a country, drop its GeoNames zip export (`download.geonames.org/export/zip/<CC>.zip` → extracted `<CC>.txt`, optionally gzipped to `<CC>.txt.gz`) into `priv/geo/` and add the code here. Fully offline — no outbound calls |
-| `IMAGE_MODERATION_ENABLED` | `true` | `false` turns AI image moderation off (images publish immediately, as before the feature). While enabled, **every** image — avatars, covers, post / job-posting / organization images and the automatic link screenshots — waits invisible to everyone but its owner until a local Ollama vision model approves it; an unsafe image is deleted on the spot and the owner notified. Fail-closed: with Ollama unreachable, new images queue up and are scanned automatically once it is back — nothing is ever auto-approved. Set `false` only on installations without Ollama |
+| `IMAGE_MODERATION_ENABLED` | `true` | `false` turns AI image moderation off (images publish immediately, as before the feature). While enabled, **every** image — avatars, covers, post / job-posting / organization images and the automatic link and homepage screenshots — waits invisible to everyone but its owner until a local Ollama vision model approves it; an unsafe image is deleted on the spot and the owner notified. Fail-closed: with Ollama unreachable, new images queue up and are scanned automatically once it is back — nothing is ever auto-approved. Set `false` only on installations without Ollama |
 | `IMAGE_PIXELATION_WINDOW_SECONDS` | `3600` | How long a picture waiting for that verdict shows readers a **pixelated preview** of itself — a separately stored file reduced to 64 cells on its long edge, not the picture behind a blur filter, so what reaches a reader carries none of the detail. It keeps a post card whole while the scan runs, and the real picture replaces it live the moment the verdict lands. Past this window the card falls back to a grey "being checked" tile, so a derivative of an unvetted picture never sits on a public page indefinitely. `0` switches the pixelated preview off entirely, which is the strictest posture |
 | `OLLAMA_URL` | `http://localhost:11434` | Base URL of the Ollama instance every AI feature talks to (image scan, translations, tag merge assist, employment-reference analysis). May be a **comma-separated list** (`http://gpu-box:11434,http://second-gpu:11434,http://localhost:11434`), which is read two ways at once. For a single call it is a **priority list**: every instance but the last is tried with a 30 s budget and skipped on any failure, the last one is the patient fallback (120 s, covers a CPU cold load). For calls that overlap it is also a **pool**: the second one starts on the least busy instance, so a second GPU takes work rather than waiting for the first to break. Verdicts are identical either way — the list only buys speed |
 | `OLLAMA_CONCURRENCY` | all `OLLAMA_URL` entries but the last | How many instances at the head of the list are treated as workers — which is both how deep the pool goes and how many calls a background sweep may have in flight. The default holds the **last** entry back as the fallback of record, because that is typically the web server's own CPU Ollama: `http://gpu-box:11434,http://localhost:11434` is one worker (unchanged from before this existed), `http://gpu1:11434,http://gpu2:11434,http://localhost:11434` is two. Set it to the number of entries when the list is all GPUs and nothing is held in reserve, or higher when one box can genuinely run two calls at once |
@@ -203,7 +206,8 @@ A few rarely-changed switches are compile-time settings in
 and the Content-Signal headers), `:fetch_gravatar`, `:fetch_mastodon_posts`,
 `:fetch_bluesky_posts`, `:fetch_code_stats` (the profile "Code" card's
 GitHub/GitLab/Codeberg and self-hosted Gitea/Forgejo statistics), `:generate_screenshots` (profile link
-previews **and** the automatic preview for single-link posts, including cached
+previews, an organization page's homepage capture **and** the automatic
+preview for single-link posts, including cached
 fediverse posts in the feed — admins watch the
 capture queue and browse the gallery at `/admin/screenshots`; a YouTube video
 link stores the video's published thumbnail instead of a capture, fetched
@@ -409,11 +413,16 @@ vutuv runs fine without internet access:
   posts to remote servers and fetches remote actor documents — pointless and
   noisy without internet access.
 - Set `WEB_PUSH_ENABLED=false`: Web Push needs no configuration and is
-  therefore on, so the first phone client that registers a subscription would
-  have your server signing requests to Google's or Apple's push service. Off,
-  the push endpoints answer 403 and the instance document names no key, so a
-  client does not offer push in the first place. (`MASTODON_API_ENABLED=false`
-  takes push with it, if you turn the whole phone-client adapter off.)
+  therefore on, so the first phone client — or the first member who installed
+  your site on a Home Screen — that registers a subscription would have your
+  server signing requests to Google's or Apple's push service. Off, the push
+  endpoints answer 403, the instance document names no key and the per-device
+  switch on `/settings/notifications` is not shown, so nothing offers push in
+  the first place. (`MASTODON_API_ENABLED=false` takes the *phone-client* half
+  with it, if you turn the whole adapter off; it deliberately does not silence
+  a member's own installed app, which does not use that API.) Everything else
+  the service worker does — the offline page and the asset cache — is local and
+  keeps working.
 - Consider `VERIFY_ORGANIZATION_DOMAINS=false`: the verified-organization-page domain
   proof (DNS TXT + well-known file) needs to reach the domain being verified.
   On an intranet the DNS TXT method still works against an internal resolver,
@@ -440,14 +449,14 @@ vutuv runs fine without internet access:
   Codeberg and self-hosted Gitea/Forgejo statistics — off, the accounts stay
   plain links, and a self-hosted address is taken at its word because the
   instance cannot be asked), and
-  `:generate_screenshots` (profile link-preview screenshots **and** the
-  automatic preview for single-link posts — these fetch the linked page and run
-  headless Chromium). That one flag also stops the Open Graph metadata fetch,
-  because it stops the whole preview queue; `:fetch_open_graph` is the finer
-  switch for an installation that *does* have internet access but would rather
-  photograph a page than repeat what its publisher says about it. Note that one
-  also turns off the page's `<title>`, so previews go back to the small floated
-  screenshot with no headline beside it.
+  `:generate_screenshots` (profile link-preview screenshots, an organization
+  page's homepage capture **and** the automatic preview for single-link posts —
+  these fetch the linked page and run headless Chromium). That one flag also
+  stops the Open Graph metadata fetch, because it stops the whole preview queue;
+  `:fetch_open_graph` is the finer switch for an installation that *does* have
+  internet access but would rather photograph a page than repeat what its
+  publisher says about it. Note that one also turns off the page's `<title>`, so
+  previews go back to the small floated screenshot with no headline beside it.
 - Set `FETCH_BOOK_METADATA=false`: the cover fetch and the
   page-count/publisher lookup behind book-review posts call Open Library, and
   an audiobook's running time is read from a library catalogue (`DNB_SRU_URL`).
@@ -643,8 +652,9 @@ database and every node picks changes up immediately.
 ## Screenshot blocklist
 
 vutuv screenshots the pages your members link to: every profile link gets a
-preview thumbnail, and a post that carries a single link and no picture gets a
-preview of that page.
+preview thumbnail, a post that carries a single link and no picture gets a
+preview of that page, and an organization page shows a capture of the website
+it names.
 
 The capture browser dismisses cookie-consent dialogs by itself. It always
 answers them with **reject**, never accept, so nothing is consented to on a
@@ -746,8 +756,8 @@ path in nginx.
 What the document says about you:
 
 - your name and a sentence or two, from `NODE_NAME` and `NODE_DESCRIPTION`;
-- the software and its version, so a directory can tell vutuv from anything
-  else, plus a link to its source;
+- the software and its version (the date of the commit it was built from), so
+  a directory can tell vutuv from anything else, plus a link to its source;
 - how many members you have, how many of them signed in over the last 30 and
   180 days, and how many public posts and replies they have written;
 - the languages you serve, your operator contact (the same one

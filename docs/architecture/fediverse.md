@@ -295,6 +295,17 @@ every activity of a member it finds no key for, silently.
     (`Vutuv.Mastodon.post_text/1`, which the REST API sends as text). Together
     with `to_text/3` those three are every path from a remote server's words
     into a column here.
+  - **A NUL byte is scrubbed at the write, not at each door.** A NUL is valid
+    UTF-8 and Postgres refuses it (`22021 character_not_in_repertoire`), so one
+    in stored text raises on `Repo.insert` — a delivery any server can make
+    fail. `to_text/3` scrubs the bodies it reduces, but the strings *beside* a
+    body never go near it: an actor's `preferredUsername` and `name`, an
+    attachment's `alt`, the object and inbox URIs are copied out of the JSON,
+    truncated and cast. So the guard sits in the changesets instead
+    (`Vutuv.ChangesetHelpers.scrub_nul/1`, walking every `:string` change on
+    `RemoteAccount`, `Follower`, `Note`, `RemotePost`, `Reaction` and
+    `RemoteImage`), and a new remote-fed column is covered the moment it is
+    cast (issue #1767).
   - **Cleaned on the way in, unlike a display name.** A name is re-derived from
     its column on every render; this text *is* the column, and every reader of
     it (the card, the agent formats, the Mastodon adapter, the teaser, the
@@ -1155,6 +1166,20 @@ now, with the page's own gates in front of it: the page must federate, the post
 must not be held by moderation, and a page that switched federation off gets the
 same `410`/`404` refusal its actor endpoint gives.
 
+**Every other page of the `:browser` pipeline answers that header with 406.**
+The accept list exists for the four URLs above; on the rest of the site the
+format simply survived negotiation, and a page whose HTML is a LiveView has no
+template for it, so `Phoenix.LiveView.Static` handed `Plug.Conn.resp/3` a
+`{:safe, iodata}` body and `/feed`, `/organizations`, `/search`,
+`/notifications` — all of them — answered **500** (issue #1776). The refusal is
+`VutuvWeb.Plug.HtmlOnly`, asked once per page *shape* rather than once per page:
+routed LiveViews pipe it as the router's `:html_only` pipeline, the controllers
+that `live_render` their page get it inside
+`VutuvWeb.ControllerHelpers.render_live/3`. Both give exactly the 406
+`application/ld+json` has always got, which is not on the accept list at all.
+A URL that already named an agent document is exempt, so `/jobs.md` keeps
+answering Markdown whatever `Accept` rode along with it.
+
 ## Mentions on the way out
 
 A member writes `@ada`, and on the server this post lands on that names *their*
@@ -1714,6 +1739,54 @@ hosts each remembering a subscription. It has two modes, since the pictures are
 held in two shapes: `:assigns` owns a page whose pictures are one `@images`
 assign end to end (no handler at all), and the default mode only subscribes, for
 a timeline whose cards are in a stream and whose redraw only it can write.
+
+**A download that misses is asked again** (issue #1803). The first attempt is
+fire-and-forget on `Vutuv.TaskSupervisor`, off the inbox's request path, and
+nothing recorded that it had failed: a blue/green deploy stopping the slot
+mid-download, a crash, or ten bad seconds on the other server left the row at
+`file IS NULL` for ever, and `ImageScans.repair_drift/0` will not rescue it —
+that backstop skips a picture with no bytes to judge (`require_file: true`),
+which is correct and leaves exactly this gap. Thirteen pictures were stuck that
+way on production when this was written, the oldest since 2026-08-03, and every
+one of their source URLs answered `200` when asked again: twelve with a real
+image, the thirteenth with a video its own server declares as one. (Four more
+cards showed the same eternal tile for the opposite reason — the gate had
+*refused* those pictures — which is the state half of this change.)
+
+So the row *is* the unfinished job and `Vutuv.Fediverse.MediaRefetcher` is what
+finds it: every five minutes, `Media.refetch_due/1` takes a bounded batch of
+file-less pictures least recently tried first and asks once more. Two rules make
+it safe. **The clock moves on every outcome**, including the ones that did
+nothing — a row this cannot finish would otherwise hold the front of every batch
+for ever, which is the deadlock #1316 shipped. And a **strike is taken only
+where the remote side failed**: `Media.attempt/1` separates `:unreachable` (try
+again, up to five times) from `:unusable` (bytes that are not a picture we can
+store — a video its server declares as an image, one over the ceiling — which
+spends every try at once, because they will be the same bytes tomorrow). There
+is no per-host cap, unlike the counts refresher: a picture costs at most five
+requests *ever* and then leaves the queue, so the total is bounded without one,
+and a cap over an already-sorted, already-capped batch is the amplifier that
+starves the healthy rows behind one blocked host.
+
+**A picture that is not coming says so**, and it takes two columns to know,
+because the two answers come from different places. `moderation` is the
+**gate's**: a rejection now writes `"rejected"` where it used to write `nil`.
+`fetch_failures` is the **download's**, and the terminal fetch state is
+deliberately *not* folded into the verdict column — an installation running no
+vision model records every picture `"approved"` on the spot
+(`ImageScans.initial_state/0`), so a failed download there carries an approval
+and no file, and a terminal state kept in `moderation` would have missed that
+whole class of installation. `RemoteImage.unavailable?/1` reads both (the old
+nulls included) and the card renders a quiet "Bild nicht verfügbar" tile instead
+of the hourglass. `display_state/1` beside it owns the order the questions have
+to be asked in, which is what the call site kept getting wrong. That is the half of the bug a reader actually saw: a null
+`moderation` beside a null `file` was indistinguishable from a picture nobody
+had judged yet, so cards went on promising a check that had finished — or had
+never been possible — weeks earlier. The tile stays rather than vanishing, for
+the reason the waiting tile does: a post from another network can be a
+photograph and nothing else. It says nothing about *why*, because one reason is
+a moderation decision that is not the reader's argument to have and the other is
+somebody else's server having a bad week.
 
 **A remote account's avatar is deliberately left out**, though it is the other
 ownerless kind and just as silent: an unreleased avatar renders as the account's

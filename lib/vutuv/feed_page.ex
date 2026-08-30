@@ -15,7 +15,10 @@ defmodule Vutuv.FeedPage do
     * `paginate/3` — **cursor**, for an endless "Load more" list that appends
       (the newsfeed, the API). The cursor is `%{at: timestamp, ids: [...]}` —
       the boundary timestamp plus every already-shown item id *at* that
-      timestamp. Timestamps have second precision, so several items (across
+      timestamp, and optionally `since:` — a **lower** bound that turns the walk
+      into a window (the feed calendar's one-day view). A source that honours
+      `at` but forgets `since` does not crash, it silently widens, so any new
+      source has to apply both. Timestamps have second precision, so several items (across
       all sources) can tie at a page boundary; fetching `<= at` and rejecting
       the seen ids means ties neither skip items nor repeat them. Treat the
       cursor as opaque.
@@ -34,6 +37,21 @@ defmodule Vutuv.FeedPage do
   below handed over, instead of spelling the comparator out again.
   """
   def sort_entries(entries), do: Enum.sort_by(entries, & &1.at, {:desc, NaiveDateTime})
+
+  @doc """
+  An entry cut down to the two fields the paginators actually read — a **mark**.
+
+  This is the whole contract above, spelled as data: `paginate/3` and
+  `sort_entries/1` touch `:id` and `:at` and nothing else, so a source asked to
+  count rather than to draw may hand marks back instead of entries and every
+  caller here is satisfied (`Vutuv.Posts.feed_sources/3`'s `:marks` shape,
+  which is what the feed calendar's heatmap asks for).
+
+  One definition rather than a `Map.take/2` at each site: the projection and
+  the promise it rests on belong together, and a source that widens what a mark
+  carries should widen it here.
+  """
+  def mark(entry), do: Map.take(entry, [:id, :at])
 
   def paginate(sources, limit, cursor) when is_list(sources) do
     seen = if cursor, do: cursor.ids, else: []
@@ -93,6 +111,10 @@ defmodule Vutuv.FeedPage do
     # at that timestamp along — they are still "already shown".
     carried = if prev && NaiveDateTime.compare(prev.at, at) == :eq, do: prev.ids, else: []
 
-    %{at: at, ids: carried ++ boundary_ids}
+    # A window's lower bound (`:since`, the feed calendar's day pick) belongs to
+    # the whole walk, not to one page, so it is carried rather than recomputed.
+    # Dropped here, "Load more" inside a single day would silently widen to
+    # every earlier day the moment the reader pressed it.
+    %{at: at, ids: carried ++ boundary_ids, since: prev && prev[:since]}
   end
 end

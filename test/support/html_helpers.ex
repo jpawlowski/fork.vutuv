@@ -25,4 +25,37 @@ defmodule VutuvWeb.HTMLHelpers do
     |> LazyHTML.query(~s(a[href="/#{slug}"][rel~="nofollow"]))
     |> Enum.to_list()
   end
+
+  @doc """
+  Every element in `html` matching `selector`, as a list.
+
+  For a promise about how many of a thing a page draws, or that it draws none:
+  a substring match cannot tell an element apart from the same class worn by
+  something else on the page. The `Enum.to_list/1` is load-bearing for the same
+  reason it is above — an empty LazyHTML node set is never `== []`, so without
+  it an assertion that nothing matched passes whether or not it did.
+  """
+  def elements(html, selector) do
+    html
+    |> LazyHTML.from_document()
+    |> LazyHTML.query(selector)
+    |> Enum.to_list()
+  end
+
+  @doc """
+  The visible text of the first element matching `selector`, whitespace
+  trimmed.
+
+  For a promise about what a member (or a script reading the DOM) actually gets
+  out of an element, rather than about a string appearing anywhere in the
+  document: the TOTP page's copy button hands the clipboard the text of the
+  element it names, so the assertion has to read that element and not the page.
+  """
+  def text_of(html, selector) do
+    html
+    |> LazyHTML.from_document()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.text()
+    |> String.trim()
+  end
 end

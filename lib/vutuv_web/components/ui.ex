@@ -1032,9 +1032,9 @@ defmodule VutuvWeb.UI do
   end
 
   @doc """
-  The 400×264 preview tile of a profile link, in whichever of its three states
-  the link is in — the one place that decides what a link looks like when there
-  is no screenshot.
+  The 400×264 preview tile of a captured web page, in whichever of its four
+  states the capture is in — the one place that decides what a link looks like
+  when there is no screenshot.
 
     * a stored capture renders as the thumbnail (`Vutuv.Screenshot.url/2`);
     * a capture the AI scan has not judged yet renders as its **pixelated preview**
@@ -1047,34 +1047,66 @@ defmodule VutuvWeb.UI do
     * anything else is a capture still on its way and keeps the bundled
       placeholder image.
 
-  Carries `data-link-thumb` with that state (`shot` / `mosaic` / `site` /
-  `pending`) for tests. Sizing lives in the component, so both the profile Links card (kit
-  page) and the `/:slug/links` list (classic page) render one tile.
+  `scope` is whatever `Vutuv.Screenshot` addresses — a member's
+  `%Vutuv.Profiles.Url{}` or an organization page's
+  `%Vutuv.Organizations.OrganizationScreenshot{}` — and `value` is the page that
+  was captured. Two attributes rather than one struct, because the two kinds
+  keep the URL under different names while the tile is the same picture either
+  way. A `nil` scope (a page that has no capture job at all) renders nothing, so
+  a caller can hand one over without a guard of its own.
+
+  Carries `data-link-thumb` with that state (`shot` / `pixelated` / `site` /
+  `pending`) for tests. Sizing lives in the component and is picked by name, so
+  a call site never spells a ratio: `:tile` is the 400×264 preview the profile
+  Links card and the `/:slug/links` list render, `:banner` the organization
+  header's cover band. A named variant rather than a free-form aspect class,
+  because the banner's two classes are coupled — a 5:2 box without a crop taken
+  from the top centres the picture and throws away the recognisable part of a
+  homepage, its own logo and navigation. All four states take the shape
+  together, so the badge on a pixelated capture keeps sitting on the picture
+  rather than below its clipped edge.
   """
-  attr(:url, :map, required: true, doc: "a %Vutuv.Profiles.Url{}")
+  attr(:scope, :map, default: nil, doc: "a Vutuv.Screenshot scope: has .id + .screenshot")
+  attr(:value, :string, required: true, doc: "the URL that was captured")
+  attr(:alt, :string, default: nil)
+  attr(:variant, :atom, default: :tile, values: [:tile, :banner])
   attr(:class, :any, default: nil)
+  # Lazy by default: the profile Links card and the `/:slug/links` list render a
+  # grid of these, mostly below the fold. An above-the-fold hero — the
+  # organization header's banner, which is that page's LCP element — passes
+  # loading="eager", the same knob `<.avatar>` carries for the same reason.
+  attr(:loading, :string, default: "lazy", values: ~w(lazy eager))
+
+  def link_thumb(%{scope: nil} = assigns), do: ~H""
 
   def link_thumb(assigns) do
     # Two answers from one read: `stored` is the file if there is one, `src` is
     # what the `img` renders either way.
-    stored = Vutuv.Screenshot.stored_url({assigns.url.screenshot, assigns.url})
-    pixelated_url = Vutuv.Screenshot.pixelated_url(assigns.url)
+    stored = Vutuv.Screenshot.stored_url({assigns.scope.screenshot, assigns.scope})
+    pixelated_url = Vutuv.Screenshot.pixelated_url(assigns.scope)
 
     assigns =
       assigns
       |> assign(:src, stored || Vutuv.Screenshot.placeholder_url())
       |> assign(:pixelated_url, pixelated_url)
-      |> assign(:state, link_thumb_state(assigns.url, stored, pixelated_url))
+      |> assign(:state, link_thumb_state(assigns.scope, assigns.value, stored, pixelated_url))
+      |> assign(:box, thumb_box(assigns[:variant] || :tile))
+      |> assign(:crop, thumb_crop(assigns[:variant] || :tile))
 
     ~H"""
-    <span :if={@state == "pixelated"} class={["relative block", @class]} data-link-thumb="pixelated">
+    <span
+      :if={@state == "pixelated"}
+      class={["relative block w-full overflow-hidden", @box, @class]}
+      data-link-thumb="pixelated"
+    >
       <img
         src={@pixelated_url}
         alt=""
         width="400"
         height="264"
-        loading="lazy"
-        class="aspect-[400/264] w-full object-cover"
+        loading={@loading}
+        fetchpriority={@loading == "eager" && "high"}
+        class={["h-full w-full object-cover", @crop]}
       />
       <.checking_badge />
     </span>
@@ -1082,26 +1114,38 @@ defmodule VutuvWeb.UI do
       :if={@state == "site"}
       data-link-thumb="site"
       class={[
-        "flex aspect-[400/264] w-full items-center justify-center bg-slate-50 px-3 dark:bg-slate-800",
+        "flex w-full items-center justify-center bg-slate-50 px-3 dark:bg-slate-800",
+        @box,
         @class
       ]}
     >
       <span class="truncate text-sm font-semibold text-slate-600 dark:text-slate-400">
-        {VutuvWeb.UrlHTML.display_url(@url.value)}
+        {VutuvWeb.UrlHTML.display_url(@value)}
       </span>
     </div>
     <img
       :if={@state in ["shot", "pending"]}
       data-link-thumb={@state}
       src={@src}
-      alt={@url.description || VutuvWeb.UrlHTML.display_url(@url.value)}
+      alt={@alt || VutuvWeb.UrlHTML.display_url(@value)}
       width="400"
       height="264"
-      loading="lazy"
-      class={["aspect-[400/264] w-full object-cover", @class]}
+      loading={@loading}
+      fetchpriority={@loading == "eager" && "high"}
+      class={["w-full object-cover", @box, @crop, @class]}
     />
     """
   end
+
+  # The two halves of a variant's shape, spelled out as literal classes because
+  # Tailwind's scanner only sees literal class strings. `thumb_crop/1` lands on
+  # the picture, `thumb_box/1` on whatever draws the rectangle — which is the
+  # wrapper in the pixelated state, so the badge stays on the picture.
+  defp thumb_box(:banner), do: "aspect-[5/2]"
+  defp thumb_box(_tile), do: "aspect-[400/264]"
+
+  defp thumb_crop(:banner), do: "object-top"
+  defp thumb_crop(_tile), do: nil
 
   # Which of the four tiles this link gets, decided once so the three branches
   # above read as one choice rather than as three conditions that must agree.
@@ -1112,10 +1156,10 @@ defmodule VutuvWeb.UI do
   # where that question lives — asking `url/2` and comparing its answer against
   # `placeholder_url/0` is the same question re-derived from a string, and the
   # day a fourth reason for the stand-in arrives it answers "shot" for it.
-  defp link_thumb_state(url, stored, pixelated_url) do
+  defp link_thumb_state(scope, value, stored, pixelated_url) do
     cond do
       pixelated_url -> "pixelated"
-      is_nil(url.screenshot) and Vutuv.ScreenshotBlocklist.blocked?(url.value) -> "site"
+      is_nil(scope.screenshot) and Vutuv.ScreenshotBlocklist.blocked?(value) -> "site"
       stored -> "shot"
       true -> "pending"
     end
@@ -1405,7 +1449,7 @@ defmodule VutuvWeb.UI do
           <.feed_button id={"#{@id}-posts-feed"} href={@feed_href} />
           <.copy_field
             id={"#{@id}-posts-feed-url"}
-            class="min-w-0 flex-1 items-center"
+            class="min-w-0 flex-1"
             code_class="text-xs"
           >{AgentDocs.abs_url(@feed_href)}</.copy_field>
         </div>
@@ -2079,6 +2123,14 @@ defmodule VutuvWeb.UI do
   page's twin of `<.avatar>`. Lives in the kit (issue #1410) because the shared
   face strips render it too, and `VutuvWeb.OrganizationComponents` cannot be
   imported here (it imports this module).
+
+  **`object-contain`, not `object-cover`** — this is where it differs from
+  `<.avatar>`. Every slot that shows a logo is square, and a mark is rarely
+  square: cover filled the box by cropping the sides off, which turned abuuba's
+  four-dot logo (30×24) into two-and-a-half dots on its own page. A face
+  survives being cropped; a wordmark or a logotype does not. Contain fits the
+  whole mark inside the box and leaves the card's own background in the
+  margins, which is what the ring and the rounded corners frame.
   """
   def organization_logo(assigns) do
     ~H"""
@@ -2086,7 +2138,7 @@ defmodule VutuvWeb.UI do
       <img
         src={OrganizationImage.token_url(@organization.logo, @version)}
         alt={@organization.name}
-        class={[@class, "rounded-2xl object-cover ring-1 ring-slate-200 dark:ring-slate-800"]}
+        class={[@class, "rounded-2xl object-contain ring-1 ring-slate-200 dark:ring-slate-800"]}
       />
     <% else %>
       <span
@@ -2425,16 +2477,31 @@ defmodule VutuvWeb.UI do
   end
 
   @button_base "inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold"
-  defp button_class("secondary"),
+
+  @doc """
+  The button recipe as a bare class string, for the rare anchor `button/1`
+  cannot render: `<.link>` raises on any URI scheme outside its allow-list, so
+  a link handing a value to a native app (the TOTP page's `otpauth://` link to
+  the authenticator app installed on this device) has to be a plain `<a>` and
+  still has to look like every other button. Compose like `input_class/0`:
+  `class={[button_class("secondary"), "mt-2"]}`. Prefer `<.button>` everywhere
+  a normal href works.
+
+  `<.link>` does take a `{:scheme, rest}` tuple for such a URI, so weigh that
+  first — it is the better answer whenever the scheme and the rest are separate
+  values already. It was the worse one here, because it would have the template
+  tear the scheme off a URI `LoginCodes.otpauth_uri/2` had just assembled.
+  """
+  def button_class("secondary"),
     do:
       "#{@button_base} bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
 
-  defp button_class("ghost"),
+  def button_class("ghost"),
     do:
       "#{@button_base} text-brand-600 hover:bg-brand-50 hover:text-brand-700 dark:text-brand-400 dark:hover:bg-slate-800 dark:hover:text-brand-300"
 
-  defp button_class("danger"), do: "#{@button_base} bg-red-600 text-white hover:bg-red-700"
-  defp button_class(_), do: "#{@button_base} bg-brand-600 text-white hover:bg-brand-700"
+  def button_class("danger"), do: "#{@button_base} bg-red-600 text-white hover:bg-red-700"
+  def button_class(_), do: "#{@button_base} bg-brand-600 text-white hover:bg-brand-700"
 
   @doc """
   Follow / unfollow control — the single owner of the two `~p"/follows…"`
@@ -3158,6 +3225,41 @@ defmodule VutuvWeb.UI do
   def compact_count(n), do: to_string(n)
 
   @doc """
+  An upload budget as the label a member reads (`4_000_000` -> `"4 MB"`), for
+  the hint under a file field and the message that refuses an oversized one.
+  Both say the same number because both call this.
+  """
+  def megabyte_label(bytes) when is_integer(bytes), do: "#{div(bytes, 1_000_000)} MB"
+
+  @doc """
+  The formats an extension whitelist accepts, as a member-readable list
+  (`~w(.jpg .jpeg .png)` -> `"JPEG, PNG"`).
+
+  Derived rather than written out because a whitelist is not the same on every
+  installation — SVG needs librsvg in libvips, HEIC an HEVC decoder — and a
+  hint naming a format the box then refuses is worse than no hint. An
+  extension with no name here is dropped rather than shown raw.
+  """
+  @format_names %{
+    ".jpg" => "JPEG",
+    ".jpeg" => "JPEG",
+    ".png" => "PNG",
+    ".svg" => "SVG",
+    ".webp" => "WebP",
+    ".heic" => "HEIC",
+    ".heif" => "HEIC",
+    ".pdf" => "PDF"
+  }
+
+  def format_list(extensions) do
+    extensions
+    |> Enum.map(&Map.get(@format_names, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.join(", ")
+  end
+
+  @doc """
   The translated name of a calendar month (`1..12`) — the one home of the
   month-name strings the work-experience form options and the profile/ad date
   labels share, instead of a copy of the twelve `gettext` literals per view.
@@ -3174,6 +3276,32 @@ defmodule VutuvWeb.UI do
   def month_name(10), do: gettext("October")
   def month_name(11), do: gettext("November")
   def month_name(12), do: gettext("December")
+
+  @doc """
+  The two-letter names of the weekdays, Monday first — the column headings of
+  any calendar grid.
+
+  Here for the same reason `month_name/1` is: one home for the seven strings
+  rather than a copy per view. Moved up from `VutuvWeb.AdHTML`, which shipped
+  them for the ad booking calendar long before the feed calendar wanted the
+  same row; both call this now.
+
+  Deliberately whole msgids and not `String.slice/3` on the full weekday names:
+  the abbreviation is a translator's decision, not a substring, and slicing
+  would have added seven more one-word msgids of exactly the kind
+  `gettext.extract --merge` likes to fuzzy-fill.
+  """
+  def weekday_initials do
+    [
+      gettext("Mo"),
+      gettext("Tu"),
+      gettext("We"),
+      gettext("Th"),
+      gettext("Fr"),
+      gettext("Sa"),
+      gettext("Su")
+    ]
+  end
 
   @doc """
   Exact, thousands-grouped form of a count (`60123` -> `"60,123"`, or
@@ -3249,6 +3377,10 @@ defmodule VutuvWeb.UI do
   address, next to the follower count). Same `<code>` and same copy button, so
   the copy contract lives in one place either way — the surface is all that
   changes.
+
+  In a `box` the button is a full `min-h-10` touch target and the row centers on
+  it; `inline` keeps the compact button, because a meta line has no room for a
+  40px control and carries the value as prose the reader can select anyway.
   """
   attr(:id, :string, required: true)
 
@@ -3262,19 +3394,32 @@ defmodule VutuvWeb.UI do
   attr(:class, :any, default: nil)
   attr(:code_class, :any, default: "text-sm")
   attr(:copy_text, :string, default: nil)
+
+  attr(:wrap, :string,
+    default: "anywhere",
+    values: ~w(anywhere words),
+    doc:
+      "`anywhere` breaks a long unbroken value (a URL, a URI) at any character; `words` keeps a value that already has spaces in it whole between them — the TOTP key is shown in groups of four and must not break inside a group"
+  )
+
   slot(:inner_block, required: true)
 
   def copy_field(assigns) do
     ~H"""
     <div class={[
       @variant == "box" &&
-        "flex gap-2 rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700",
+        "flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-200 dark:bg-slate-800/50 dark:ring-slate-700",
       @variant == "inline" && "inline-flex max-w-full items-center gap-1.5 align-middle",
-      @class || (@variant == "box" && "mt-3 items-start")
+      @class || (@variant == "box" && "mt-3")
     ]}>
       <code
         id={@id}
-        class={["min-w-0 flex-1 select-all break-all text-slate-800 dark:text-slate-100", @code_class]}
+        class={[
+          "min-w-0 flex-1 select-all text-slate-800 dark:text-slate-100",
+          @wrap == "anywhere" && "break-all",
+          @wrap == "words" && "break-words",
+          @code_class
+        ]}
       >{render_slot(@inner_block)}</code>
       <button
         type="button"
@@ -3283,7 +3428,11 @@ defmodule VutuvWeb.UI do
         data-copy-text={@copy_text}
         data-label-copy={gettext("Copy")}
         data-label-copied={gettext("Copied")}
-        class="shrink-0 rounded-md bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700 dark:hover:bg-slate-700"
+        class={[
+          "shrink-0 rounded-md bg-white text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700 dark:hover:bg-slate-700",
+          @variant == "box" && "inline-flex min-h-10 items-center px-3",
+          @variant == "inline" && "px-2 py-1"
+        ]}
       >
         {gettext("Copy")}
       </button>
@@ -3821,20 +3970,26 @@ defmodule VutuvWeb.UI do
 
   @doc """
   Changeset-error banner shared by the `editform` `form_content` templates and
-  the sign-up form. Renders the `.alert.alert-danger` strip only when
-  `@changeset.action` is set (a failed submit), nothing on a fresh form: a
-  warning glyph plus one actionable sentence ("Please check the fields marked
-  in red."), announced to assistive tech via `role="alert"`. The sentence must
-  stay true wherever the banner shows — classic editform pages mark errored
-  fields via `.editform__field--error`, kit forms via `input_class/2`. Styled
-  by `components.css`, not Tailwind — do not swap in utilities. Use it as
-  `<.form_error changeset={@changeset} />`.
+  the sign-up form. Renders the `.alert.alert-danger` strip only when the
+  changeset has been acted on **and** actually carries errors: a warning glyph
+  plus one actionable sentence ("Please check the fields marked in red."),
+  announced to assistive tech via `role="alert"`. The sentence must stay true
+  wherever the banner shows — classic editform pages mark errored fields via
+  `.editform__field--error`, kit forms via `input_class/2`.
+
+  The `errors` half of that condition is what makes it true. A live-validating
+  form (`phx-change="validate"`) stamps `action: :validate` on **every**
+  keystroke and on picking a file, so an `action`-only test put the banner up
+  against a form with nothing marked in red — which is what a member gets on
+  `/organizations/:slug/edit` the moment they choose a logo, and reads as "my
+  picture was refused". Styled by `components.css`, not Tailwind — do not swap
+  in utilities. Use it as `<.form_error changeset={@changeset} />`.
   """
   attr(:changeset, :any, required: true)
 
   def form_error(assigns) do
     ~H"""
-    <div :if={@changeset.action} class="alert alert-danger" role="alert">
+    <div :if={@changeset.action && @changeset.errors != []} class="alert alert-danger" role="alert">
       <svg class="alert__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <path
           stroke-linecap="round"
@@ -3846,6 +4001,59 @@ defmodule VutuvWeb.UI do
     </div>
     """
   end
+
+  @doc """
+  Everything a `live_file_input` upload is currently refusing, as red lines
+  under the field: `<.upload_problems upload={@uploads.logo} />`.
+
+  Both levels, because a form that renders only one of them is silent for the
+  common half. `upload_errors(@uploads.x)` carries the *config* errors (too
+  many files); the error that matters to somebody who just picked a file —
+  too large, wrong type — hangs off the **entry** and needs
+  `upload_errors(@uploads.x, entry)`. Leaving the entry half out is what made
+  the organization logo field accept a file and then quietly drop it, which
+  reads as "my format was refused"; the job-posting form rendered neither.
+
+  The sentences come from the upload's own config, so the size in the message
+  is the size that rejected the file.
+  """
+  attr(:upload, :any, required: true, doc: "an `@uploads.<name>` config")
+
+  def upload_problems(assigns) do
+    assigns = assign(assigns, :messages, upload_problem_messages(assigns.upload))
+
+    ~H"""
+    <p :for={message <- @messages} class="text-xs text-red-600">{message}</p>
+    """
+  end
+
+  defp upload_problem_messages(upload) do
+    entry_errors =
+      for entry <- upload.entries, error <- upload_errors(upload, entry), do: error
+
+    (upload_errors(upload) ++ entry_errors)
+    |> Enum.uniq()
+    |> Enum.map(&upload_problem_message(&1, upload))
+  end
+
+  defp upload_problem_message(:too_large, upload) do
+    gettext("That file is larger than %{limit}. Please upload a smaller one.",
+      limit: megabyte_label(upload.max_file_size)
+    )
+  end
+
+  defp upload_problem_message(:too_many_files, upload) do
+    ngettext(
+      "You can upload one file at a time.",
+      "You can upload at most %{count} files at a time.",
+      upload.max_entries
+    )
+  end
+
+  defp upload_problem_message(:not_accepted, _upload),
+    do: gettext("That file type is not allowed.")
+
+  defp upload_problem_message(_other, _upload), do: gettext("The upload failed.")
 
   @doc """
   Classic-page (components.css-styled) `editform__field` wrapper shared by the `editform`

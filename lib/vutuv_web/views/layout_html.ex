@@ -2,10 +2,26 @@ defmodule VutuvWeb.LayoutHTML do
   @moduledoc false
   use VutuvWeb, :html
   import VutuvWeb.UserHelpers
+  alias Vutuv.BuildInfo
   alias Vutuv.SourceRepo
   alias VutuvWeb.OpenGraph
 
   embed_templates("../templates/layout/*")
+
+  @doc """
+  The credit bar's commit: the short sha, linked to its page in the configured
+  source repository. Nothing for a build without git (`Vutuv.BuildInfo`). The
+  decision sits behind assigns on purpose: the compiler knows at build time
+  whether there is a commit and flags a template `:if` on the bare value as
+  always true.
+  """
+  def commit_link(assigns) do
+    assigns = assign(assigns, sha: BuildInfo.commit_sha(), url: BuildInfo.commit_url())
+
+    ~H"""
+    <a :if={@url} href={@url} class="underline hover:text-brand-700 dark:hover:text-brand-300">{@sha}</a>
+    """
+  end
 
   @doc """
   One flash toast (the `#toast-tray` entry in `app.html.heex`). The info and
@@ -215,15 +231,21 @@ defmodule VutuvWeb.LayoutHTML do
 
   @doc """
   The `<title>` for the self-contained `error.html.heex` layout (the
-  exception-rescued render path). `render_errors` passes the numeric `:status`
-  in the assigns, so a 500 tab reads "500 - vutuv"; without it (e.g. rendered
-  directly) it falls back to the bare site name. Kept defensive on purpose -
-  the error layout must never raise on a missing assign.
+  exception-rescued render path, and the offline page, which borrows the same
+  shell for the same reason — see `service_worker/offline.html.heex`).
+
+  `render_errors` passes the numeric `:status` in the assigns, so a 500 tab
+  reads "500 - vutuv"; a page that borrows the layout deliberately rather than
+  by crashing names itself with `:page_title` instead, because a browser tab
+  showing the bare site name is the least useful thing an offline reader could
+  be told. Without either it falls back to the site name. Kept defensive on
+  purpose - the error layout must never raise on a missing assign.
   """
   def error_title(assigns) do
-    case Map.get(assigns, :status) do
-      status when is_integer(status) -> "#{status} - vutuv"
-      _ -> "vutuv"
+    case {Map.get(assigns, :status), Map.get(assigns, :page_title)} do
+      {status, _} when is_integer(status) -> "#{status} - vutuv"
+      {_, title} when is_binary(title) and title != "" -> "#{title} - vutuv"
+      _neither -> "vutuv"
     end
   end
 
