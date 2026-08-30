@@ -10,24 +10,53 @@ defmodule VutuvWeb.OpenGraph do
       count as description, their avatar as image. The avatar is linked as `/:slug/avatar.jpg`
       (`VutuvWeb.AvatarController`) because preview scrapers don't decode
       the AVIF the site serves itself.
+    * a page about an organization (`:organization` — the page itself and
+      the posts published in its name): its name as title, its own
+      description as description, its logo as image. The logo is linked as
+      `/organizations/:slug/avatar.jpg`
+      (`VutuvWeb.OrganizationAvatarController`), the square JPEG twin of the
+      member endpoint above, and only while the page is publicly visible —
+      that endpoint refuses it otherwise.
     * a visible, unrestricted post additionally previews its first line,
       its publication date and — when it has images — its first image
       (`/post_images/<token>/og.jpg`, the proxy's on-the-fly JPEG);
       restricted posts and teasers never put the body or an image into
-      a tag.
+      a tag. Whose post it is decides only the *fallback* picture (avatar
+      or logo), so a member's post and a page's post preview alike.
     * everything else: the site description and the generated brand card
       (`VutuvWeb.OgCard`).
 
   The plain `<meta name="description">` renders `description/1` too, so
   the two can never disagree.
+
+  **Who names the subject.** These assigns reach here two ways: a plug or a
+  controller render assign (`:user` from `VutuvWeb.Plug.UserResolveSlug`,
+  `:post` from `VutuvWeb.PostController`), or the `mount/3` of
+  an embedded LiveView — `live_render` merges a LiveView's socket assigns into
+  `conn.assigns` before the root layout runs, and the LiveView's copy wins, so
+  the organization page and its post permalink are named by
+  `VutuvWeb.OrganizationLive.Show` / `.Post` and naming them again in the
+  controller would be inert.
+
+  The kind branches (`:user` beside `:organization`) are written out per
+  function here rather than dispatched through `Vutuv.Identity`, because what
+  they hold — a JPEG proxy URL, an image size, a card kind — is rendering, which
+  that protocol deliberately leaves to the call site. The cost is that a **third**
+  identity kind would fall through to the generic clauses quietly rather than
+  raising: grep this file when one arrives.
   """
 
   use Gettext, backend: VutuvWeb.Gettext
 
   alias Vutuv.Accounts.User
+  alias Vutuv.OrganizationImageStore
+  alias Vutuv.Organizations
+  alias Vutuv.Organizations.Organization
+  alias Vutuv.Posts
   alias Vutuv.Posts.Post
   alias Vutuv.Posts.PostImage
   alias Vutuv.SiteName
+  alias VutuvWeb.Markdown
   alias VutuvWeb.OgCard
   alias VutuvWeb.PostTeaser
   alias VutuvWeb.UI
@@ -60,6 +89,13 @@ defmodule VutuvWeb.OpenGraph do
     |> Enum.reject(fn {_property, value} -> value in [nil, ""] end)
   end
 
+  # An organization page is an account too, but only one of the `profile:*`
+  # properties is a true statement about it: the root handle it may have
+  # claimed (issue #941). A page without one carries none rather than an
+  # invented name.
+  defp profile_tags(%{organization: %Organization{username: username}}) when is_binary(username),
+    do: [{"profile:username", username}]
+
   defp profile_tags(_ca), do: []
 
   @doc """
@@ -89,7 +125,8 @@ defmodule VutuvWeb.OpenGraph do
     # both a controller render assign and a LiveView socket assign; `ca` catches
     # a conn assign set in a plug.
     assigns[:meta_description] || ca[:meta_description] || post_excerpt(ca) ||
-      member_info(ca) || path_description(assigns) || default_description()
+      member_info(ca) || organization_info(ca) || path_description(assigns) ||
+      default_description()
   end
 
   # The generic fallback for a page that is about neither a member nor a post
@@ -118,8 +155,15 @@ defmodule VutuvWeb.OpenGraph do
   defp page_copy(["system", "members" | _]),
     do: gettext("Browse the vutuv member directory.")
 
-  defp page_copy(["organizations" | _]),
+  # The bare directory only. `/organizations/:slug` is a page about one
+  # organization and describes itself through `organization_info/1`; matching
+  # `["organizations" | _]` here put the directory's copy under every page that
+  # had written no description of its own.
+  defp page_copy(["organizations"]),
     do: gettext("Verified organization pages on vutuv, each with a proven web domain.")
+
+  defp page_copy(["organizations", "new"]),
+    do: gettext("Claim a page for your organization on vutuv.")
 
   defp page_copy(["login" | _]), do: gettext("Sign in to your vutuv account.")
   defp page_copy(["feed"]), do: gettext("Your personal vutuv newsfeed.")
@@ -229,15 +273,28 @@ defmodule VutuvWeb.OpenGraph do
 
   defp type(%{post: %Post{}}), do: "article"
   defp type(%{user: %User{}}), do: "profile"
+  defp type(%{organization: %Organization{}}), do: "profile"
   defp type(_ca), do: "website"
 
-  # Only the post show page assigns :post (with :restricted?); the body of
-  # a restricted post must not surface in a tag (the teaser page doesn't
-  # assign :post at all, so it falls through to the author's info).
-  defp post_excerpt(%{post: %Post{} = post, restricted?: false}),
-    do: PostTeaser.line(post)
+  # Only a post page names a `:post`; the teaser page names none at all, so it
+  # falls through to the author's info like any other page about them.
+  defp post_excerpt(%{post: %Post{} = post}) do
+    if quotable?(post), do: PostTeaser.line(post)
+  end
 
   defp post_excerpt(_ca), do: nil
+
+  # Whether this post's own words and pictures may go into the tags at all: a
+  # post with any denial previews as its author, never as itself.
+  #
+  # Asked of the post rather than read from a `:restricted?` assign, because the
+  # page that names its post should not also owe a second assign nothing on it
+  # renders — `VutuvWeb.OrganizationLive.Post` carried one purely for this
+  # module, which is an obligation the next embedded LiveView would have to be
+  # told about, and forgetting it costs the post its own picture with no error
+  # anywhere. `Posts.restricted?/1` reads the denials both post lookups already
+  # preload, and falls back to one query when they are not loaded.
+  defp quotable?(%Post{} = post), do: not Posts.restricted?(post)
 
   defp member_info(%{user: %User{} = user} = ca) do
     case user
@@ -249,6 +306,31 @@ defmodule VutuvWeb.OpenGraph do
   end
 
   defp member_info(_ca), do: nil
+
+  # The page's own description, flattened out of its Markdown to the single line
+  # a preview card has room for. Without this an organization page previewed
+  # with the *directory's* copy ("Verified organization pages on vutuv…"), which
+  # reads the same under every page and every post they publish — the symptom
+  # issue #1581 was filed for.
+  #
+  # A page that has written no description falls through to the site pitch,
+  # exactly as a member with no work info does; inventing a sentence out of its
+  # kind and city would say less than that.
+  defp organization_info(%{organization: %Organization{description: description}})
+       when is_binary(description) do
+    # Sliced before flattening, not after: `to_preview_line/1` runs the whole
+    # Markdown pipeline and then keeps 200 characters, so an unbounded call
+    # would parse all 10,000 a description may hold to throw 9,800 away — twice,
+    # because the layout asks for the description once for `<meta name>` and
+    # once through `tags/1`. Markup only ever adds characters, so this many of
+    # the source always yields more plain text than the line keeps.
+    case description |> String.slice(0, 1_000) |> Markdown.to_preview_line() do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp organization_info(_ca), do: nil
 
   # The member's follower count as a localized, compacted phrase ("3 followers",
   # "1.2K followers"), matching the count shown in the profile header. Empty
@@ -302,21 +384,25 @@ defmodule VutuvWeb.OpenGraph do
   defp article_tags(_ca), do: []
 
   # Image priority: an unrestricted post's first image, else the member's
-  # avatar, else the brand card. A restricted post's images must stay out
-  # of the tags like its body does.
-  defp image(%{post: %Post{} = post, restricted?: false} = ca) do
-    case first_image(post) do
+  # avatar or the organization's logo, else the brand card. A restricted post's
+  # images must stay out of the tags like its body does.
+  defp image(%{post: %Post{} = post} = ca) do
+    case quotable?(post) && first_image(post) do
       %PostImage{} = post_image -> post_image_entry(post_image, ca)
-      nil -> member_image(ca) || brand_card()
+      _no_image -> author_image(ca)
     end
   end
 
-  defp image(ca), do: member_image(ca) || brand_card()
+  defp image(ca), do: author_image(ca)
+
+  # Whoever the page is about, as a picture: the member's avatar, else the
+  # organization's logo, else the brand card.
+  defp author_image(ca), do: member_image(ca) || organization_image(ca) || brand_card()
 
   defp first_image(%Post{images: images} = post) when is_list(images) do
     # Only AI-released images may become the public link-preview picture.
     post
-    |> Vutuv.Posts.released_images()
+    |> Posts.released_images()
     |> Enum.sort_by(&{&1.position, &1.id})
     |> List.first()
   end
@@ -338,22 +424,42 @@ defmodule VutuvWeb.OpenGraph do
 
   defp image_alt(%{alt: alt}, _ca) when alt not in [nil, ""], do: alt
   defp image_alt(_post_image, %{user: %User{} = user}), do: UserHelpers.full_name(user)
+  defp image_alt(_post_image, %{organization: %Organization{name: name}}), do: name
   defp image_alt(_post_image, _ca), do: SiteName.get()
 
   defp member_image(%{user: %User{avatar: avatar} = user}) when not is_nil(avatar) do
-    size = Vutuv.Avatar.og_size()
-
-    %{
-      url: abs_url("/#{user.username}/avatar.jpg"),
-      width: size,
-      height: size,
-      type: "image/jpeg",
-      alt: UserHelpers.full_name(user),
-      card: "summary"
-    }
+    square_image(
+      abs_url("/#{user.username}/avatar.jpg"),
+      Vutuv.Avatar.og_size(),
+      UserHelpers.full_name(user)
+    )
   end
 
   defp member_image(_ca), do: nil
+
+  # The page's logo, through the same scraper-friendly JPEG endpoint the actor
+  # document names (`VutuvWeb.OrganizationAvatarController`). That endpoint
+  # serves a page nobody may see yet as a 404, so the tag is only written while
+  # the page is public — an og:image pointing at a 404 costs the card its
+  # picture altogether on some scrapers, and the brand card is a better answer
+  # than none.
+  defp organization_image(%{organization: %Organization{logo: logo} = organization})
+       when is_binary(logo) do
+    if Organizations.public_visible?(organization) do
+      square_image(
+        abs_url("/organizations/#{organization.slug}/avatar.jpg"),
+        OrganizationImageStore.og_size(),
+        organization.name
+      )
+    end
+  end
+
+  defp organization_image(_ca), do: nil
+
+  # The shape both identity pictures share: a square JPEG from one of the two
+  # on-the-fly endpoints, which is the `summary` card rather than the wide one.
+  defp square_image(url, size, alt),
+    do: %{url: url, width: size, height: size, type: "image/jpeg", alt: alt, card: "summary"}
 
   defp brand_card do
     case OgCard.png() do

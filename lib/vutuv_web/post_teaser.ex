@@ -144,6 +144,25 @@ defmodule VutuvWeb.PostTeaser do
   def plain_line(post, opts), do: teaser(post, &fold/1, opts)
 
   @doc """
+  What a post calls itself in a list of posts: the author's name and the
+  publication date. The `<title>` of `/:slug/posts/:id` and of
+  `/organizations/:slug/posts/:id`, the heading a shared link previews with
+  (`VutuvWeb.OpenGraph`, through `VutuvWeb.LayoutHTML.page_title/1`), the
+  `headline` of the permalink's JSON-LD, the `title` of both agent-format post
+  documents and of an RSS `<item>`.
+
+  Six surfaces built this one string for themselves, which is how a page's post
+  came to be titled with the bare page name — in a browser tab and in a shared
+  link's card it then read exactly like the page it was published on, not like a
+  post (issue #1581). It belongs here rather than in `Vutuv.Posts` because the
+  separator and the date shape are presentation, and this module already owns
+  what a post says in one line; the part that is *not* presentation — which of
+  the two author columns speaks — it takes from `Posts.author/1`.
+  """
+  def permalink_title(%Post{} = post),
+    do: "#{Identity.display_name(Posts.author(post))} · #{Date.to_iso8601(post.published_on)}"
+
+  @doc """
   The quote for one feed entry — `%{who: …, text: …}` — or nil where this
   reader has muted it.
 

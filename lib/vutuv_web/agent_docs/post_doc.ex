@@ -76,7 +76,7 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
     AgentDocs.doc_meta("post", Posts.path(post), noindex: noindex?, noai: noai?)
     |> Map.merge(%{
       id: post.id,
-      title: "#{UserHelpers.full_name(author)} · #{Date.to_iso8601(post.published_on)}",
+      title: PostTeaser.permalink_title(post),
       description: PostTeaser.line(post),
       author: Vutuv.Identity.ref(author),
       published_on: post.published_on,
@@ -187,7 +187,7 @@ defmodule VutuvWeb.AgentDocs.PostDoc do
     )
     |> Map.merge(%{
       id: post.id,
-      title: "#{organization.name} · #{Date.to_iso8601(post.published_on)}",
+      title: PostTeaser.permalink_title(post),
       description: PostTeaser.line(post),
       author: Vutuv.Identity.ref(organization),
       published_on: post.published_on,

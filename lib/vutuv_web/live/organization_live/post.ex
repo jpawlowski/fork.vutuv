@@ -24,6 +24,7 @@ defmodule VutuvWeb.OrganizationLive.Post do
   alias Vutuv.Organizations
   alias Vutuv.Posts
   alias VutuvWeb.Live.InitAssigns
+  alias VutuvWeb.PostTeaser
 
   @impl true
   def mount(_params, session, socket) do
@@ -49,7 +50,7 @@ defmodule VutuvWeb.OrganizationLive.Post do
        # blank preview (issue #1033) — the trap the member permalink already
        # avoids.
        |> assign(:auto_scroll?, session["auto_scroll"] != false)
-       |> assign(:page_title, organization.name)}
+       |> assign(:page_title, PostTeaser.permalink_title(post))}
     else
       # The controller already refused an id that does not resolve, so reaching
       # here means the answer changed between that request and this connect —

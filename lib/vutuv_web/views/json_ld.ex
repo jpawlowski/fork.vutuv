@@ -39,6 +39,7 @@ defmodule VutuvWeb.JsonLd do
   alias Vutuv.Tags.UserTag
   alias VutuvWeb.AgentDocs
   alias VutuvWeb.AgentDocs.ProfileDoc
+  alias VutuvWeb.PostTeaser
   alias VutuvWeb.UserHelpers
 
   attr(:data, :map, required: true)
@@ -249,7 +250,7 @@ defmodule VutuvWeb.JsonLd do
       "@type" => if(review_of(post), do: ["BlogPosting", "Review"], else: "BlogPosting"),
       "itemReviewed" => item_reviewed(review_of(post)),
       "@id" => permalink,
-      "headline" => "#{UserHelpers.full_name(author)} · #{Date.to_iso8601(post.published_on)}",
+      "headline" => PostTeaser.permalink_title(post),
       "datePublished" => Date.to_iso8601(post.published_on),
       "dateModified" => post.updated_at |> NaiveDateTime.to_date() |> Date.to_iso8601(),
       "author" => %{

@@ -22999,6 +22999,11 @@ msgstr[1] "%{formatted} Beiträge im Feed anzeigen"
 msgid "Picture unavailable"
 msgstr "Bild nicht verfügbar"
 
+#: lib/vutuv_web/open_graph.ex:166
+#, elixir-autogen, elixir-format
+msgid "Claim a page for your organization on vutuv."
+msgstr "Reservieren Sie eine Seite für Ihre Organisation auf vutuv."
+
 #: lib/vutuv_web/live/organization_live/edit.ex:231
 #, elixir-autogen, elixir-format
 msgid "Your organization page was updated. The new logo is being checked and appears once that is through."

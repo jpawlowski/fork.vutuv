@@ -30,6 +30,7 @@ defmodule VutuvWeb.PostController do
   alias VutuvWeb.AgentDocs.PostDoc
   alias VutuvWeb.Fediverse.Docs, as: FediverseDocs
   alias VutuvWeb.FediverseController
+  alias VutuvWeb.PostTeaser
 
   # The author archive: /:slug/posts, optionally scoped to a year, month or
   # day (/:slug/posts/2026[/06[/06]]), offset-paginated like the other
@@ -305,8 +306,7 @@ defmodule VutuvWeb.PostController do
       show_formats?: Posts.visible_to?(post, nil),
       formats_base: Posts.path(post),
       locale: conn.assigns[:locale],
-      page_title:
-        "#{VutuvWeb.UserHelpers.full_name(author)} · #{Date.to_iso8601(post.published_on)}"
+      page_title: PostTeaser.permalink_title(post)
     )
   end
 
