@@ -1180,6 +1180,49 @@ that `live_render` their page get it inside
 A URL that already named an agent document is exempt, so `/jobs.md` keeps
 answering Markdown whatever `Accept` rode along with it.
 
+## An answer says it is an answer (issue #1739)
+
+An answer written here used to arrive in a Mastodon timeline looking like the
+start of a new conversation. `inReplyTo` was written only when the answered
+author federates, and `fediverse_followers?` defaults to off — so most answers
+left without it. Mastodon does hide an answer to somebody you do not follow
+(`filter_from_home` in `app/lib/feed_manager.rb`), but only once it knows a post
+*is* an answer, so these were pushed to every follower as fresh threads.
+
+Two halves, and they answer two different questions.
+
+**Does the answer say what it answers?** Always, now. `put_in_reply_to/3` names
+the parent's URL whether or not anything serves a Note at it, so the reference
+may **dangle** — that is the deliberate trade. What it costs: a reader cannot
+open the post being answered, and Mastodon drops such an answer from its *home*
+timelines outright (the `in_reply_to_id.nil?` branch of the same rule) rather
+than merely filtering it by who you follow, so it lives on the profile and at
+its own link. What it buys: nothing pretends to open a conversation it did not
+open. The member being answered kept out of the Fediverse, so their post is not
+findable out there either way.
+
+The one exception is not about resolvability but about privacy: a **restricted**
+parent is not public, and its id is a UUID v7, so publishing the URL would tell
+readers who may not see the post that it exists and the minute it was written.
+An answer under one of those still travels; it is the one shape left that
+travels without saying what it answers.
+
+**Is the answered account named?** Only when it can be resolved. A non-federating
+member serves no actor document (`with_federated_user/3` 404s it), so a handle
+in the visible text would link a reader to nothing. Where it *does* resolve, an
+answer to one of our own posts now carries the same three things an answer to a
+remote note has carried since #1070 — the account in `cc`, a `Mention` of them
+in `tag`, and their handle leading the wire copy. `Docs.answered_account/2`
+resolves that account once per Note and hands the three consumers a
+`{actor_uri, handle}` pair, past which nothing can tell the two networks apart,
+because the act is the same either way.
+
+Neither half gates **delivery**: an answer travels like any other public post.
+The earlier attempt at this issue held answers back instead, so that no id was
+ever named that could not be fetched; a dangling `inReplyTo` was judged the
+cheaper of the two, because keeping the answer here hides it from the answering
+member's own followers as well.
+
 ## Mentions on the way out
 
 A member writes `@ada`, and on the server this post lands on that names *their*
