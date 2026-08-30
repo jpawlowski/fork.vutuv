@@ -35,6 +35,7 @@ defmodule VutuvWeb.PostLive.Feed do
   use VutuvWeb, :live_view
 
   import VutuvWeb.PostComponents
+  import VutuvWeb.PostLive.FeedCalendar
 
   alias Phoenix.LiveView.JS
   alias Vutuv.Activity
@@ -44,13 +45,16 @@ defmodule VutuvWeb.PostLive.Feed do
   alias Vutuv.Posts.Post
   alias Vutuv.Social
   alias Vutuv.Tags.UserTag
+  alias Vutuv.ViewerClock
   alias VutuvWeb.Live.DayClockRestream
+  alias VutuvWeb.Live.FeedTimeTravel
   alias VutuvWeb.Live.InitAssigns
   alias VutuvWeb.Live.MountHandoff
   alias VutuvWeb.Live.PostTranslations
   alias VutuvWeb.Live.RemoteImages
   alias VutuvWeb.Live.RemotePostActions
   alias VutuvWeb.Live.RemoteReplyActions
+  alias VutuvWeb.PostLive.FeedCalendar
   alias VutuvWeb.PostTeaser
   alias VutuvWeb.UserHelpers
 
@@ -74,6 +78,24 @@ defmodule VutuvWeb.PostLive.Feed do
   # smaller than either, because that press is a wait with nothing on screen to
   # read while it lasts.
   @filter_page_size 10
+  # What opening a *busy* calendar day loads (see `load_day/2`). Sized like a
+  # source switch and for the same reason: the reader is waiting on an empty
+  # column.
+  @travel_page_size 10
+  # A day with fewer entries than this is loaded whole on the first press, so
+  # the ordinary case has no "Load more" under it at all. A day is a bounded
+  # thing the reader asked to see, not an endless timeline, and paging through
+  # a Tuesday ten posts at a time is busywork the feed can just do for them.
+  #
+  # The number is an upper bound handed to `feed_page/2`, not a fetch of a
+  # hundred rows: a day holding three costs three. What decides which branch a
+  # day takes is the heatmap's own count for it, which is already on the socket
+  # (`@cal_counts`) — so knowing the day's size costs no query of its own.
+  @day_full_limit 100
+  # …and the ceiling on "load the whole day" for the days above that. Somebody
+  # opening a day with four thousand entries wants to read it, not to render it,
+  # so the button stops here and leaves "Load more" for the rest.
+  @day_all_limit 1_000
   # "New here" rail: how many newcomers to greet, the size of the newest-members
   # pool they are drawn out of, how many of each one's tags the card shows, and
   # how often an open feed redraws. Defined here (not beside
@@ -136,7 +158,7 @@ defmodule VutuvWeb.PostLive.Feed do
     socket = InitAssigns.assign_embedded(socket, session)
 
     if user = socket.assigns.current_user do
-      {:ok, mount_feed(socket, user)}
+      {:ok, mount_feed(socket, user, calendar_from_url(session))}
     else
       {:ok,
        socket
@@ -145,7 +167,7 @@ defmodule VutuvWeb.PostLive.Feed do
     end
   end
 
-  defp mount_feed(socket, user) do
+  defp mount_feed(socket, user, {day, open?}) do
     # The sources they left on (issue #1499). It opens the page *and* keys the
     # handoff below: the stash holds one entry per member, so two devices
     # opening /feed within its 15s TTL would otherwise let one take a page the
@@ -164,20 +186,20 @@ defmodule VutuvWeb.PostLive.Feed do
       # The dead render stashed its computed page seconds ago
       # (VutuvWeb.Live.MountHandoff); take it and skip re-running the same
       # queries. Any miss (expired, consumed, a reconnect) recomputes.
-      case MountHandoff.take(user.id, {:feed, remembered}) do
-        {:ok, payload} -> apply_feed_payload(socket, payload)
-        :error -> apply_feed_payload(socket, feed_payload(user, remembered))
+      case MountHandoff.take(user.id, {:feed, remembered, day}) do
+        {:ok, payload} -> apply_feed_payload(socket, payload, day, open?)
+        :error -> apply_feed_payload(socket, feed_payload(user, remembered, day), day, open?)
       end
     else
-      payload = feed_payload(user, remembered)
-      MountHandoff.stash(user.id, {:feed, remembered}, payload)
-      apply_feed_payload(socket, payload)
+      payload = feed_payload(user, remembered, day)
+      MountHandoff.stash(user.id, {:feed, remembered, day}, payload)
+      apply_feed_payload(socket, payload, day, open?)
     end
   end
 
   # Everything a feed mount computes, as data — what the dead render hands the
   # connected mount through the single-use stash.
-  defp feed_payload(user, remembered) do
+  defp feed_payload(user, remembered, day) do
     # The member's private content filters (issue #940): compiled once, applied
     # to every page, and the set of posts they chose to reveal anyway.
     compiled = ContentFilters.compile_for(user)
@@ -192,7 +214,23 @@ defmodule VutuvWeb.PostLive.Feed do
     # same fold `fediverse_feed_available?/1` did for the tab bar.
     filter = if Posts.fediverse_feed_available?(user), do: remembered, else: :all
 
-    page = Posts.feed_page(user, limit: @first_page_size, filter: filter)
+    # A day-link arrival (`/feed?day=…`) fetches THAT day's page here rather
+    # than fetching the present and re-fetching a moment later: mounting at now
+    # and then re-streaming the day leaves both pages on the client, because a
+    # stream reset in the same mount that populated it does not take.
+    #
+    # A named day asks for the whole-day limit outright. That is an upper bound,
+    # so a quiet day still costs its own size; what it buys is not having to run
+    # the nine-source counter here purely to choose between two page sizes,
+    # which is the most expensive query on the page and was being run twice per
+    # arrival for one number.
+    page =
+      Posts.feed_page(user,
+        limit: if(day, do: @day_full_limit, else: @first_page_size),
+        cursor: FeedTimeTravel.day_cursor(day),
+        filter: filter
+      )
+
     entries = page.entries |> with_engagement(user) |> mark_filtered(compiled, user.id)
 
     # Read the stored draft once and hand it to the composer below, which then
@@ -231,7 +269,7 @@ defmodule VutuvWeb.PostLive.Feed do
   # %Phoenix.LiveView.LiveStream{} carries per-socket insert state that the
   # dead render already consumed, so handing the struct itself to the
   # connected socket would replay as an empty feed.
-  defp apply_feed_payload(socket, payload) do
+  defp apply_feed_payload(socket, payload, day, open?) do
     socket
     # On-demand translations (issue #1462): the per-card view state. A map
     # means this viewer gets the controls, nil means they do not — the cards
@@ -251,6 +289,26 @@ defmodule VutuvWeb.PostLive.Feed do
     # How many arrivals the cap turned away. Nonzero means the timeline no longer
     # holds a row for every waiting post, so the press has to load a page.
     |> assign(:pending_overflow, 0)
+    # The calendar's own state: whether it is unfolded, which month is on
+    # screen, which reading its heatmap shades, and which day (if any) the
+    # reader opened. `cal_day` is a Date rather than a moment because it names a
+    # WINDOW — a whole day, first minute to last.
+    #
+    # Folded and on today by default. The calendar is a way *out* of the
+    # present, and most visits to a feed are not that: unfolded by default it
+    # would put six rows of month between the composer and the first post for
+    # every reader who never travels. `restore_calendar/2` unfolds it again for
+    # an arrival that names a day in the URL.
+    |> assign(:cal_open?, open?)
+    |> assign(:cal_month, FeedTimeTravel.month_of(day))
+    |> assign(:cal_metric, "feed")
+    |> assign(:cal_day, day)
+    # The reader's own calendar day, held as state rather than read inside the
+    # card: it decides the date the folded card shows, which cell wears the
+    # today ring and which cells are refused as future, and a page left open
+    # past midnight has to be told. `:day_changed` below moves it.
+    |> assign(:cal_today, ViewerClock.today())
+    |> defer_calendar_counts()
     |> assign(:draft, payload.draft)
     # The composer starts collapsed to a single "What's new?" button; posting
     # (own activity arriving below) collapses it again. A stored draft opens it
@@ -517,9 +575,14 @@ defmodule VutuvWeb.PostLive.Feed do
   # each entry carries a `%{post_id => engagement}` submap for those cards' bars.
   # Live-arriving single posts carry `engagement: nil` (falls back to the bar's
   # own query) and get their follow edge in `insert_entry/3`.
-  # The one-line stand-in for a content-filtered post (issue #940): says which
   # The newest waiting post as the pair the pill quotes, or nil when there is
-  # nothing to quote (a photo with no caption, an author we cannot name).
+  # nothing to quote: a photo with no caption, an author we cannot name, or a
+  # post this reader's own filters hide. The row below it folds to a placeholder
+  # (`hidden_by_filter?/2`) while the pill above it read the muted words out —
+  # and a teaser is the one place they cannot scroll past them (issue #940).
+  # Both read the same `:filtered_by` stamp, so the two cannot disagree.
+  defp newest_quote([%{filtered_by: pattern} | _rest]) when is_binary(pattern), do: nil
+
   defp newest_quote([newest | _rest]) do
     case {PostTeaser.who(newest), PostTeaser.text(newest)} do
       {nil, _text} -> nil
@@ -894,6 +957,7 @@ defmodule VutuvWeb.PostLive.Feed do
     """
   end
 
+  # The one-line stand-in for a content-filtered post (issue #940): says which
   # filter hid it and offers to show it anyway, in place.
   attr(:pattern, :string, required: true)
 
@@ -1028,7 +1092,7 @@ defmodule VutuvWeb.PostLive.Feed do
       Posts.feed_page(socket.assigns.current_user,
         limit: @page_size,
         cursor: socket.assigns.cursor,
-        filter: socket.assigns.feed_filter
+        filter: effective_filter(socket)
       )
 
     # A post shown higher up (as a newer repost, or nested in a shown thread)
@@ -1056,6 +1120,100 @@ defmodule VutuvWeb.PostLive.Feed do
      |> stream(:posts, entries, at: -1)
      |> watch_pending_photos(entries)
      |> auto_translate_entries(entries)}
+  end
+
+  # Time travel (`VutuvWeb.Live.FeedTimeTravel`), all of it driven by the feed
+  # calendar: closing the open day is the only way back to the live present.
+  def handle_event("travel-now", _params, socket),
+    do: {:noreply, socket |> load_day(nil) |> sync_url()}
+
+  # Paging the calendar does not move the reader: it changes which month they
+  # are looking at. Only a day-click travels, which is what lets somebody hunt
+  # for a busy week without their timeline lurching about under them.
+  def handle_event("cal-month", %{"n" => n}, socket) do
+    case Integer.parse(to_string(n)) do
+      # Backwards is refused once the feed no longer reaches past this month —
+      # the same rule that greys the arrow out, applied where it is enforceable.
+      # A disabled button is a hint; this is the answer.
+      {value, _rest} when value < 0 and not socket.assigns.cal_earlier? ->
+        {:noreply, socket}
+
+      {value, _rest} ->
+        {:noreply,
+         socket
+         |> assign(:cal_month, FeedTimeTravel.shift_month(socket.assigns.cal_month, value))
+         |> defer_calendar_counts()}
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  # The reading is not just a shading: "My posts" narrows the **timeline** to
+  # what this member wrote, so switching it reloads the page under the calendar
+  # as well as the numbers in it. Shading a month by one rule while the feed
+  # below showed another would be two answers to one question.
+  def handle_event("cal-metric", %{"metric" => metric}, socket) do
+    known = Enum.map(FeedCalendar.metrics(), & &1.key)
+    metric = if metric in known, do: metric, else: "feed"
+
+    # Pressing the reading already showed is a no-op, and has to say so here:
+    # the two buttons are `aria-pressed`, never disabled, so the press arrives
+    # like any other and would otherwise re-run the month union, the floor check
+    # and a full page load with a stream reset for nothing.
+    if metric == socket.assigns.cal_metric do
+      {:noreply, socket}
+    else
+      {:noreply,
+       socket
+       |> assign(:cal_metric, metric)
+       # Counted here and not deferred, unlike every other way into the
+       # heatmap: `load_day/2` on the next line sizes its page from these
+       # counts (`day_limit/2`), and handing it an empty map would fetch and
+       # decorate the whole-day limit for a day it is about to learn is busy.
+       # Nothing is lost by waiting — this press reloads the timeline under the
+       # calendar anyway, so it is not a press the reader watches do nothing.
+       |> assign_calendar_counts()
+       |> load_day(socket.assigns.cal_day)}
+    end
+  end
+
+  # "Load the whole day" — the button beside "Load more" on a busy day.
+  #
+  # Re-fetches the day in one page rather than chaining "Load more" until it
+  # runs out: the reader has said they want all of it, and walking there ten at
+  # a time is the same rows over more round trips. Capped at `@day_all_limit`,
+  # so a day with thousands still ends with a "Load more" under it instead of
+  # trying to render the lot.
+  def handle_event("load-day-all", _params, socket) do
+    case socket.assigns.cal_day do
+      nil -> {:noreply, socket}
+      day -> {:noreply, load_day(socket, day, @day_all_limit)}
+    end
+  end
+
+  # Folding the calendar away does not send the reader home: somebody who
+  # opened last Tuesday and wants the month grid out of the way is still
+  # reading Tuesday, and yanking them back to now would be a second thing they
+  # did not ask for. Closing the DAY is what returns to the present.
+  def handle_event("cal-toggle", _params, socket) do
+    # The press unfolds and answers; the heatmap follows a moment later (see
+    # `defer_calendar_counts/1`). Folded, the counts are not asked for at all.
+    {:noreply, socket |> update(:cal_open?, &(!&1)) |> defer_calendar_counts() |> sync_url()}
+  end
+
+  # A day is a window, not a moment (`FeedTimeTravel.day_cursor/1`). Pressing
+  # the day already open closes it and returns to now, so the same control both
+  # opens and closes a day rather than stranding the reader in one.
+  def handle_event("cal-day", %{"date" => date}, socket) do
+    with {:ok, day} <- FeedTimeTravel.parse_date(date),
+         true <- FeedTimeTravel.reachable?(day) do
+      day = if socket.assigns.cal_day == day, do: nil, else: day
+
+      {:noreply, socket |> load_day(day) |> sync_url()}
+    else
+      _unreachable -> {:noreply, socket}
+    end
   end
 
   def handle_event("open-composer", _params, socket) do
@@ -1249,8 +1407,13 @@ defmodule VutuvWeb.PostLive.Feed do
     # control knows this too and does not run the browser-side reveal in that
     # mode, or the kept rows would flash into view a moment before the reload
     # replaced the whole list.
-    if socket.assigns.pending_overflow > 0 do
-      {:noreply, load_source_filter(socket, socket.assigns.feed_filter)}
+    # A third way in, and it is the one the calendar adds: with a day open there
+    # are no rows either, because the waiting posts belong to today and the
+    # timeline is showing some other day. Pressing the pill is then the reader
+    # saying "take me to those posts", so it closes the day and comes home —
+    # which is exactly the reload the overflow case already wanted.
+    if socket.assigns.pending_overflow > 0 or not at_now?(socket.assigns) do
+      {:noreply, socket |> load_day(nil) |> sync_url()}
     else
       {:noreply, socket |> assign(:pending_posts, []) |> assign(:empty?, false)}
     end
@@ -1286,6 +1449,233 @@ defmodule VutuvWeb.PostLive.Feed do
     |> assign(:entries, entries)
     |> stream(:posts, entries, reset: true)
     |> watch_pending_photos(entries)
+  end
+
+  # Whether the reader is looking at the live present. One way to leave it, the
+  # calendar's open day, and every gate that cares asks the same question: the
+  # arrival guard, the three empty states and the amber paint.
+  defp at_now?(assigns), do: is_nil(assigns.cal_day)
+
+  # What the URL asked the calendar to show (`/feed?day=2026-08-21`,
+  # `/feed?cal=1`), as `{day_or_nil, unfolded?}`.
+  #
+  # The controller reads the query string and passes the two values through the
+  # `live_render` session, because this LiveView is embedded rather than routed
+  # and so has no `handle_params/3` of its own. An unreadable or future date is
+  # simply ignored: a link somebody mangled should land on the feed, not on an
+  # error, and a day that has not happened has nothing to show.
+  #
+  # A named day implies an unfolded calendar — arriving at a day with the grid
+  # folded away would hide the only control that explains where the reader is.
+  defp calendar_from_url(session) do
+    with {:ok, day} <- FeedTimeTravel.parse_date(session["cal_day"] || ""),
+         true <- FeedTimeTravel.reachable?(day) do
+      {day, true}
+    else
+      _no_day -> {nil, session["cal_open"] in ~w(1 open true)}
+    end
+  end
+
+  # Keeps the address bar in step with the calendar, so the day on screen is
+  # always the day a copied link reopens.
+  #
+  # `replaceState` from a hook rather than `push_patch/2`: patching needs a
+  # routed LiveView, and this one is `live_render`ed by the controller that
+  # owns the agent-format siblings. It is deliberately *replace* and not
+  # *push* — a reader stepping through a fortnight would otherwise have to
+  # press Back fourteen times to leave the feed.
+  defp sync_url(socket) do
+    query =
+      %{}
+      |> put_param("day", socket.assigns.cal_day && Date.to_iso8601(socket.assigns.cal_day))
+      |> put_param("cal", if(socket.assigns.cal_open? && !socket.assigns.cal_day, do: "1"))
+
+    push_event(socket, "feed:url", %{query: URI.encode_query(query)})
+  end
+
+  defp put_param(params, _key, nil), do: params
+  defp put_param(params, key, value), do: Map.put(params, key, value)
+
+  # The heatmap's numbers for the month on screen. Recomputed whenever the
+  # month or the reading changes, and never on an ordinary timeline patch:
+  # the feed reading is a nine-source union over a month and is by far the most
+  # expensive thing this page asks for.
+  # What the timeline is currently narrowed to.
+  #
+  # Two axes meet here and only one of them is remembered. `feed_filter` is the
+  # source band's stored setting (`users.feed_source`, which network); the
+  # calendar's "My posts" reading is a view the reader is in right now and is
+  # never written down. So this composes them for the query without the second
+  # one ever reaching the member's saved preference.
+  defp effective_filter(%{assigns: assigns}), do: effective_filter(assigns)
+  defp effective_filter(%{cal_metric: "own"}), do: :own
+  defp effective_filter(assigns), do: assigns.feed_filter
+
+  # Whether a live arrival belongs in the timeline as it is currently narrowed.
+  #
+  # Under "My posts" that is a question about the AUTHOR, which the entry alone
+  # cannot answer — so it is asked here, where the viewer is known, rather than
+  # in `Posts.feed_filter_accepts?/2`.
+  defp view_accepts?(socket, entry, actor_id) do
+    case effective_filter(socket) do
+      :own -> actor_id == socket.assigns.current_user.id
+      filter -> Posts.feed_filter_accepts?(filter, entry)
+    end
+  end
+
+  # Nothing at all while the calendar is folded away, which is how it opens and
+  # how most readers leave it.
+  #
+  # The heatmap is a nine-source union over a month and the floor check is a
+  # tenth query, and both were being paid on **every** feed mount for a grid
+  # nobody had asked to see — enough to push a connected mount from 18 queries
+  # to 28 and cost the mount handoff its whole point. Folded, the card shows a
+  # date and needs no numbers; unfolding is what buys them.
+  #
+  # And unfolding does not WAIT for them. The cheap `:marks` shape got the month
+  # down to well under half of what it cost (the figures are in
+  # `docs/architecture/posts-and-feed.md`), but it is still ~26 queries, and a
+  # press the reader watches do nothing is a slow press whatever the query
+  # count says. So the grid goes out first with everything that does not need
+  # the month in it — the dates, today's ring, the open day, both controls —
+  # and the shading follows in a second render, fading in over
+  # `transition-colors` rather than snapping. On a disconnected render there is
+  # no second render, so nothing is asked at all and the connected mount fills
+  # the grid in.
+  #
+  # A revisited month is asked for again rather than remembered. A memo keyed
+  # on the month would make a fold and unfold free, and would also hand the
+  # reader an hour-old shading of the day they are still in: the numbers are
+  # cheap to re-ask now and nobody sees the asking.
+  defp defer_calendar_counts(socket) do
+    if socket.assigns.cal_open? and connected?(socket) do
+      send(self(), {:cal_counts, calendar_key(socket)})
+    end
+
+    socket
+    |> assign(:cal_counts, %{})
+    |> assign(:cal_capped?, false)
+    # The one answer worth keeping while the next is in flight: whether the feed
+    # reaches back past this month barely changes from one month to its
+    # neighbour, and the last answer is a better guess than "there is always
+    # more" — which would let the back-step guard (`cal-month`) wave through a
+    # press it is there to refuse. Seeded true on the very first render, where
+    # there is no previous answer to keep.
+    |> assign_new(:cal_earlier?, fn -> true end)
+  end
+
+  # Which question a pending heatmap answers. An answer whose question has moved
+  # on is dropped rather than assigned — it would only recompute the month now
+  # on screen, so this saves work rather than preventing a wrong shading, and
+  # only for a reader who out-paces the sweep.
+  defp calendar_key(socket), do: {socket.assigns.cal_month, effective_filter(socket)}
+
+  defp assign_calendar_counts(socket) do
+    user = socket.assigns.current_user
+    month = socket.assigns.cal_month
+    # The same narrowing the timeline is under, so the shading and the feed
+    # below it can never answer one question two ways. Under "My posts" that is
+    # `:own`, whose source list is the single query counting them used to be.
+    filter = effective_filter(socket)
+
+    %{counts: counts, capped?: capped?} =
+      Posts.feed_activity_by_day(
+        user,
+        Date.beginning_of_month(month),
+        Date.end_of_month(month),
+        filter: filter
+      )
+
+    socket
+    |> assign(:cal_counts, counts)
+    |> assign(:cal_capped?, capped?)
+    # Where the back arrows stop. Asked per month rather than resolved once,
+    # because "is there anything before this month" is one row and a member's
+    # true earliest entry is a nine-source minimum nobody needs.
+    |> assign(:cal_earlier?, Posts.feed_reaches_before_month?(user, month, filter: filter))
+  end
+
+  # Moves the timeline to a point in time — where both controls land. `nil` is
+  # now, and the reload is the *same* `feed_page/2` a mount calls, just handed a
+  # synthetic first cursor: no second query path, so no visibility, block,
+  # language or content filter can be true of one and not the other.
+  #
+  # `day:` is the calendar's shape and carries a lower bound as well, so the
+  # page is one whole day rather than everything up to the end of it. It rides
+  # the cursor, so "Load more" inside a day stops at the day's own edge.
+  #
+  # The pending queue is emptied rather than carried. What was waiting behind
+  # the pill is "new since you got here", which is a claim about **now** and
+  # says nothing on a timeline showing last Tuesday; and the return trip
+  # reloads from the top anyway, so nothing is actually lost by dropping it.
+  # How big a page opening this day should ask for.
+  #
+  # A day the heatmap already knows to be small is fetched **whole**, so the
+  # ordinary case has no "Load more" under it at all — a day is a bounded thing
+  # the reader asked to see, not an endless timeline. Only the busy ones page.
+  # The limit is an upper bound, so a day holding three entries costs three
+  # however generous the number here is.
+  defp day_limit(_socket, nil), do: @travel_page_size
+
+  defp day_limit(socket, day),
+    do: day_page_limit(day_total(socket.assigns.cal_counts, day))
+
+  # The rule itself, in one place: a day the feed knows to be small arrives
+  # whole, a busy one pages.
+  #
+  # It answers for a day the heatmap has not counted yet, too: while the shading
+  # is still in flight (`defer_calendar_counts/1`) every day reads as 0 and
+  # therefore arrives whole. That is the same choice a `/feed?day=…` arrival
+  # makes outright (`feed_payload/3`) and for the same reason — running the
+  # month counter purely to pick between two page sizes costs more than the
+  # larger page does. A quiet day still costs its own size; a busy one opened
+  # inside that window pays a full page instead of a tenth of one.
+  defp day_page_limit(total) when total < @day_full_limit, do: @day_full_limit
+  defp day_page_limit(_total), do: @travel_page_size
+
+  # The day's size, read straight off the heatmap counts, so knowing it costs no
+  # query of its own.
+  #
+  # Derived on every read rather than stored: it is a `Map.get` on two assigns
+  # that both move on their own (a month step replaces the counts, a day click
+  # replaces the day), and a copy would have had to be refreshed on each of
+  # those paths or quietly disagree with the grid it was read from.
+  # `Map.get` answers 0 for a nil day as readily as for a day nothing happened
+  # on, so this needs no clause of its own for "no day open".
+  defp day_total(counts, day), do: Map.get(counts, day, 0)
+
+  defp load_day(socket, day, limit \\ nil) do
+    user = socket.assigns.current_user
+
+    page =
+      Posts.feed_page(user,
+        limit: limit || day_limit(socket, day),
+        cursor: FeedTimeTravel.day_cursor(day),
+        filter: effective_filter(socket)
+      )
+
+    entries =
+      page.entries
+      |> with_engagement(user)
+      |> mark_filtered(socket.assigns.content_filters, user.id)
+
+    socket
+    |> assign(:cal_day, day)
+    # Opening a day from another month moves the calendar to it, or the reader
+    # is looking at a highlighted day that is not on the grid in front of them.
+    |> assign(
+      :cal_month,
+      if(day, do: FeedTimeTravel.month_of(day), else: socket.assigns.cal_month)
+    )
+    |> assign(:more?, page.more?)
+    |> assign(:cursor, page.next_cursor)
+    |> assign(:empty?, entries == [])
+    |> assign(:pending_posts, [])
+    |> assign(:pending_overflow, 0)
+    |> assign(:entries, entries)
+    |> stream(:posts, entries, reset: true)
+    |> watch_pending_photos(entries)
+    |> auto_translate_entries(entries)
   end
 
   @impl true
@@ -1416,8 +1806,18 @@ defmodule VutuvWeb.PostLive.Feed do
   # shown post's stamp so "today" wording becomes "Gestern" and yesterday's
   # falls back to a full date. Shared with notifications + the saved hub; see
   # VutuvWeb.Live.DayClockRestream.
+  # `Vutuv.DayClock` ticks on every whole UTC hour, which is when some reader's
+  # midnight falls. Two things on this page are written in calendar days and
+  # both have to move: every post stamp ("09:50 Uhr" becomes "Gestern, 09:50
+  # Uhr"), and the calendar, whose today ring, folded date and future-day gate
+  # would otherwise hold yesterday until the next reload — with the new day's
+  # own cell greyed out, so the reader could not even click their way back to
+  # it.
   def handle_info(:day_changed, socket) do
-    {:noreply, DayClockRestream.restream(socket, :entries, :posts)}
+    {:noreply,
+     socket
+     |> assign(:cal_today, ViewerClock.today())
+     |> DayClockRestream.restream(:entries, :posts)}
   end
 
   # A post's link screenshot finished capturing (fan-out reaches the viewer over
@@ -1491,6 +1891,18 @@ defmodule VutuvWeb.PostLive.Feed do
     {:noreply, assign(socket, :composer_open?, false)}
   end
 
+  # The month's shading, arriving after the grid it belongs to
+  # (`defer_calendar_counts/1`). Both guards drop work rather than prevent a
+  # wrong answer — the count is taken from the assigns, not from `key`, so a
+  # superseded message would merely recompute the month now on screen.
+  def handle_info({:cal_counts, key}, socket) do
+    if socket.assigns.cal_open? and calendar_key(socket) == key do
+      {:noreply, assign_calendar_counts(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_info(_other, socket), do: {:noreply, socket}
 
   # The queue half of `{:remote_feed_arrival, …}` above: ask this reader's own
@@ -1561,6 +1973,88 @@ defmodule VutuvWeb.PostLive.Feed do
   # How many posts are waiting, drawn or not — what the card and the pill count.
   defp pending_count(assigns), do: length(assigns.pending_posts) + assigns.pending_overflow
 
+  attr(:pending_posts, :list, required: true)
+  attr(:pending_overflow, :integer, required: true)
+
+  attr(:cal_day, :any,
+    required: true,
+    doc: "the travelled-to day, or nil — decides whether the press can be a browser-side reveal"
+  )
+
+  # Fades in as the calendar folds out of the way, so the two read as one
+  # movement rather than as a pop over a jump. An insert plays a keyframe on its
+  # own; a later count tick only patches this node's text, so it does not replay.
+  #
+  # `h-10` and not vertical padding: it stands beside the filter button, which is
+  # `h-10`, and a pill sized by its own line height came out four pixels short of
+  # it.
+  #
+  # A component and not markup in `render/1` so that the quote is flattened once
+  # per arrival rather than once per render: everything below reads `@quote`, and
+  # the whole subtree leaves the diff on any render that did not touch the three
+  # attributes above (a translation landing, the five-minute suggestions
+  # refresh). Computing it into `render/1`'s own assigns would do the opposite —
+  # a key that is not in the incoming assigns is force-assigned, so it would be
+  # dirty on every render, for a pipeline run of about 150 µs each time.
+  defp new_posts_pill(assigns) do
+    assigns = assign(assigns, :quote, newest_quote(assigns.pending_posts))
+
+    ~H"""
+    <div class="feed-teaser-in min-w-0 flex-1 text-center">
+      <button
+        id="show-new-posts"
+        type="button"
+        phx-click={show_pending(assigns)}
+        class="mx-auto flex h-10 w-full max-w-full items-center gap-2 rounded-full bg-brand-50 px-4 text-sm font-semibold text-brand-700 shadow-sm hover:bg-brand-100 sm:w-auto dark:bg-brand-900/40 dark:text-brand-100 dark:hover:bg-brand-900/70"
+      >
+        <span class="shrink-0 tabular-nums">
+          <%!-- An sr-only span and not an `aria-label` on the button: the label
+          would become the whole accessible name and swallow the quote, while
+          this leaves it "Show 3 new posts, @ada, breaking news". --%>
+          <span :if={@quote} class="sr-only">{pending_sentence(assigns)}</span>
+          <span aria-hidden={@quote && "true"}>{pending_label(assigns)}</span>
+        </span>
+        <span
+          :if={@quote}
+          class="flex min-w-0 flex-1 items-baseline gap-1 font-normal text-brand-600 dark:text-brand-200"
+        >
+          <span class="min-w-0 max-w-[45%] shrink truncate">{@quote.who}</span>
+          <span class="min-w-0 flex-1 truncate">{@quote.text}</span>
+        </span>
+      </button>
+    </div>
+    """
+  end
+
+  # What the pill shows. Beside a quote the label is only what introduces it,
+  # "Neu:" or "Neu (3):", because on a phone the whole sentence took the line and
+  # left the quote three letters (Stefan, on a screenshot). The sentence is not
+  # lost: it stays as the button's screen-reader name, where it costs no width.
+  # With nothing to quote there is no colon to hang, so it is said in full.
+  #
+  # A desktop has the room, and takes the short label anyway: the rail's "Not
+  # read yet" card (`unread_body/1`) already lists what is waiting there, so the
+  # pill is not the only teller, and a `md:`-swapped label would put two copies
+  # in the DOM and change the button's accessible name with the viewport.
+  defp pending_label(%{quote: nil} = assigns), do: pending_sentence(assigns)
+
+  defp pending_label(assigns) do
+    count = pending_count(assigns)
+
+    ngettext("New:", "New (%{formatted}):", count, formatted: compact_count(count))
+  end
+
+  defp pending_sentence(assigns) do
+    count = pending_count(assigns)
+
+    ngettext(
+      "Show %{formatted} new post",
+      "Show %{formatted} new posts",
+      count,
+      formatted: compact_count(count)
+    )
+  end
+
   # Showing the waiting posts, in the browser, before the server hears about it.
   #
   # The rows are already drawn (`queue/2`); this drops the marker that hid them
@@ -1581,6 +2075,7 @@ defmodule VutuvWeb.PostLive.Feed do
   # What a "show me" control fires. Past the cap it is the plain event and the
   # server loads a page; under it, the browser does the work first.
   defp show_pending(%{pending_overflow: overflow}) when overflow > 0, do: "show-new"
+  defp show_pending(%{cal_day: %Date{}}), do: "show-new"
   defp show_pending(_assigns), do: reveal_pending()
 
   defp reveal_pending do
@@ -1659,6 +2154,62 @@ defmodule VutuvWeb.PostLive.Feed do
   defp insert_entry(socket, nil, _actor_id), do: {:noreply, socket}
 
   defp insert_entry(socket, entry, actor_id) do
+    if at_now?(socket.assigns) do
+      insert_at_now(socket, entry, actor_id)
+    else
+      insert_while_travelling(socket, entry, actor_id)
+    end
+  end
+
+  # An arrival that reaches a reader with a calendar day open. Its own function
+  # rather than more branches in the `cond` below, because the two situations
+  # take a different action on the same facts.
+  #
+  # It is still **counted**: a reader who went to look at last Tuesday wants to
+  # know the present is filling up behind them, and the pill is how the feed
+  # has always said so. What it must not do is draw the row — that post is not
+  # part of the day on screen, and a hidden card belonging to another day sitting
+  # in this day's stream is a card that appears in the wrong place the moment
+  # anything reveals it. So the entry joins the waiting list without a row, and
+  # `show_pending/1` knows there is nothing to reveal and asks the server
+  # instead (which brings the reader home; see the "show-new" handler).
+  #
+  # The viewer's own post is the exception, as everywhere else: text that
+  # disappears on submit reads as a post that was lost, so writing one is itself
+  # the trip home and that reload carries it.
+  defp insert_while_travelling(socket, entry, actor_id) do
+    user = socket.assigns.current_user
+
+    cond do
+      actor_id == user.id ->
+        {:noreply, socket |> assign(:composer_open?, false) |> load_day(nil) |> sync_url()}
+
+      # The same two gates a queued arrival passes at now: can this post reach
+      # this reader at all, and did they switch its source off.
+      not Posts.reaches_feed?(entry.post, user) ->
+        {:noreply, socket}
+
+      not view_accepts?(socket, entry, actor_id) ->
+        {:noreply, socket}
+
+      true ->
+        # `mark_one/3` and not `decorate/3`: nothing here is streamed, and the
+        # pill only reads the author and the opening line. Decorating would buy
+        # a follow edge and an engagement count per arrival, two queries, for a
+        # card that is never drawn — including the ones the cap throws away.
+        {:noreply, count_away(socket, mark_one(entry, socket.assigns.content_filters, user.id))}
+    end
+  end
+
+  # Waiting posts with no row on the page, because the page is showing another
+  # day. The cap is `trim_pending/1`'s, so the valve has one owner: its
+  # `stream_delete/2` and `Enum.reject/2` are no-ops for an entry that was never
+  # streamed and never added to `@entries`, which is exactly this case.
+  defp count_away(socket, entry) do
+    socket |> update(:pending_posts, &[entry | &1]) |> trim_pending()
+  end
+
+  defp insert_at_now(socket, entry, actor_id) do
     user = socket.assigns.current_user
 
     cond do
@@ -1667,7 +2218,7 @@ defmodule VutuvWeb.PostLive.Feed do
       # feed switches back to All and reloads rather than swallowing the post,
       # which from the composer reads as the post having been lost.
       actor_id == user.id and
-          not Posts.feed_filter_accepts?(socket.assigns.feed_filter, entry) ->
+          not view_accepts?(socket, entry, actor_id) ->
         {:noreply,
          socket
          |> assign(:composer_open?, false)
@@ -1699,7 +2250,7 @@ defmodule VutuvWeb.PostLive.Feed do
       # A post nobody on this tab asked for must not be counted by the pill
       # either: the pill's whole promise is that clicking it shows those posts
       # right here.
-      Posts.feed_filter_accepts?(socket.assigns.feed_filter, entry) ->
+      view_accepts?(socket, entry, actor_id) ->
         {:noreply, queue(socket, decorate(entry, user, socket))}
 
       # It belongs to a source this reader has switched off in the band, so it
@@ -1962,7 +2513,11 @@ defmodule VutuvWeb.PostLive.Feed do
   @impl true
   def render(assigns) do
     ~H"""
-    <div id="feed" class="py-6">
+    <%!-- `FeedUrl` writes the calendar's day into the address bar (see
+    `sync_url/1`). It hangs off the page root rather than off the calendar
+    because there are two calendars, one per breakpoint, and the URL has one
+    owner. --%>
+    <div id="feed" phx-hook="FeedUrl" class="py-6">
       <%!-- Two columns on desktop: the feed, plus the rail that uses the
       otherwise-empty side space. The rail is desktop-only (the grid collapses
       to one column under md, and the rail is hidden anyway). --%>
@@ -2071,19 +2626,57 @@ defmodule VutuvWeb.PostLive.Feed do
             />
           </div>
 
-          <%!-- One line, two controls, and on a phone it is the only way to
-          either of them. The filter button opens the band as a sheet, because
-          the rail it normally lives in does not exist under `md`; the pill
-          brings the waiting posts down and carries the newest one's opening
-          line, since the phone has no "Not read yet" card to say what is
-          waiting rather than merely how much.
+          <%!-- One line, three controls, and on a phone it is the only way to
+          any of them. The calendar is the phone's copy of the rail's — there is
+          no filter column under `md`, and the way back from an opened day is
+          not optional the way the rest of the rail is; the filter button opens
+          the band as a sheet for the same reason; the pill brings the waiting
+          posts down and carries the newest one's opening line, since the phone
+          has no "Not read yet" card to say what is waiting rather than merely
+          how much.
 
-          They share the line and the width is fought over: as soon as there is
-          a quote to read, the filter button drops its word and keeps the glyph
-          alone (Stefan, on the fourth demo). With nothing waiting the row is a
-          phone-only affair, so it hides itself entirely on a desktop rather
-          than leaving a gap above the timeline. --%>
-          <div class={["flex items-center gap-2", @pending_posts == [] && "md:hidden"]}>
+          The line is narrow and they fight over it. Folded, the calendar takes
+          what the filter button leaves; unfolded it claims the whole line and
+          the other two wrap under it, because a month grid squeezed beside a
+          button draws day cells too small to hit. And as soon as posts are
+          waiting the folded calendar leaves altogether — one class, one CSS
+          transition, no hook (`.feed-cal-slot--away`) — so the quote gets the
+          width; the filter button drops its word in the same breath and keeps
+          the glyph alone (Stefan, on the fourth demo). Nothing is stranded by
+          that: the pill is what brings a travelling reader home anyway, and
+          pressing it puts the calendar back.
+
+          With nothing waiting the pill is absent and the other two are
+          phone-only, so on a desktop the row hides itself rather than leaving
+          a gap above the timeline. --%>
+          <div
+            id="feed-mobile-controls"
+            class={["flex flex-wrap items-center gap-2", @pending_posts == [] && "md:hidden"]}
+          >
+            <%!-- The wrapper collapses, not the card: a card cannot shrink past
+            its own padding and ring (border-box floors its width there), and
+            clipping it from outside costs nothing. --%>
+            <div
+              id="feed-calendar-mobile-slot"
+              class={[
+                "feed-cal-slot md:hidden",
+                @cal_open? && "basis-full",
+                @pending_posts != [] && !@cal_open? && "feed-cal-slot--away"
+              ]}
+            >
+              <.feed_calendar
+                id="feed-calendar-mobile"
+                open?={@cal_open?}
+                earlier?={@cal_earlier?}
+                month={@cal_month}
+                day={@cal_day}
+                metric={@cal_metric}
+                counts={@cal_counts}
+                capped?={@cal_capped?}
+                today={@cal_today}
+              />
+            </div>
+
             <button
               type="button"
               id="open-filter-sheet"
@@ -2108,32 +2701,12 @@ defmodule VutuvWeb.PostLive.Feed do
               <span :if={@pending_posts == []}>{pgettext("feed filter sheet", "Filter")}</span>
             </button>
 
-            <div :if={@pending_posts != []} class="min-w-0 flex-1 text-center">
-              <button
-                id="show-new-posts"
-                type="button"
-                phx-click={show_pending(assigns)}
-                class="mx-auto flex w-full max-w-full items-center gap-2 rounded-full bg-brand-50 px-4 py-2 text-sm font-semibold text-brand-700 shadow-sm hover:bg-brand-100 sm:w-auto dark:bg-brand-900/40 dark:text-brand-100 dark:hover:bg-brand-900/70"
-              >
-                <span class="shrink-0 tabular-nums">
-                  {ngettext(
-                    "Show %{formatted} new post",
-                    "Show %{formatted} new posts",
-                    pending_count(assigns),
-                    formatted: compact_count(pending_count(assigns))
-                  )}
-                </span>
-                <span
-                  :if={newest_quote(@pending_posts)}
-                  class="flex min-w-0 flex-1 items-baseline gap-1 font-normal text-brand-600 dark:text-brand-200"
-                >
-                  <span class="min-w-0 max-w-[45%] shrink truncate">
-                    {newest_quote(@pending_posts).who}
-                  </span>
-                  <span class="min-w-0 flex-1 truncate">{newest_quote(@pending_posts).text}</span>
-                </span>
-              </button>
-            </div>
+            <.new_posts_pill
+              :if={@pending_posts != []}
+              pending_posts={@pending_posts}
+              pending_overflow={@pending_overflow}
+              cal_day={@cal_day}
+            />
           </div>
 
           <%!-- The timeline is one card of flat divide-y rows — the same
@@ -2227,15 +2800,35 @@ defmodule VutuvWeb.PostLive.Feed do
           empty page with no hint that they emptied it themselves. A feed that
           is empty with both halves on keeps the general invitation, which is
           the one that helps a new member. --%>
+          <%!-- Travelled back past the beginning of this member's feed. Neither
+          sentence below fits that: one blames a source switch and the other
+          tells somebody with a full timeline to go find people to follow. What
+          is actually true is that nothing had reached them yet by then, and the
+          only useful control is the way back. --%>
+          <.card :if={@empty? && !at_now?(assigns)} class="text-center">
+            <p class="text-slate-600 dark:text-slate-400">
+              {gettext("Nothing reached your feed on %{day}.",
+                day: ViewerClock.format(@cal_day, :date)
+              )}
+            </p>
+            <.button phx-click="travel-now" class="mt-3">{gettext("Back to now")}</.button>
+          </.card>
+
           <p
-            :if={@empty? && @pending_posts == [] && @feed_filter != :all}
+            :if={
+              @empty? && @pending_posts == [] && @feed_filter != :all &&
+                at_now?(assigns)
+            }
             class="text-slate-600 dark:text-slate-400"
           >
             {feed_filter_empty_text(to_string(@feed_filter))}
           </p>
 
           <p
-            :if={@empty? && @pending_posts == [] && @feed_filter == :all}
+            :if={
+              @empty? && @pending_posts == [] && @feed_filter == :all &&
+                at_now?(assigns)
+            }
             class="text-slate-600 dark:text-slate-400"
           >
             {gettext("Nothing here yet. Follow people to fill your feed, or write your first post.")}
@@ -2248,6 +2841,30 @@ defmodule VutuvWeb.PostLive.Feed do
           </p>
 
           <.load_more :if={@more?} />
+
+          <%!-- On a busy day, the second way out: the reader opened a bounded
+          thing and "Load more" walks it ten at a time. Only shown when there is
+          actually more of the day left, and only for a day — at now there is no
+          "all", the feed goes back forever. --%>
+          <%!-- `day_total > 0` as well: the count comes from the heatmap, which
+          is only computed while the calendar is unfolded, and a button offering
+          "the whole day (0 posts)" would be worse than no button. --%>
+          <div :if={@more? && @cal_day && day_total(@cal_counts, @cal_day) > 0} class="text-center">
+            <button
+              type="button"
+              id="load-day-all"
+              phx-click="load-day-all"
+              phx-disable-with={gettext("Loading…")}
+              class="text-sm font-semibold text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+            >
+              {ngettext(
+                "Load the whole day (%{formatted} post)",
+                "Load the whole day (%{formatted} posts)",
+                day_total(@cal_counts, @cal_day),
+                formatted: delimited_count(day_total(@cal_counts, @cal_day))
+              )}
+            </button>
+          </div>
 
           <%!-- On mobile (where the desktop rail is hidden) the "Other formats"
           card drops to the bottom of the page; the rail itself stays
@@ -2266,6 +2883,24 @@ defmodule VutuvWeb.PostLive.Feed do
         WITH the page on purpose: a lazily loaded rail popped in after the paint
         and read as slowness (the v7.200.3 laziness was undone). --%>
         <aside id="feed-rail" class="hidden space-y-6 md:block">
+          <%!-- The calendar variant lives here, at the top of the filter
+          column, because that is where a month grid belongs: beside the
+          timeline it describes rather than on top of it. Deliberately ABOVE
+          the arrangeable cards and not one of them — it is a navigation
+          control, not a card the reader curates away, and putting it in the
+          rail's stored order would let somebody hide the only way back. --%>
+          <.feed_calendar
+            id="feed-calendar-rail"
+            open?={@cal_open?}
+            earlier?={@cal_earlier?}
+            month={@cal_month}
+            day={@cal_day}
+            metric={@cal_metric}
+            counts={@cal_counts}
+            capped?={@cal_capped?}
+            today={@cal_today}
+          />
+
           <%!-- Every card is dragged by its own grip and the hook pushes the
           sequence they were dropped into. That sequence lists only what is on
           screen — half these cards are conditional — which is why
