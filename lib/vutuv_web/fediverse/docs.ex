@@ -705,22 +705,50 @@ defmodule VutuvWeb.Fediverse.Docs do
   @doc "The Note a public post federates as."
   def note(%Post{} = post, user) do
     remote = remote_target(post)
+    # Resolved **once** and threaded from here. `reply_parent/1` ends in a
+    # `Posts.restricted?/1` lookup and four things in this build want the answer
+    # (issue #1739) — asking each of them separately cost three needless queries
+    # per published answer, on the member's own request. Skipped entirely when
+    # the post answers another network: `inReplyTo` names that note then, not
+    # the vutuv post underneath, and every consumer below follows suit.
+    parent = if is_nil(remote), do: reply_parent(post), else: nil
+    answered = answered_account(remote, parent)
     hashtags = hashtags(post)
 
     %{
       "id" => note_url(user, post.id),
       "type" => "Note",
       "attributedTo" => actor_url(user),
-      "content" => content_html(post, remote, hashtags),
+      "content" => content_html(post, answered, hashtags),
       "published" => iso8601(post.inserted_at),
       "to" => [@public],
-      "cc" => cc(user, remote),
+      "cc" => cc(user, answered),
       "url" => note_url(user, post.id)
     }
     |> put_content_map(post)
-    |> put_in_reply_to(post, remote)
-    |> put_tag(post, remote, hashtags)
+    |> put_in_reply_to(remote, parent)
+    |> put_tag(post, answered, hashtags)
     |> put_attachments(post)
+  end
+
+  # The account this post answers, reduced to the two fields every consumer
+  # below needs: the actor URI a receiving server resolves, and the handle a
+  # reader sees. Two sources — a note on another server (issue #1070) or a post
+  # of ours (issue #1739) — and past this function nothing can tell them apart,
+  # which is the point: the `cc`, the `Mention` and the leading handle are the
+  # same act whichever network the answered account is on.
+  defp answered_account(%PostRemoteReply{} = ref, _parent),
+    do: {ref.actor_uri, mention_handle(ref)}
+
+  defp answered_account(nil, nil), do: nil
+
+  # The one thing the `inReplyTo` above does **not** ask: whether the answered
+  # member is out there at all. A non-federating member serves no actor document
+  # (`with_federated_user/3` 404s it), so naming them would put a handle in the
+  # visible text of the post linking to a URL that answers nothing — while the
+  # dangling `inReplyTo` beside it costs a reader nothing but the missing parent.
+  defp answered_account(nil, {author, _id}) do
+    if Vutuv.Fediverse.federated?(author), do: {actor_url(author), handle(author)}
   end
 
   # The author's declared language federates as AS2 `contentMap` (issue
@@ -740,13 +768,18 @@ defmodule VutuvWeb.Fediverse.Docs do
   defp remote_target(%Post{}), do: nil
 
   # A public answer is addressed like any other public post, plus the person it
-  # answers. Naming them in `cc` (rather than `to`) is what Mastodon does for a
-  # public reply: the post stays public, and the mentioned actor is delivered to
-  # directly so it lands in their notifications.
+  # answers — whichever network they are on. Naming them in `cc` (rather than
+  # `to`) is what Mastodon does for a public reply: the post stays public, and
+  # the mentioned actor is delivered to directly so it lands in their
+  # notifications.
+  #
+  # The local branch is issue #1739. An answer to a **vutuv** post used to name
+  # nobody at all, so the answered member's own remote followers never received
+  # it and no reader out there was told who was being answered — while an answer
+  # to a remote note had carried exactly this since #1070. One act, two shapes,
+  # and the vutuv-facing one was the poorer of them.
   defp cc(user, nil), do: [followers_url(user)]
-
-  defp cc(user, %PostRemoteReply{actor_uri: actor_uri}),
-    do: [followers_url(user), actor_uri]
+  defp cc(user, {actor_uri, _handle}), do: [followers_url(user), actor_uri]
 
   # The `Mention` tag is what makes the remote server notify the person answered
   # and thread the reply under theirs.
@@ -758,8 +791,17 @@ defmodule VutuvWeb.Fediverse.Docs do
   #
   # It shares the array with the post's hashtags (issue #1421), so both are
   # written here rather than each overwriting the other's key.
-  defp put_tag(note, post, remote, hashtags) do
-    case mention_tag(remote) ++ local_mention_tags(post) ++ Enum.map(hashtags, &hashtag_tag/1) do
+  defp put_tag(note, post, answered, hashtags) do
+    tags =
+      mention_tag(answered) ++
+        local_mention_tags(post) ++ Enum.map(hashtags, &hashtag_tag/1)
+
+    # The answered author may *also* be named in the body, and then
+    # `local_mention_tags/1` mints a second, identical `Mention` for them.
+    # Deduplicated by what a receiving server actually resolves — type plus
+    # href — so each account is announced once however many ways the post
+    # happens to name it.
+    case Enum.uniq_by(tags, &{&1["type"], &1["href"]}) do
       [] -> note
       tags -> Map.put(note, "tag", tags)
     end
@@ -783,7 +825,7 @@ defmodule VutuvWeb.Fediverse.Docs do
   defp local_mention_tags(%Post{body: body}) when is_binary(body) do
     (Mentions.mentioned_users(body) ++ mentioned_pages(body))
     |> Enum.filter(&Vutuv.Fediverse.federated?/1)
-    |> Enum.map(&%{"type" => "Mention", "href" => actor_url(&1), "name" => handle(&1)})
+    |> Enum.map(&mention(actor_url(&1), handle(&1)))
   end
 
   defp local_mention_tags(_post), do: []
@@ -802,16 +844,13 @@ defmodule VutuvWeb.Fediverse.Docs do
   end
 
   defp mention_tag(nil), do: []
+  defp mention_tag({actor_uri, handle}), do: [mention(actor_uri, handle)]
 
-  defp mention_tag(%PostRemoteReply{} = ref) do
-    [
-      %{
-        "type" => "Mention",
-        "href" => ref.actor_uri,
-        "name" => mention_handle(ref)
-      }
-    ]
-  end
+  # The one owner of the `Mention` shape. It was written out three times — the
+  # answered account on either network, and each account the body names — so the
+  # next field a receiving server wants would have had to be remembered three
+  # times too.
+  defp mention(href, name), do: %{"type" => "Mention", "href" => href, "name" => name}
 
   defp hashtag_tag(%{name: name, href: href}),
     do: %{"type" => "Hashtag", "href" => href, "name" => name}
@@ -925,19 +964,19 @@ defmodule VutuvWeb.Fediverse.Docs do
   # sidecar is rendered INTO the content: the Note is one more rendering of
   # the post (like the agent docs), so a Mastodon reader gets the reviewed
   # work's facts even though remote software knows nothing of review cards.
-  defp content_html(post, remote, hashtags) do
+  defp content_html(post, answered, hashtags) do
     body_html =
       post.body
       |> VutuvWeb.Markdown.render_post(images(post), mention_form: :address)
       |> Phoenix.HTML.safe_to_string()
 
-    (mention_html(remote) <>
+    (mention_html(answered) <>
        body_html <> PostComponents.review_content_html(post) <> hashtag_line(hashtags))
     |> absolutize()
   end
 
   # The chips as a closing line of `#hashtags`, added **here, on the wire, only**
-  # (issue #1421) — the same seam `mention_html/1` above uses, and for the same
+  # (issue #1421) — the same seam `mention_html/1` below uses, and for the same
   # reason: on vutuv these are chips under the post, and nobody's stored body
   # grows a line it was not written with. Only the tags the body does not
   # already name, or the post would print them twice.
@@ -969,18 +1008,19 @@ defmodule VutuvWeb.Fediverse.Docs do
   # It is added **here, on the wire, only** — the member's stored body does not
   # carry it. On vutuv the answer shows a "Replying to" line instead, so a member
   # who has never heard of Mastodon does not have to type a handle in a foreign
-  # format, and their post does not read like a foreign one. The handle is remote
-  # supplied, so it is escaped.
+  # format, and their post does not read like a foreign one.
+  #
+  # Both halves of the pair are escaped. One of them is remote supplied, and the
+  # other only looks safe: a handle of ours is a username, and what a username
+  # may contain is a rule in another module's changeset, not a promise to this
+  # one. Issue #1739 is the vutuv branch — an answer to a member here used to
+  # open with nothing, so a Mastodon reader saw a post that read like the start
+  # of a conversation.
   defp mention_html(nil), do: ""
 
-  defp mention_html(%PostRemoteReply{} = ref) do
-    handle =
-      ref |> mention_handle() |> Phoenix.HTML.html_escape() |> Phoenix.HTML.safe_to_string()
-
-    href = ref.actor_uri |> Phoenix.HTML.html_escape() |> Phoenix.HTML.safe_to_string()
-
-    ~s(<p><span class="h-card"><a href="#{href}" class="u-url mention">#{handle}</a></span></p>)
-  end
+  defp mention_html({href, handle}),
+    do:
+      ~s(<p><span class="h-card"><a href="#{escape(href)}" class="u-url mention">#{escape(handle)}</a></span></p>)
 
   # Remote servers are anonymous viewers: only AI-released images may render
   # inline (released_images/1 also handles an un-preloaded association).
@@ -1001,27 +1041,46 @@ defmodule VutuvWeb.Fediverse.Docs do
   # own `inReplyTo` back to our post, so this is what puts the answer in the right
   # place in the conversation on the other server. The URI is the durable copy
   # from the sidecar, so it still resolves after the cached note is collected.
-  defp put_in_reply_to(note, _post, %PostRemoteReply{in_reply_to_uri: uri}),
+  defp put_in_reply_to(note, %PostRemoteReply{in_reply_to_uri: uri}, _parent),
     do: Map.put(note, "inReplyTo", uri)
 
-  # Otherwise inReplyTo only when the parent's author federates too — a
-  # non-federating author serves no Note at that id, and remote servers could
-  # drop the post over an id that does not resolve.
-  defp put_in_reply_to(note, post, nil) do
-    case reply_parent(post) do
-      nil -> note
-      {parent_author, parent_id} -> Map.put(note, "inReplyTo", note_url(parent_author, parent_id))
-    end
-  end
+  # Otherwise: an answer says it is an answer, **whatever stands at the other end
+  # of the field** (issue #1739). It used to be written only when the answered
+  # author federates, and `fediverse_followers?` defaults to off — so most answers
+  # travelled stripped of the one field saying they *were* answers, and every
+  # receiving server filed them as fresh threads. Mastodon does hide an answer to
+  # somebody you do not follow (`filter_from_home` in `app/lib/feed_manager.rb`),
+  # but only once it knows a post is an answer.
+  #
+  # So the id is named even when nothing serves a Note at it. That reference
+  # dangles by design, and the two things it costs are worth knowing: a reader
+  # cannot open the post being answered, and Mastodon drops such an answer from
+  # its **home** timelines entirely rather than merely filtering it by who you
+  # follow (same rule, the `in_reply_to_id.nil?` branch) — it stays on the
+  # profile and at its own link. The member being answered kept out of the
+  # Fediverse, so their post is not findable out there either way; what changes
+  # is that the answer no longer pretends to open a conversation.
+  defp put_in_reply_to(note, nil, nil), do: note
 
+  defp put_in_reply_to(note, nil, {parent_author, parent_id}),
+    do: Map.put(note, "inReplyTo", note_url(parent_author, parent_id))
+
+  # The post this one answers, as the pair that names it: the author whose
+  # handle spells the URL, and the id. Nothing is asked about the author — see
+  # `put_in_reply_to/3` — with one exception, which is not about resolvability
+  # but about privacy: a **restricted** parent is not public, so publishing its
+  # URL would put its id (and, the id being a UUID v7, the minute it was
+  # written) in front of readers who may not see the post itself. An answer
+  # under one of those still travels; it is the one shape left that travels
+  # without saying what it answers.
   defp reply_parent(%Post{reply_ref: %Ecto.Association.NotLoaded{}}), do: nil
   defp reply_parent(%Post{reply_ref: nil}), do: nil
 
   defp reply_parent(%Post{reply_ref: reply_ref}) do
     with author when not is_nil(author) <- parent_author(reply_ref),
-         true <- Vutuv.Fediverse.federated?(author),
-         false <- Vutuv.Posts.restricted?(%Post{id: reply_ref.parent_post_id}) do
-      {author, reply_ref.parent_post_id}
+         parent_id when is_binary(parent_id) <- reply_ref.parent_post_id,
+         false <- Vutuv.Posts.restricted?(%Post{id: parent_id}) do
+      {author, parent_id}
     else
       _ -> nil
     end
