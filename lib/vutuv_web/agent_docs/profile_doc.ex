@@ -31,6 +31,7 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
   alias Vutuv.Repo
   alias Vutuv.Tags.UserTag
   alias VutuvWeb.AgentDocs
+  alias VutuvWeb.AgentDocs.PostDoc
   alias VutuvWeb.AgentDocs.SectionDocs
   alias VutuvWeb.Fediverse.Docs
   alias VutuvWeb.PostTeaser
@@ -352,6 +353,9 @@ defmodule VutuvWeb.AgentDocs.ProfileDoc do
       url: RemotePost.origin(remote),
       published_on: DateTime.to_date(remote.published_at),
       excerpt: PostTeaser.line(remote),
+      # What it quotes (issue #1609), through the same builder the archive and
+      # tag-page docs use — the profile renders the identical card.
+      quote: PostDoc.quoted_entry(remote),
       reposted_by: entry.reposted_by && UserHelpers.full_name(entry.reposted_by),
       pinned: false,
       network: "fediverse",

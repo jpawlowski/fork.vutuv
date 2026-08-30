@@ -3233,6 +3233,7 @@ defmodule Vutuv.Posts do
         by_post =
           unique
           |> attach_remote_images()
+          |> attach_remote_quotes()
           |> attach_remote_follows(viewer)
           |> attach_remote_likes(viewer)
           |> Map.new(&{&1.post_id, &1})
@@ -3365,6 +3366,7 @@ defmodule Vutuv.Posts do
       posts
       |> dedupe_remote()
       |> attach_remote_images()
+      |> attach_remote_quotes()
       |> attach_remote_follows(viewer)
 
     attach_remote_likes(posts ++ replies, viewer)
@@ -3431,6 +3433,19 @@ defmodule Vutuv.Posts do
     by_post = remote |> Enum.map(& &1.remote_post.id) |> Vutuv.Fediverse.list_remote_images()
 
     Enum.map(remote, &Map.put(&1, :images, Map.get(by_post, &1.remote_post.id, [])))
+  end
+
+  # What each cached post quotes (issue #1609), read for the whole page at once
+  # — and **here**, after `dedupe_remote/1`, rather than in the four remote feed
+  # sources that fill it. Every source over-fetches (`Vutuv.FeedPage.paginate/3`
+  # asks each for more rows than the page can hold, then takes the best ones),
+  # so preloading at the source pays four times over for roughly four times the
+  # rows that survive. Ecto skips an association nothing needs, so a page where
+  # nobody quotes anything costs no query at all.
+  defp attach_remote_quotes(remote) do
+    quoted = remote |> Enum.map(& &1.remote_post) |> Vutuv.Fediverse.with_quotes()
+
+    Enum.zip_with(remote, quoted, &Map.put(&1, :remote_post, &2))
   end
 
   @doc """
@@ -4931,6 +4946,7 @@ defmodule Vutuv.Posts do
 
     from(p in RemotePost, where: p.id in ^ids, preload: [:remote_account, :screenshot])
     |> Repo.all()
+    |> Vutuv.Fediverse.with_quotes()
     |> Map.new(&{&1.id, {&1, Map.get(images, &1.id, [])}})
   end
 

@@ -1007,7 +1007,7 @@ defmodule VutuvWeb.AgentDocs.Markdown do
 
   defp post_line(post) do
     "- #{post.published_on}#{pin_suffix(post)}#{repost_suffix(post)}: " <>
-      "[#{md_text(entry_label(post))}](#{post.url})"
+      "[#{md_text(entry_label(post))}](#{post.url})#{quote_suffix(post)}"
   end
 
   @doc false
@@ -1026,6 +1026,19 @@ defmodule VutuvWeb.AgentDocs.Markdown do
   end
 
   defp picture_note(count), do: ngettext("(a picture)", "(%{count} pictures)", count)
+
+  @doc false
+  # What the entry quotes (issue #1609), shared with the plain-text renderer.
+  # The card on the page shows the quoted post's author and words; an agent gets
+  # the same two facts as a sentence, because an entry that only reacts to
+  # something ("exactly this") is unreadable without it.
+  def quote_suffix(%{quote: %{url: url, author: nil}}),
+    do: " — " <> gettext("Quotes %{url}", url: url)
+
+  def quote_suffix(%{quote: %{url: url, author: author}}),
+    do: " — " <> gettext("Quotes %{name}: %{url}", name: author, url: url)
+
+  def quote_suffix(_post), do: ""
 
   @doc false
   # The post the member showcases on their profile (issue #1110). Only the

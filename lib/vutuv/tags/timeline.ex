@@ -387,6 +387,7 @@ defmodule Vutuv.Tags.Timeline do
       preload: [:screenshot, remote_account: ^from(a in RemoteAccount)]
     )
     |> Repo.all()
+    |> Fediverse.with_quotes()
     |> Map.new(&{&1.id, &1})
   end
 end

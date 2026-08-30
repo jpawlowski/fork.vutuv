@@ -45,6 +45,7 @@ defmodule VutuvWeb.PostComponents do
   alias Vutuv.Posts.PostRemoteReply
   alias Vutuv.Posts.PostReview
   alias Vutuv.Posts.PostScreenshot
+  alias Vutuv.Posts.Screenshots
   alias Vutuv.Profiles.VerifiedLinks
   alias Vutuv.RemoteMedia
   alias Vutuv.ReviewCover
@@ -54,6 +55,7 @@ defmodule VutuvWeb.PostComponents do
   alias VutuvWeb.Live.PostTranslations
   alias VutuvWeb.Markdown
   alias VutuvWeb.PostLive.RemoteActionsComponent
+  alias VutuvWeb.PostTeaser
   alias VutuvWeb.UserHelpers
 
   # The idle tint every action control wears while it is off, paired with each
@@ -2478,7 +2480,7 @@ defmodule VutuvWeb.PostComponents do
       # and a second knob for remote posts is one nobody would know to look for.
       |> assign(:body_style, post_body_style(User.post_prefs(assigns.viewer)))
       |> assign(:account, account)
-      |> assign(:initials, name_initials(RemoteAccount.display_name(account) || account.handle))
+      |> assign(:initials, remote_initials(account))
       |> assign_remote_link_screenshot(post, assigns.images)
       |> assign(:permalink, remote_post_permalink(post, assigns.viewer))
       |> assign(:origin, RemotePost.origin(post))
@@ -2598,8 +2600,7 @@ defmodule VutuvWeb.PostComponents do
           <.remote_body
             warning={
               RemotePost.warned?(@remote_post) &&
-                (translated_summary(@translation, @remote_post.summary) ||
-                   gettext("Marked as sensitive by its author"))
+                (translated_summary(@translation, @remote_post.summary) || sensitive_note())
             }
             text={@translation.body_source}
             lang={@translation.lang}
@@ -2623,6 +2624,8 @@ defmodule VutuvWeb.PostComponents do
             subject_id={@remote_post.id}
           />
 
+          <.quoted_post :if={RemotePost.quoting?(@remote_post)} remote_post={@remote_post} />
+
           <.remote_post_images images={@images} />
 
           <%!-- The same bar, from the same component (issues #1164, #1165,
@@ -2641,6 +2644,179 @@ defmodule VutuvWeb.PostComponents do
     </article>
     """
   end
+
+  attr(:remote_post, :map, required: true, doc: "a Vutuv.Fediverse.RemotePost, quotes preloaded")
+
+  @doc """
+  What a post from another network quotes (issue #1609) — a card, a link, or
+  nothing at all.
+
+  The three states are the whole feature, and which one renders is not a matter
+  of taste:
+
+    * **a card**, when the quoted author demonstrably agreed. That is a
+      self-quote, or a FEP-044f `QuoteAuthorization` this installation fetched
+      from the quoted object's own host and matched against both sides
+      (`Vutuv.Fediverse.resolve_quote/1`).
+    * **a link**, for every quote we could not establish that about — an
+      unresolved one, a stamp that did not check out, a quoted post we cannot
+      reach or may not hold, and a quote of one of **our** posts, which will
+      stay a link until this installation issues stamps of its own (issue
+      #1608). Showing somebody else's words inside a card on nothing but the
+      quoting server's say-so is precisely what the consent mechanism exists to
+      prevent; a link says the same thing and claims nothing.
+    * **nothing**, when the author already wrote that link in their own text.
+      The commonest quote today is written by a client that puts the URL in the
+      body *and* in the property, and printing it a second time under it reads
+      as a bug.
+
+  Only ever one level deep: the card renders the quoted post's own text, never
+  the card of whatever *it* quotes. That is also why the resolver stops after
+  one hop — a chain of quotes is a chain of strangers' servers, and no reader
+  asked to descend it.
+  """
+  def quoted_post(assigns) do
+    quoted = RemotePost.quoted(assigns.remote_post)
+    card = if RemotePost.quote_card?(assigns.remote_post), do: card_record(quoted)
+
+    assigns =
+      assigns
+      |> assign(:card, card)
+      |> assign(:link, !card && quoted_link(assigns.remote_post, quoted))
+
+    ~H"""
+    <.quoted_post_card :if={@card} quoted={@card} />
+
+    <%!-- A vutuv target gets its own permalink rather than the spelling the
+    quoting server happened to use, so the reader stays here; anything else
+    leaves in a new tab, like every other way out of a remote card. Which of the
+    two it is rides in the attributes, so the label and its styling are written
+    once. --%>
+    <p :if={@link} class="mb-0 mt-2 text-sm" data-quoted-post-link={@remote_post.quote_uri}>
+      <.link
+        {@link}
+        class="font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300"
+      >
+        {gettext("Quoted post")}
+      </.link>
+    </p>
+    """
+  end
+
+  # Only a cached post is ever drawn as a card — `RemotePost.quote_card?/1` says
+  # why a vutuv target is not — so anything else answers nil and stays a link.
+  defp card_record({:remote, %RemotePost{} = quoted}), do: quoted
+  defp card_record(_other), do: nil
+
+  attr(:quoted, :map, required: true, doc: "the quoted Vutuv.Fediverse.RemotePost")
+
+  # The quoted post itself, compact: who wrote it, and four lines of what they
+  # wrote. The whole tile is the link to the original, because there is nothing
+  # else to do with it here — the actions belong to the post that quotes it.
+  #
+  # A quoted post its author put behind a content warning shows the warning and
+  # nothing else. There is no reveal here: the card is inside a link, and a
+  # click-to-open lid inside a click-to-leave tile is a control that fights
+  # itself. The reader who wants it has the original one tap away.
+  defp quoted_post_card(assigns) do
+    quoted = assigns.quoted
+    account = quoted.remote_account
+
+    assigns =
+      assigns
+      |> assign(:account, account)
+      |> assign(:initials, remote_initials(account))
+      |> assign(:warning, quoted_warning(quoted))
+      |> assign(:teaser, PostTeaser.plain_line(quoted, length: 320))
+
+    ~H"""
+    <a
+      href={RemotePost.origin(@quoted)}
+      target="_blank"
+      rel="nofollow noopener noreferrer"
+      data-quoted-post={@quoted.id}
+      class="mt-3 block rounded-xl bg-slate-50 p-3 no-underline ring-1 ring-slate-200 hover:bg-slate-100 dark:bg-slate-800/50 dark:ring-slate-700 dark:hover:bg-slate-800"
+    >
+      <span class="flex items-center gap-2">
+        <.remote_avatar initials={@initials} src={RemoteAccount.avatar_url(@account)} />
+        <span class="min-w-0">
+          <span class="block truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+            {RemoteAccount.label(@account)}
+          </span>
+          <span class="block truncate text-xs text-slate-500 dark:text-slate-400">
+            {RemoteAccount.display_handle(@account)}
+          </span>
+        </span>
+      </span>
+
+      <span :if={@warning} class="mt-2 block text-sm italic text-slate-500 dark:text-slate-400">
+        {@warning}
+      </span>
+
+      <span
+        :if={!@warning and @teaser != ""}
+        class="mt-2 line-clamp-4 block text-sm text-slate-700 dark:text-slate-300"
+      >
+        {@teaser}
+      </span>
+    </a>
+    """
+  end
+
+  defp quoted_warning(%RemotePost{} = quoted) do
+    if RemotePost.warned?(quoted), do: quoted.summary || sensitive_note()
+  end
+
+  # What a post with no content warning of its own says when its author marked
+  # it sensitive. One definition, because the full card and the quoted card both
+  # fall back to it.
+  defp sensitive_note, do: gettext("Marked as sensitive by its author")
+
+  # The monogram on a remote avatar: the display name alone, never falling back
+  # to the handle for the letters — `RemoteAccount.display_name/1` exists for
+  # exactly that distinction, and the full card and the quoted card must draw
+  # the same tile for the same account.
+  defp remote_initials(account),
+    do: name_initials(RemoteAccount.display_name(account) || account.handle)
+
+  # Where the fallback link goes, or nil when there is nothing to add: no quote
+  # at all, or a body that already carries the URL. Both spellings of the quoted
+  # post count as "already there" — the canonical id servers exchange, and the
+  # display URL a person copies out of their browser — because an author who
+  # pasted either one has written this line themselves.
+  defp quoted_link(%RemotePost{} = post, quoted) do
+    if quoted && not quote_in_body?(post, quoted), do: quoted_href(quoted)
+  end
+
+  # Where the link goes, best spelling first: our own permalink, then the quoted
+  # post's **browsable** URL through `RemotePost.origin/1` — on several servers
+  # the canonical AP id is not a page a person can open, and this is the
+  # commoner branch, since an unverified quote is the ordinary case today. The
+  # bare URI is the last resort, for a quote we never resolved.
+  defp quoted_href({:local, local}), do: %{navigate: Posts.path(local)}
+  defp quoted_href({:remote, quoted}), do: external_link(RemotePost.origin(quoted))
+  defp quoted_href({:uri, uri}), do: external_link(uri)
+
+  defp external_link(url),
+    do: %{href: url, target: "_blank", rel: "nofollow noopener noreferrer"}
+
+  # Read as **whole URLs** (`Screenshots.extract_urls/1`, the same reader the
+  # link-screenshot gate runs over this very field) rather than as a substring
+  # search: a body mentioning `…/notes/12` would otherwise swallow the link to
+  # `…/notes/1`. Both spellings of the quoted post count as "already there" —
+  # the id its server exchanges, and the browsable URL a person copies.
+  defp quote_in_body?(%RemotePost{content_text: text} = post, quoted) when is_binary(text) do
+    written = Screenshots.extract_urls(text)
+
+    [post.quote_uri, quoted_browsable_url(quoted)]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.any?(&(&1 in written))
+  end
+
+  defp quote_in_body?(%RemotePost{}, _quoted), do: false
+
+  defp quoted_browsable_url({:remote, %RemotePost{} = quoted}), do: RemotePost.origin(quoted)
+  defp quoted_browsable_url(_other), do: nil
 
   defp origin_label(post) do
     if RemotePost.question?(post),
