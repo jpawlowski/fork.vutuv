@@ -1380,7 +1380,10 @@ defmodule VutuvWeb.ShellLive do
     Note this swap is SERVER-rendered, so it does not inherit the deploy trap
     the `icon_scroll_top` comment below describes: only one glyph is ever in
     the markup, and a phone still holding the previous release's stylesheet
-    across a deploy has nothing to hide. --%>
+    across a deploy has nothing to hide.
+
+    `select-none` comes from the same report: a long press on a tab that starts
+    selecting its label is what an app never does and a web page always does. --%>
     <.link
       href={@href}
       data-nav-item
@@ -1412,6 +1415,12 @@ defmodule VutuvWeb.ShellLive do
   # move and the same one the phone apps make. The offset is what makes it work
   # on both faces: without it, a brand-coloured ring drawn straight onto the
   # brand-coloured initials circle is invisible.
+  #
+  # The colour is named rather than `ring-current`, so this one ornament does
+  # NOT follow the press paint: while another tab is being pressed, this tab's
+  # label greys to `--press-off-fg` and its ring stays brand until the new
+  # document paints. `ring-current` is not the fix — the initials fallback is
+  # `text-white`, so currentColor there is a white ring on a white bar.
   defp tab_avatar_ring do
     "ring-2 ring-brand-700 ring-offset-1 ring-offset-white dark:ring-brand-200 dark:ring-offset-slate-900"
   end

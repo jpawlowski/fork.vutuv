@@ -24,6 +24,11 @@ defmodule VutuvWeb.ShellLiveTest do
     user
   end
 
+  # The phone tab bar as a selector prefix. The top bar's icon row links to the
+  # same places, so a bare `nav a[href=...]` does not say which bar it means —
+  # it only picks one today because that row is a `div`.
+  defp tabs, do: ~s(nav[data-nav-bar="tabs"])
+
   # An accepted conversation holding one message the user has not read.
   defp with_unread_message(user) do
     other = insert(:user)
@@ -386,8 +391,11 @@ defmodule VutuvWeb.ShellLiveTest do
     # where a hue swap on the same silhouette does not.
     #
     # Calibrated against the un-fixed code: before the change every tab
-    # rendered `fill="none"`, so the first assertion failed and the second
-    # passed — reverting `tab/1` and the icons turns this red.
+    # rendered `fill="none"`, so the first assertion failed — reverting `tab/1`
+    # and the icons turns this red.
+    #
+    # The selectors name the phone bar, not any `nav`: the top bar's icon row
+    # carries the same three hrefs and is only a `div` today.
     test "the current tab is filled and its neighbours are not", %{conn: conn} do
       user = insert(:user)
 
@@ -398,11 +406,37 @@ defmodule VutuvWeb.ShellLiveTest do
 
       assert has_element?(
                view,
-               ~s(nav a[href="/messages"][aria-current="page"] svg[fill="currentColor"])
+               ~s(#{tabs()} a[href="/messages"][aria-current="page"] svg[fill="currentColor"])
              )
 
-      refute has_element?(view, ~s(nav a[href="/search"] svg[fill="currentColor"]))
-      refute has_element?(view, ~s(nav a[href="/notifications"] svg[fill="currentColor"]))
+      refute has_element?(view, ~s(#{tabs()} a[href="/notifications"] svg[fill="currentColor"]))
+      assert has_element?(view, ~s(#{tabs()} a[href="/notifications"] svg[fill="none"]))
+    end
+
+    # Search and Profile are the two tabs that cannot swap a fill, so neither is
+    # covered above: a `refute … svg[fill="currentColor"]` on Search passes
+    # either way, because `icon_search` never fills. The magnifier thickens its
+    # stroke instead, the Profile tab rings the member's own face, and those are
+    # the only active signals those two have. The search render doubles as the
+    # calibration for the ring, where the Profile tab is inactive.
+    test "Search thickens its stroke where Profile takes a ring", %{conn: conn} do
+      user = stefan()
+
+      {:ok, search, _html} =
+        live_isolated(conn, VutuvWeb.ShellLive,
+          session: shell_session(user, %{"path" => "/search"})
+        )
+
+      {:ok, profile, _html} =
+        live_isolated(conn, VutuvWeb.ShellLive,
+          session: shell_session(user, %{"path" => "/stefan"})
+        )
+
+      assert has_element?(search, ~s(#{tabs()} a[href="/search"] svg[stroke-width="2.6"]))
+      refute has_element?(profile, ~s(#{tabs()} a[href="/search"] svg[stroke-width="2.6"]))
+
+      assert has_element?(profile, ~s(#{tabs()} a[data-mobile-profile] .ring-2))
+      refute has_element?(search, ~s(#{tabs()} a[data-mobile-profile] .ring-2))
     end
 
     # The colour split is the second half of the fix and the half a later
@@ -416,9 +450,9 @@ defmodule VutuvWeb.ShellLiveTest do
           session: shell_session(user, %{"path" => "/messages"})
         )
 
-      assert has_element?(view, ~s(nav a[href="/messages"].text-brand-700))
-      assert has_element?(view, ~s(nav a[href="/search"].text-slate-500))
-      refute has_element?(view, ~s(nav a[href="/messages"].text-slate-500))
+      assert has_element?(view, ~s(#{tabs()} a[href="/messages"].text-brand-700))
+      assert has_element?(view, ~s(#{tabs()} a[href="/search"].text-slate-500))
+      refute has_element?(view, ~s(#{tabs()} a[href="/messages"].text-slate-500))
     end
 
     test "a look-alike slug does not activate a nav item (route boundary)", %{conn: conn} do

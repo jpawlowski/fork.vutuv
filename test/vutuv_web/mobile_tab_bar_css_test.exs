@@ -180,14 +180,23 @@ defmodule VutuvWeb.MobileTabBarCssTest do
     css = app_css()
     shell = File.read!(@shell)
 
-    [_, tabs_block] =
-      Regex.run(~r/\[data-nav-bar="tabs"\]\s*\[data-nav-item\]\s*\{([^}]*)\}/, css)
+    # The bar declares the pair twice — once plain, once inside the dark-mode
+    # block — and both halves have to hold, so take them in file order rather
+    # than matching once and stopping at the light one.
+    [[_, light_block], [_, dark_block]] =
+      Regex.scan(~r/\[data-nav-bar="tabs"\]\s*\[data-nav-item\]\s*\{([^}]*)\}/, css)
 
-    assert tabs_block =~ "--press-on-fg: var(--color-brand-700)",
+    assert light_block =~ "--press-on-fg: var(--color-brand-700)",
            "the pressed tab must land on the same brand step `tab/1` gives the active tab"
 
-    assert tabs_block =~ "--press-off-fg: var(--color-slate-500)",
+    assert light_block =~ "--press-off-fg: var(--color-slate-500)",
            "the tab being left must land on the same slate step `tab/1` gives an inactive tab"
+
+    assert dark_block =~ "--press-on-fg: var(--color-brand-200)",
+           "the pressed tab's dark step must match `tab/1`'s `dark:text-brand-200`"
+
+    assert dark_block =~ "--press-off-fg: var(--color-slate-400)",
+           "the tab being left in dark mode must match `tab/1`'s `dark:text-slate-400`"
 
     assert shell =~ "text-brand-700 dark:text-brand-200",
            "the active tab's own colour moved; move the press colours with it"
