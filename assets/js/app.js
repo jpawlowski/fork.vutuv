@@ -746,9 +746,8 @@ function applyAppBadge(count) {
   if (!("setAppBadge" in navigator)) return
 
   try {
-    Promise.resolve(count > 0 ? navigator.setAppBadge(count) : navigator.clearAppBadge()).catch(
-      () => {}
-    )
+    const written = count > 0 ? navigator.setAppBadge(count) : navigator.clearAppBadge()
+    written?.catch(() => {})
   } catch (_error) {
     // A context that declares the API and refuses to use it.
   }
@@ -1009,7 +1008,15 @@ const Hooks = {
       this.handleEvent("tab:badge", ({ unread }) => {
         this.unread = unread || 0
         this.apply()
-        applyAppBadge(this.unread)
+
+        // Only when the number really moved. `push_badge/1` fires on every
+        // message and notification event, and the badge counts unread
+        // *conversations*, so the second message in one of them pushes the same
+        // total again — the same guard `apply()` makes on the title below.
+        if (this.appBadge !== this.unread) {
+          this.appBadge = this.unread
+          applyAppBadge(this.unread)
+        }
       })
 
       // A new feed post only earns the dot when the member isn't looking here.

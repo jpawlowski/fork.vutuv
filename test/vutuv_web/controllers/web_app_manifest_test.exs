@@ -33,9 +33,6 @@ defmodule VutuvWeb.WebAppManifestTest do
   # holds a response conn unless it wants the headers (the locale test does).
   defp manifest(conn), do: conn |> get(@path) |> decode()
 
-  defp manifest(conn, accept_language),
-    do: conn |> Plug.Conn.put_req_header("accept-language", accept_language) |> manifest()
-
   defp decode(conn) do
     assert conn.status == 200
     Jason.decode!(conn.resp_body)
@@ -133,11 +130,23 @@ defmodule VutuvWeb.WebAppManifestTest do
         assert String.starts_with?(url, "/"),
                "#{url} leaves the manifest's scope, so the shortcut would open a browser"
 
-        path = url |> String.split("?", parts: 2) |> hd()
+        path = url |> String.split(["?", "#"], parts: 2) |> hd()
 
         assert Phoenix.Router.route_info(VutuvWeb.Router, "GET", path, conn.host) != :error,
                "the manifest offers a shortcut to #{path}, which this app does not route"
       end
+    end
+
+    test "\"Write a post\" reuses the composer deep link, rather than a second one",
+         %{conn: conn} do
+      write = Enum.find(manifest(conn)["shortcuts"], &(&1["url"] =~ "/feed"))
+
+      # `/feed#compose` is the one spelling of "open the feed with the composer
+      # ready" — the profile's Beiträge card and the "n" shortcut already use it,
+      # and keyboard_shortcuts.js reveals AND focuses the composer for it. A
+      # launcher entry whose whole purpose is writing must not land the member in
+      # a box with no caret in it.
+      assert write["url"] == "/feed#compose"
     end
 
     test "the labels are the reader's language, and the answer says it varies", %{conn: conn} do
@@ -159,7 +168,12 @@ defmodule VutuvWeb.WebAppManifestTest do
       assert "Nachrichten" in german_names
       assert "Beitrag schreiben" in german_names
 
-      assert "Messages" in shortcut_names(manifest(conn, "en-GB,en"))
+      english =
+        conn
+        |> Plug.Conn.put_req_header("accept-language", "en-GB,en")
+        |> manifest()
+
+      assert "Messages" in shortcut_names(english)
     end
   end
 

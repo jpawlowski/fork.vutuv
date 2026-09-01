@@ -43,27 +43,15 @@ defmodule VutuvWeb.NewsfeedController do
   # that sees the query string, and it hands the two values on through the
   # session map. They are display state, not identity: that map is signed but
   # **not encrypted**, so nothing that decides who the viewer is may ever
-  # travel this way. `?compose=1` (below) rides the same seam for the same
-  # reason, which is why the two are merged rather than nested.
+  # travel this way.
   defp show_html(conn, params) do
     conn
     |> AgentDocs.put_html_alternates()
-    |> ControllerHelpers.render_live(
-      Feed,
-      Map.merge(
-        %{"cal_day" => params["day"], "cal_open" => params["cal"]},
-        compose_session(params)
-      )
-    )
+    |> ControllerHelpers.render_live(Feed, %{
+      "cal_day" => params["day"],
+      "cal_open" => params["cal"]
+    })
   end
-
-  # The installed app's "Write a post" launcher shortcut (issue #1732) lands on
-  # `/feed?compose=1`; the off-router LiveView reads it off the session instead
-  # (see `PostLive.Feed.maybe_open_composer/2`). One named key rather than
-  # `conn.params` wholesale, so the query cannot smuggle anything else into a
-  # signed session map.
-  defp compose_session(%{"compose" => "1"}), do: %{"compose" => true}
-  defp compose_session(_params), do: %{}
 
   defp send_feed_doc(conn, format, params) do
     case conn.assigns[:current_user] do

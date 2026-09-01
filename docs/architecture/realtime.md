@@ -51,19 +51,26 @@ answer worth a round trip.
 The **long-press shortcuts** are four manifest entries: write a post, search,
 messages, notifications. Not the feed, which is where `start_url` already lands a
 signed-in member. Their labels are the one part of the manifest a person reads,
-so `webmanifest/2` resolves the request's `Accept-Language` itself
-(`VutuvWeb.Plug.Locale.resolve_locale/1` — that route runs in the
-`:machine_docs` pipeline, which has neither a session nor the locale plug) and
-answers `Vary: accept-language`, which is why it is the one discovery document
-with a cache line of its own. "Write a post" points at `/feed?compose=1`;
-`VutuvWeb.NewsfeedController` turns that into a session key (see its
-`compose_session/1`) and `PostLive.Feed` opens the composer panel with it.
+so `VutuvWeb.Plug.Locale` runs on that action alone — scoped to the action and
+not to the `:machine_docs` pipeline, whose other documents are gettext-free and
+`public` cached with no `vary` — and the answer carries
+`Vary: accept-language`, which is why it is the one discovery document with a
+cache line of its own. "Write a post" points at `/feed#compose`, the composer
+deep link the profile's Beiträge card and the "n" shortcut already use: the
+manifest gets the caret that `revealAndFocusComposer` puts in the box, and this
+app keeps one spelling of "open the feed ready to write".
 
-The rest is **install-dialog metadata**: `description` (the site's own pitch,
-`VutuvWeb.OpenGraph.default_description/0`, so what vutuv claims to be is written
-once), `lang`, `dir`, `categories` and `display_override`. Still open on #1732:
-`share_target` (vutuv in Android's share sheet) and `screenshots` (which earns a
-real install dialog instead of a thin strip).
+The rest is **install-dialog metadata**: `description`
+(`VutuvWeb.OpenGraph.default_description/0`, the same sentence the page carries
+as its `<meta name="description">`), `lang`, `dir`, `categories` and
+`display_override`. Still open on #1732: `share_target` (vutuv in Android's share
+sheet), `screenshots` (which earns a real install dialog instead of a thin
+strip), and the badge while the app is **closed** — `TabBadge` writes it only
+from an open page, so a message arriving overnight raises a lock-screen line and
+leaves the icon at last night's number. The service worker below is the half that
+knows, since it already branches on "no visible client"; a bare
+`self.navigator.setAppBadge()` there would earn the platform dot for free, an
+exact count needs `unread` in the push payload.
 
 ### The service worker and Web Push (issue #1729)
 

@@ -91,7 +91,12 @@ defmodule VutuvWeb.ShellLive do
         # another member's chrome or subscribe to their "user:<id>" unread-badge
         # topic. All identity therefore comes from the resolved user, not the
         # curated map.
-        mount_authenticated(socket, InitAssigns.session_user(session), session, path)
+        # `push_badge/1` here rather than in either clause: both need it, and the
+        # anonymous one needs it most — its zero is the only thing that takes a
+        # signed-out member's count off the Home Screen icon (see push_badge/1).
+        socket
+        |> mount_authenticated(InitAssigns.session_user(session), session, path)
+        |> push_badge()
       else
         # The throwaway dead render, authenticated by the HTTP request that built
         # shell_session/1 from the validated current_user — so its curated
@@ -149,8 +154,6 @@ defmodule VutuvWeb.ShellLive do
     |> assign(:user_avatar, nil)
     |> assign(:user_admin?, false)
     |> assign_shell_defaults(path)
-    # The zero that clears the app icon after a sign-out; see push_badge/1.
-    |> push_badge()
   end
 
   # Everything the chrome shows is derived from the resolved user (recomputed the
@@ -193,7 +196,6 @@ defmodule VutuvWeb.ShellLive do
     |> maybe_start_counts(user, path)
     |> maybe_start_new_members()
     |> maybe_start_presence(user_id, user.show_online_status?)
-    |> push_badge()
   end
 
   # The assigns every render carries, so render/1 never sees a missing key. The
@@ -601,7 +603,7 @@ defmodule VutuvWeb.ShellLive do
   # Nothing else can take a stale count off a Home Screen icon after a sign-out,
   # which is why the logged-out shell pushes at all. Two cheaper spellings were
   # considered and both state the fact less well.
-  # Letting the browser infer "signed out" from a missing #tab-badge silently
+  # Letting the browser infer "signed out" from a missing `#tab-badge` silently
   # wipes the badge on any page that renders no shell at all (an unsubscribe
   # link out of an email is one). A `<meta>` in the root layout is cheaper still
   # and would cover those pages — but it would read `assigns[:current_user]`,
